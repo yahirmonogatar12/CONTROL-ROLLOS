@@ -1,0 +1,13 @@
+*.zip
+node_modules/
+.env
+.DS_Store
+*.log
+build/
+dist/
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+*.iml
+.gradle/
+.idea/

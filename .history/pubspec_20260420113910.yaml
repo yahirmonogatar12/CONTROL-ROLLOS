@@ -1,0 +1,51 @@
+name: material_warehousing_flutter
+description: Control inventario SMD.
+publish_to: "none"
+version: 1.0.0+1
+
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+
+dependencies:
+  audioplayers: ^5.2.1
+  bluetooth_classic: ^0.0.4
+  connectivity_plus: ^5.0.2
+  dropdown_button2: ^2.3.9
+  excel: ^4.0.6
+  file_picker: ^8.0.0+1
+  flutter:
+    sdk: flutter
+  flutter_blue_plus: ^1.32.0
+  http: ^1.6.0
+  intl: ^0.20.2
+  mobile_scanner: ^5.2.3
+  path_provider: ^2.1.2
+  printing: ^5.14.2
+  qr_flutter: ^4.1.0
+  shared_preferences: ^2.5.3
+  url_launcher: ^6.2.5
+  vibration: ^2.0.1
+  web_socket_channel: ^3.0.2
+  window_manager: ^0.4.3
+  # firebase_core: ^3.8.1  # TEMPORALMENTE DESACTIVADO PARA WINDOWS
+  # firebase_messaging: ^15.1.6  # TEMPORALMENTE DESACTIVADO PARA WINDOWS
+  # flutter_local_notifications: ^18.0.1  # TEMPORALMENTE DESACTIVADO PARA WINDOWS
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_launcher_icons: ^0.14.3
+
+# Configuración del ícono de la app
+flutter_launcher_icons:
+  android: true
+  ios: false
+  image_path: "assets/logo.png"
+  adaptive_icon_background: "#FFFFFF"
+  adaptive_icon_foreground: "assets/logo.png"
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/logo.png
+    - VERSION.txt

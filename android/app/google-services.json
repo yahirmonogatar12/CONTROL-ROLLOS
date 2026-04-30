@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "774858544239",
+    "project_id": "ilsan-mes-fcm",
+    "storage_bucket": "ilsan-mes-fcm.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:774858544239:android:0a68cd99151eb03966e99a",
+        "android_client_info": {
+          "package_name": "ilsan.mes"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyC820aUW7B9mWsht4CFW4UeREgxsGtyIoo"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

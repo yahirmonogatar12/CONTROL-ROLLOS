@@ -1,0 +1,2591 @@
+const express = require('express');
+const cors = require('cors');
+const path = require('path');
+const fs = require('fs');
+
+// Determinar la ruta del archivo .env
+function getEnvPath() {
+  const exeDir = path.dirname(process.execPath);
+  const exeEnvPath = path.join(exeDir, '.env');
+  
+  if (fs.existsSync(exeEnvPath)) {
+    console.log('📂 Usando .env desde:', exeEnvPath);
+    return exeEnvPath;
+  }
+  
+  const devEnvPath = path.join(__dirname, '.env');
+  if (fs.existsSync(devEnvPath)) {
+    console.log('📂 Usando .env desde:', devEnvPath);
+    return devEnvPath;
+  }
+  
+  const cwdEnvPath = path.join(process.cwd(), '.env');
+  console.log('📂 Buscando .env en:', cwdEnvPath);
+  return cwdEnvPath;
+}
+
+require('dotenv').config({ path: getEnvPath() });
+
+const { pool, testConnection } = require('./config/database');
+const { runMigrations } = require('./utils/dbMigrations');
+const errorHandler = require('./middleware/errorHandler');
+
+// Importar rutas modularizadas - Fase 1
+const warehousingRoutes = require('./routes/warehousing.routes');
+const outgoingRoutes = require('./routes/outgoing.routes');
+
+// Importar rutas modularizadas - Fase 2
+const planRoutes = require('./routes/plan.routes');
+const { authRouter, usersRouter, departmentsRouter, cargosRouter, permissionsRouter } = require('./routes/auth.routes');
+const materialesRoutes = require('./routes/materials.routes');
+const { materialCodesRouter } = require('./routes/materials.routes');
+const iqcRoutes = require('./routes/iqc.routes');
+const qualitySpecsRoutes = require('./routes/quality-specs.routes');
+const quarantineRoutes = require('./routes/quarantine.routes');
+
+const app = express();
+
+// Middlewares
+app.use(cors());
+app.use(express.json());
+
+// ============================================
+// RUTAS MODULARIZADAS
+// ============================================
+// Fase 1: Warehousing y Outgoing
+app.use('/api/warehousing', warehousingRoutes);
+app.use('/api/outgoing', outgoingRoutes);
+
+// Fase 2: Plan, Auth, Materials, IQC, Quality Specs, Quarantine
+app.use('/api/plan', planRoutes);
+app.use('/api/bom', planRoutes);
+app.use('/api/auth', authRouter);
+app.use('/api/users', usersRouter);
+app.use('/api/departments', departmentsRouter);
+app.use('/api/cargos', cargosRouter);
+app.use('/api/permissions', permissionsRouter);
+app.use('/api/materiales', materialesRoutes);
+app.use('/api/materials', materialCodesRouter);
+app.use('/api/iqc', iqcRoutes);
+app.use('/api/quality-specs', qualitySpecsRoutes);
+app.use('/api/quarantine', quarantineRoutes);
+
+// Las migraciones se ejecutan desde utils/dbMigrations.js al iniciar
+
+// ============================================
+// RUTAS - CATÁLOGOS (Clientes únicos, etc.)
+// ============================================
+
+// GET /api/customers - Lista clientes únicos de la tabla
+app.get('/api/customers', async (req, res, next) => {
+  try {
+    const [rows] = await pool.query(`
+      SELECT DISTINCT cliente as name 
+      FROM control_material_almacen 
+      WHERE cliente IS NOT NULL AND cliente != ''
+      ORDER BY cliente
+    `);
+    res.json(rows);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ============================================
+// RUTAS - PLAN MAIN (Plan de producción)
+// ============================================
+
+// GET /api/plan/today - Obtiene planes del día actual
+app.get('/api/plan/today', async (req, res, next) => {
+  try {
+    const { date } = req.query;
+    // Si no se proporciona fecha, usar la fecha actual
+    const targetDate = date || new Date().toISOString().split('T')[0];
+    
+    const [rows] = await pool.query(`
+      SELECT 
+        id,
+        lot_no,
+        wo_code,
+        working_date,
+        line,
+        model_code,
+        part_no,
+        project,
+        process,
+        plan_count,
+        status
+      FROM plan_main 
+      WHERE working_date = ?
+      ORDER BY sequence, lot_no
+    `, [targetDate]);
+    res.json(rows);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/plan/bom/:partNo - Obtiene el BOM de un part_no y multiplica por plan_count
+app.get('/api/plan/bom/:partNo', async (req, res, next) => {
+  try {
+    const { partNo } = req.params;
+    const { planCount } = req.query;
+    const multiplier = parseInt(planCount) || 1;
+    
+    // Buscar en BOM usando el part_no como modelo
+    const [rows] = await pool.query(`
+      SELECT 
+        id,
+        modelo,
+        codigo_material,
+        numero_parte,
+        side,
+        tipo_material,
+        classification,
+        especificacion_material,
+        cantidad_total,
+        cantidad_original
+      FROM bom 
+      WHERE modelo = ?
+      ORDER BY side, codigo_material
+    `, [partNo]);
+    
+    // Multiplicar las cantidades por el plan_count y mapear campos
+    const bomWithMultiplied = rows.map(row => ({
+      ...row,
+      material_code: row.codigo_material,
+      bom_qty: row.cantidad_total,
+      required_qty: (parseFloat(row.cantidad_total) || 0) * multiplier,
+      plan_count: multiplier
+    }));
+    
+    res.json(bomWithMultiplied);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ============================================
+// RUTAS - BOM (Bill of Materials)
+// ============================================
+
+// GET /api/bom/models - Lista modelos únicos de la tabla bom
+app.get('/api/bom/models', async (req, res, next) => {
+  try {
+    const [rows] = await pool.query(`
+      SELECT DISTINCT modelo 
+      FROM bom 
+      WHERE modelo IS NOT NULL AND modelo != ''
+      ORDER BY modelo
+    `);
+    res.json(rows.map(r => r.modelo));
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/bom/:modelo - Obtiene el BOM de un modelo específico
+app.get('/api/bom/:modelo', async (req, res, next) => {
+  try {
+    const { modelo } = req.params;
+    const [rows] = await pool.query(`
+      SELECT 
+        id,
+        modelo,
+        codigo_material,
+        numero_parte,
+        side,
+        tipo_material,
+        classification,
+        especificacion_material,
+        vender,
+        cantidad_total,
+        cantidad_original,
+        ubicacion,
+        posicion_assy,
+        material_sustituto,
+        material_original,
+        registrador,
+        fecha_registro
+      FROM bom 
+      WHERE modelo = ?
+      ORDER BY side, codigo_material
+    `, [modelo]);
+    res.json(rows);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/materials - Lista códigos de material únicos
+app.get('/api/materials', async (req, res, next) => {
+  try {
+    const [rows] = await pool.query(`
+      SELECT DISTINCT 
+        codigo_material as code,
+        codigo_material_original as name,
+        especificacion as spec
+      FROM control_material_almacen 
+      WHERE codigo_material IS NOT NULL AND codigo_material != ''
+      ORDER BY codigo_material
+    `);
+    res.json(rows);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/materiales - Lista de materiales desde tabla materiales
+app.get('/api/materiales', async (req, res, next) => {
+  try {
+    const [rows] = await pool.query(`
+      SELECT 
+        numero_parte,
+        codigo_material,
+        propiedad_material,
+        clasificacion,
+        especificacion_material,
+        unidad_empaque,
+        ubicacion_material,
+        vendedor,
+        prohibido_sacar,
+        reparable,
+        nivel_msl,
+        espesor_msl,
+        fecha_registro,
+        cantidad,
+        classification,
+        usuario_registro,
+        IFNULL(iqc_required, 0) as iqc_required,
+        IFNULL(assign_internal_lot, 0) as assign_internal_lot,
+        version
+      FROM materiales 
+      ORDER BY codigo_material
+    `);
+    res.json(rows);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/materiales - Crear nuevo material
+app.post('/api/materiales', async (req, res, next) => {
+  try {
+    const {
+      numero_parte,
+      codigo_material,
+      propiedad_material,
+      clasificacion,
+      especificacion_material,
+      unidad_empaque,
+      ubicacion_material,
+      vendedor,
+      prohibido_sacar,
+      nivel_msl,
+      espesor_msl,
+      assign_internal_lot,
+      usuario_registro,
+      version
+    } = req.body;
+
+    // Validar campos requeridos
+    if (!numero_parte || !codigo_material || !propiedad_material || !especificacion_material || !unidad_empaque) {
+      return res.status(400).json({ 
+        error: 'Campos requeridos faltantes: numero_parte, codigo_material, propiedad_material, especificacion_material, unidad_empaque',
+        code: 'MISSING_REQUIRED_FIELDS'
+      });
+    }
+
+    // Verificar si ya existe el numero_parte
+    const [existing] = await pool.query(
+      'SELECT numero_parte FROM materiales WHERE numero_parte = ?',
+      [numero_parte]
+    );
+
+    if (existing.length > 0) {
+      return res.status(400).json({ 
+        error: 'El número de parte ya existe',
+        code: 'DUPLICATE_PART_NUMBER'
+      });
+    }
+
+    // Insertar nuevo material
+    await pool.query(`
+      INSERT INTO materiales (
+        numero_parte, codigo_material, propiedad_material, clasificacion,
+        especificacion_material, unidad_empaque, ubicacion_material, vendedor,
+        prohibido_sacar, nivel_msl, espesor_msl, fecha_registro,
+        usuario_registro, iqc_required, assign_internal_lot, version
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?, 0, ?, ?)
+    `, [
+      numero_parte,
+      codigo_material,
+      propiedad_material,
+      clasificacion || null,
+      especificacion_material,
+      unidad_empaque,
+      ubicacion_material || null,
+      vendedor || null,
+      prohibido_sacar || 0,
+      nivel_msl || null,
+      espesor_msl || null,
+      usuario_registro || null,
+      assign_internal_lot || 0,
+      version || null
+    ]);
+
+    res.status(201).json({ message: 'Material creado exitosamente', numero_parte });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// PUT /api/materiales/:numeroParte - Actualizar material existente
+app.put('/api/materiales/:numeroParte', async (req, res, next) => {
+  try {
+    const { numeroParte } = req.params;
+    const {
+      codigo_material,
+      propiedad_material,
+      clasificacion,
+      especificacion_material,
+      unidad_empaque,
+      ubicacion_material,
+      vendedor,
+      prohibido_sacar,
+      nivel_msl,
+      espesor_msl,
+      assign_internal_lot,
+      usuario_registro,
+      version
+    } = req.body;
+
+    // Validar campos requeridos
+    if (!codigo_material || !propiedad_material || !especificacion_material || !unidad_empaque) {
+      return res.status(400).json({ 
+        error: 'Campos requeridos faltantes: codigo_material, propiedad_material, especificacion_material, unidad_empaque',
+        code: 'MISSING_REQUIRED_FIELDS'
+      });
+    }
+
+    // Verificar si existe el material
+    const [existing] = await pool.query(
+      'SELECT numero_parte FROM materiales WHERE numero_parte = ?',
+      [numeroParte]
+    );
+
+    if (existing.length === 0) {
+      return res.status(404).json({ 
+        error: 'Material no encontrado',
+        code: 'NOT_FOUND'
+      });
+    }
+
+    // Actualizar material (no se actualiza numero_parte, iqc_required ni fecha_registro)
+    await pool.query(`
+      UPDATE materiales SET
+        codigo_material = ?,
+        propiedad_material = ?,
+        clasificacion = ?,
+        especificacion_material = ?,
+        unidad_empaque = ?,
+        ubicacion_material = ?,
+        vendedor = ?,
+        prohibido_sacar = ?,
+        nivel_msl = ?,
+        espesor_msl = ?,
+        assign_internal_lot = ?,
+        usuario_registro = ?,
+        version = ?
+      WHERE numero_parte = ?
+    `, [
+      codigo_material,
+      propiedad_material,
+      clasificacion || null,
+      especificacion_material,
+      unidad_empaque,
+      ubicacion_material || null,
+      vendedor || null,
+      prohibido_sacar || 0,
+      nivel_msl || null,
+      espesor_msl || null,
+      assign_internal_lot || 0,
+      usuario_registro || null,
+      version || null,
+      numeroParte
+    ]);
+
+    res.json({ message: 'Material actualizado exitosamente', numero_parte: numeroParte });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// DELETE /api/materiales/:numeroParte - Eliminar material
+app.delete('/api/materiales/:numeroParte', async (req, res, next) => {
+  try {
+    const { numeroParte } = req.params;
+
+    // Verificar si existe el material
+    const [existing] = await pool.query(
+      'SELECT numero_parte FROM materiales WHERE numero_parte = ?',
+      [numeroParte]
+    );
+
+    if (existing.length === 0) {
+      return res.status(404).json({ 
+        error: 'Material no encontrado',
+        code: 'NOT_FOUND'
+      });
+    }
+
+    // Eliminar material
+    await pool.query('DELETE FROM materiales WHERE numero_parte = ?', [numeroParte]);
+
+    res.json({ message: 'Material eliminado exitosamente', numero_parte: numeroParte });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ============================================
+// RUTAS - CONTROL MATERIAL SALIDA (Salida de Material)
+// ============================================
+
+// GET /api/outgoing/check-salida/:code - Verificar si un material ya tiene salida
+app.get('/api/outgoing/check-salida/:code', async (req, res, next) => {
+  try {
+    const { code } = req.params;
+    
+    const [rows] = await pool.query(`
+      SELECT tiene_salida 
+      FROM control_material_almacen 
+      WHERE codigo_material_recibido = ?
+      LIMIT 1
+    `, [code]);
+
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'Material no encontrado', has_outgoing: false });
+    }
+
+    const tieneSalida = rows[0].tiene_salida === 1;
+    res.json({ 
+      has_outgoing: tieneSalida,
+      code: code
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/outgoing/locations-by-partnumber - Obtener ubicaciones para múltiples part numbers
+app.get('/api/outgoing/locations-by-partnumber', async (req, res, next) => {
+  try {
+    const { partNumbers } = req.query;
+    
+    if (!partNumbers) {
+      return res.json({});
+    }
+
+    // partNumbers viene como string separado por comas
+    const partNumberList = partNumbers.split(',').map(p => p.trim()).filter(p => p);
+    
+    if (partNumberList.length === 0) {
+      return res.json({});
+    }
+
+    // Consultar ubicaciones donde cancelado=0 AND tiene_salida=0
+    const placeholders = partNumberList.map(() => '?').join(',');
+    const [rows] = await pool.query(`
+      SELECT numero_parte, ubicacion_salida 
+      FROM control_material_almacen 
+      WHERE numero_parte IN (${placeholders})
+        AND (cancelado = 0 OR cancelado IS NULL)
+        AND (tiene_salida = 0 OR tiene_salida IS NULL)
+      ORDER BY numero_parte
+    `, partNumberList);
+
+    // Agrupar ubicaciones por part number
+    const locationsByPartNumber = {};
+    rows.forEach(row => {
+      const partNumber = row.numero_parte;
+      const location = row.ubicacion_salida || '';
+      
+      if (!locationsByPartNumber[partNumber]) {
+        locationsByPartNumber[partNumber] = [];
+      }
+      
+      if (location && !locationsByPartNumber[partNumber].includes(location)) {
+        locationsByPartNumber[partNumber].push(location);
+      }
+    });
+
+    res.json(locationsByPartNumber);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/outgoing - Crea nuevo registro de salida
+app.post('/api/outgoing', async (req, res, next) => {
+  try {
+    const {
+      codigo_material_recibido,
+      numero_parte,
+      numero_lote,
+      modelo,
+      depto_salida,
+      proceso_salida,
+      cantidad_salida,
+      especificacion_material,
+      usuario_registro
+    } = req.body;
+
+    // Verificar si el material ya tiene salida
+    const [checkRows] = await pool.query(`
+      SELECT tiene_salida 
+      FROM control_material_almacen 
+      WHERE codigo_material_recibido = ?
+      LIMIT 1
+    `, [codigo_material_recibido]);
+
+    if (checkRows.length > 0 && checkRows[0].tiene_salida === 1) {
+      return res.status(400).json({ 
+        error: 'Este material ya tiene una salida registrada',
+        code: 'ALREADY_HAS_OUTGOING'
+      });
+    }
+
+    // Usar fecha_salida del cliente (hora local de la PC) o NOW() como fallback
+    const fecha_salida = req.body.fecha_salida || null;
+    
+    const [result] = await pool.query(`
+      INSERT INTO control_material_salida (
+        codigo_material_recibido,
+        numero_parte,
+        numero_lote,
+        modelo,
+        depto_salida,
+        proceso_salida,
+        cantidad_salida,
+        fecha_salida,
+        fecha_registro,
+        especificacion_material,
+        usuario_registro
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ${fecha_salida ? '?' : 'NOW()'}, NOW(), ?, ?)
+    `, fecha_salida ? [
+      codigo_material_recibido,
+      numero_parte,
+      numero_lote,
+      modelo,
+      depto_salida,
+      proceso_salida,
+      cantidad_salida,
+      fecha_salida,
+      especificacion_material,
+      usuario_registro
+    ] : [
+      codigo_material_recibido,
+      numero_parte,
+      numero_lote,
+      modelo,
+      depto_salida,
+      proceso_salida,
+      cantidad_salida,
+      especificacion_material,
+      usuario_registro
+    ]);
+
+    // Marcar el material como que tiene salida en control_material_almacen
+    await pool.query(`
+      UPDATE control_material_almacen 
+      SET tiene_salida = 1 
+      WHERE codigo_material_recibido = ?
+    `, [codigo_material_recibido]);
+
+    res.status(201).json({
+      id: result.insertId,
+      message: 'Registro de salida creado exitosamente'
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/outgoing - Lista todos los registros de salida
+app.get('/api/outgoing', async (req, res, next) => {
+  try {
+    const [rows] = await pool.query(`
+      SELECT * FROM control_material_salida 
+      ORDER BY fecha_registro DESC
+    `);
+    res.json(rows);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/outgoing/search - Buscar salidas por rango de fechas y/o texto
+app.get('/api/outgoing/search', async (req, res, next) => {
+  try {
+    const { fecha_inicio, fecha_fin, texto } = req.query;
+    let query = 'SELECT * FROM control_material_salida WHERE 1=1';
+    const params = [];
+
+    if (fecha_inicio && fecha_fin) {
+      query += ' AND DATE(fecha_salida) BETWEEN ? AND ?';
+      params.push(fecha_inicio, fecha_fin);
+    }
+    
+    if (texto) {
+      query += ` AND (
+        codigo_material_recibido LIKE ? OR
+        numero_parte LIKE ? OR
+        numero_lote LIKE ? OR
+        modelo LIKE ? OR
+        depto_salida LIKE ? OR
+        proceso_salida LIKE ? OR
+        especificacion_material LIKE ?
+      )`;
+      const searchTerm = `%${texto}%`;
+      params.push(searchTerm, searchTerm, searchTerm, searchTerm, searchTerm, searchTerm, searchTerm);
+    }
+
+    query += ' ORDER BY fecha_salida DESC';
+
+    const [rows] = await pool.query(query, params);
+    res.json(rows);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ============================================
+// RUTAS - INVENTARIO LOTES (Current Inventory)
+// ============================================
+
+// GET /api/inventory/summary - Inventario general agrupado por numero_parte
+app.get('/api/inventory/summary', async (req, res, next) => {
+  try {
+    const { numero_parte } = req.query;
+    
+    let query = `
+      SELECT
+        numero_parte,
+        SUM(stock_actual) AS stock_total,
+        COUNT(DISTINCT numero_lote) AS lotes_distintos,
+        SUM(CASE WHEN stock_actual > 0 THEN 1 ELSE 0 END) AS lotes_con_stock
+      FROM inventario_lotes
+    `;
+    
+    const params = [];
+    
+    if (numero_parte) {
+      query += ` WHERE numero_parte LIKE ?`;
+      params.push(`%${numero_parte}%`);
+    }
+    
+    query += ` GROUP BY numero_parte HAVING stock_total > 0 ORDER BY numero_parte`;
+    
+    const [rows] = await pool.query(query, params);
+    res.json(rows);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/inventory/lots - Detalle de lotes por numero_parte
+app.get('/api/inventory/lots', async (req, res, next) => {
+  try {
+    const { numero_parte, codigo_material_recibido } = req.query;
+    
+    let query = `
+      SELECT
+        il.numero_parte,
+        il.numero_lote,
+        il.codigo_material_recibido,
+        il.total_entrada,
+        il.total_salida,
+        il.stock_actual,
+        cma.id as warehousing_id,
+        cma.codigo_material,
+        COALESCE(cma.en_cuarentena, 0) as in_quarantine
+      FROM inventario_lotes il
+      LEFT JOIN control_material_almacen cma ON il.codigo_material_recibido = cma.codigo_material_recibido
+      WHERE il.stock_actual > 0
+    `;
+    
+    const params = [];
+    
+    if (numero_parte) {
+      query += ` AND il.numero_parte LIKE ?`;
+      params.push(`%${numero_parte}%`);
+    }
+    
+    if (codigo_material_recibido) {
+      query += ` AND il.codigo_material_recibido LIKE ?`;
+      params.push(`%${codigo_material_recibido}%`);
+    }
+    
+    query += ` ORDER BY il.numero_parte, il.numero_lote`;
+    
+    const [rows] = await pool.query(query, params);
+    res.json(rows);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/inventory/search-label - Buscar por etiqueta (codigo_material_recibido)
+app.get('/api/inventory/search-label', async (req, res, next) => {
+  try {
+    const { codigo } = req.query;
+    
+    if (!codigo) {
+      return res.json([]);
+    }
+    
+    const [rows] = await pool.query(`
+      SELECT
+        codigo_material_recibido,
+        numero_parte,
+        numero_lote,
+        total_entrada,
+        total_salida,
+        stock_actual
+      FROM inventario_lotes
+      WHERE codigo_material_recibido = ?
+    `, [codigo]);
+    
+    res.json(rows);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ============================================
+// RUTA DE PRUEBA
+// ============================================
+app.get('/api/health', async (req, res) => {
+  const dbConnected = await testConnection();
+  res.json({
+    status: 'OK',
+    database: dbConnected ? 'Connected' : 'Disconnected',
+    timestamp: new Date().toISOString()
+  });
+});
+
+// ============================================
+// RUTAS - AUTENTICACIÓN DE USUARIOS
+// ============================================
+
+// POST /api/auth/login - Iniciar sesión
+app.post('/api/auth/login', async (req, res, next) => {
+  try {
+    const { username, password } = req.body;
+
+    if (!username || !password) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Username y password son requeridos' 
+      });
+    }
+
+    // Buscar usuario
+    const [users] = await pool.query(`
+      SELECT id, username, password_hash, email, nombre_completo, 
+             departamento, cargo, activo, intentos_fallidos, bloqueado_hasta
+      FROM usuarios_sistema 
+      WHERE username = ?
+    `, [username]);
+
+    if (users.length === 0) {
+      return res.status(401).json({ 
+        success: false, 
+        message: 'Usuario o contraseña incorrectos' 
+      });
+    }
+
+    const user = users[0];
+
+    // Verificar si el usuario está activo
+    if (!user.activo) {
+      return res.status(401).json({ 
+        success: false, 
+        message: 'Usuario desactivado. Contacte al administrador.' 
+      });
+    }
+
+    // Verificar si el usuario está bloqueado
+    if (user.bloqueado_hasta && new Date(user.bloqueado_hasta) > new Date()) {
+      const tiempoRestante = Math.ceil((new Date(user.bloqueado_hasta) - new Date()) / 60000);
+      return res.status(401).json({ 
+        success: false, 
+        message: `Usuario bloqueado. Intente en ${tiempoRestante} minutos.` 
+      });
+    }
+
+    // Hash SHA-256 del password ingresado
+    const crypto = require('crypto');
+    const hashedPassword = crypto.createHash('sha256').update(password).digest('hex');
+
+    // Verificar contraseña
+    if (hashedPassword !== user.password_hash) {
+      // Incrementar intentos fallidos
+      const nuevosIntentos = (user.intentos_fallidos || 0) + 1;
+      let bloqueadoHasta = null;
+      
+      // Bloquear después de 5 intentos fallidos por 15 minutos
+      if (nuevosIntentos >= 5) {
+        bloqueadoHasta = new Date(Date.now() + 15 * 60 * 1000);
+      }
+
+      await pool.query(`
+        UPDATE usuarios_sistema 
+        SET intentos_fallidos = ?, bloqueado_hasta = ?
+        WHERE id = ?
+      `, [nuevosIntentos, bloqueadoHasta, user.id]);
+
+      return res.status(401).json({ 
+        success: false, 
+        message: 'Usuario o contraseña incorrectos',
+        intentosRestantes: Math.max(0, 5 - nuevosIntentos)
+      });
+    }
+
+    // Login exitoso - resetear intentos y actualizar último acceso
+    await pool.query(`
+      UPDATE usuarios_sistema 
+      SET intentos_fallidos = 0, bloqueado_hasta = NULL, ultimo_acceso = NOW()
+      WHERE id = ?
+    `, [user.id]);
+
+    // Devolver datos del usuario (sin password_hash)
+    res.json({ 
+      success: true, 
+      message: 'Login exitoso',
+      user: {
+        id: user.id,
+        username: user.username,
+        email: user.email,
+        nombre_completo: user.nombre_completo,
+        departamento: user.departamento,
+        cargo: user.cargo
+      }
+    });
+
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/auth/logout - Cerrar sesión (actualizar último acceso)
+app.post('/api/auth/logout', async (req, res, next) => {
+  try {
+    const { userId } = req.body;
+    
+    if (userId) {
+      await pool.query(`
+        UPDATE usuarios_sistema 
+        SET ultimo_acceso = NOW()
+        WHERE id = ?
+      `, [userId]);
+    }
+
+    res.json({ success: true, message: 'Sesión cerrada' });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/auth/verify - Verificar si el usuario existe y está activo
+app.get('/api/auth/verify/:userId', async (req, res, next) => {
+  try {
+    const { userId } = req.params;
+
+    const [users] = await pool.query(`
+      SELECT id, username, nombre_completo, departamento, cargo, activo
+      FROM usuarios_sistema 
+      WHERE id = ? AND activo = 1
+    `, [userId]);
+
+    if (users.length === 0) {
+      return res.json({ valid: false });
+    }
+
+    res.json({ valid: true, user: users[0] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ============================================
+// RUTAS - GESTIÓN DE USUARIOS (Solo Sistemas)
+// ============================================
+
+// GET /api/users - Listar todos los usuarios
+app.get('/api/users', async (req, res, next) => {
+  try {
+    const [users] = await pool.query(`
+      SELECT id, username, email, nombre_completo, departamento, cargo, 
+             activo, ultimo_acceso, fecha_creacion
+      FROM usuarios_sistema 
+      ORDER BY nombre_completo
+    `);
+    res.json(users);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/users/:id - Obtener usuario por ID
+app.get('/api/users/:id', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const [users] = await pool.query(`
+      SELECT id, username, email, nombre_completo, departamento, cargo, 
+             activo, ultimo_acceso, fecha_creacion
+      FROM usuarios_sistema 
+      WHERE id = ?
+    `, [id]);
+    
+    if (users.length === 0) {
+      return res.status(404).json({ error: 'Usuario no encontrado' });
+    }
+    
+    res.json(users[0]);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/users - Crear nuevo usuario
+app.post('/api/users', async (req, res, next) => {
+  try {
+    const { username, password, email, nombre_completo, departamento, cargo } = req.body;
+    
+    if (!username || !password || !nombre_completo || !departamento || !cargo) {
+      return res.status(400).json({ error: 'Faltan campos requeridos' });
+    }
+    
+    // Verificar si el username ya existe
+    const [existing] = await pool.query(
+      'SELECT id FROM usuarios_sistema WHERE username = ?', 
+      [username]
+    );
+    
+    if (existing.length > 0) {
+      return res.status(400).json({ error: 'El nombre de usuario ya existe' });
+    }
+    
+    // Hash de la contraseña
+    const crypto = require('crypto');
+    const password_hash = crypto.createHash('sha256').update(password).digest('hex');
+    
+    const [result] = await pool.query(`
+      INSERT INTO usuarios_sistema 
+      (username, password_hash, email, nombre_completo, departamento, cargo, activo, fecha_creacion)
+      VALUES (?, ?, ?, ?, ?, ?, 1, NOW())
+    `, [username, password_hash, email || null, nombre_completo, departamento, cargo]);
+    
+    res.status(201).json({ 
+      success: true, 
+      message: 'Usuario creado exitosamente',
+      id: result.insertId 
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// PUT /api/users/:id - Actualizar usuario
+app.put('/api/users/:id', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { email, nombre_completo, departamento, cargo } = req.body;
+    
+    if (!nombre_completo || !departamento || !cargo) {
+      return res.status(400).json({ error: 'Faltan campos requeridos' });
+    }
+    
+    await pool.query(`
+      UPDATE usuarios_sistema 
+      SET email = ?, nombre_completo = ?, departamento = ?, cargo = ?
+      WHERE id = ?
+    `, [email || null, nombre_completo, departamento, cargo, id]);
+    
+    res.json({ success: true, message: 'Usuario actualizado' });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// PUT /api/users/:id/password - Cambiar contraseña
+app.put('/api/users/:id/password', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { newPassword } = req.body;
+    
+    if (!newPassword || newPassword.length < 4) {
+      return res.status(400).json({ error: 'La contraseña debe tener al menos 4 caracteres' });
+    }
+    
+    const crypto = require('crypto');
+    const password_hash = crypto.createHash('sha256').update(newPassword).digest('hex');
+    
+    await pool.query(`
+      UPDATE usuarios_sistema 
+      SET password_hash = ?, intentos_fallidos = 0, bloqueado_hasta = NULL
+      WHERE id = ?
+    `, [password_hash, id]);
+    
+    res.json({ success: true, message: 'Contraseña actualizada' });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// PUT /api/users/:id/toggle-active - Activar/desactivar usuario
+app.put('/api/users/:id/toggle-active', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    
+    // Obtener estado actual
+    const [users] = await pool.query('SELECT activo FROM usuarios_sistema WHERE id = ?', [id]);
+    if (users.length === 0) {
+      return res.status(404).json({ error: 'Usuario no encontrado' });
+    }
+    
+    const newStatus = users[0].activo ? 0 : 1;
+    
+    await pool.query('UPDATE usuarios_sistema SET activo = ? WHERE id = ?', [newStatus, id]);
+    
+    res.json({ 
+      success: true, 
+      message: newStatus ? 'Usuario activado' : 'Usuario desactivado',
+      activo: newStatus 
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/departments - Listar departamentos disponibles
+app.get('/api/departments', async (req, res, next) => {
+  try {
+    const departments = [
+      'Sistemas',
+      'Gerencia',
+      'Administración',
+      'Almacén',
+      'Almacén Supervisor',
+      'Calidad',
+      'Calidad Supervisor',
+      'Producción',
+      'Producción Supervisor',
+      'Mantenimiento',
+      'Recursos Humanos',
+      'Compras'
+    ];
+    res.json(departments);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/cargos - Listar cargos disponibles
+app.get('/api/cargos', async (req, res, next) => {
+  try {
+    const cargos = [
+      'Operador',
+      'Técnico',
+      'Supervisor',
+      'Jefe de Área',
+      'Gerente',
+      'Director',
+      'Auxiliar',
+      'Analista',
+      'Coordinador',
+      'Inspector'
+    ];
+    res.json(cargos);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/permissions/available - Listar todos los permisos disponibles del sistema
+app.get('/api/permissions/available', async (req, res, next) => {
+  try {
+    const permissions = [
+      { key: 'view_warehousing', name: 'Ver Entradas', category: 'Almacén', description: 'Puede ver el módulo de entradas de material' },
+      { key: 'write_warehousing', name: 'Editar Entradas', category: 'Almacén', description: 'Puede crear/editar entradas de material' },
+      { key: 'view_outgoing', name: 'Ver Salidas', category: 'Almacén', description: 'Puede ver el módulo de salidas de material' },
+      { key: 'write_outgoing', name: 'Editar Salidas', category: 'Almacén', description: 'Puede crear/editar salidas de material' },
+      { key: 'view_inventory', name: 'Ver Inventario', category: 'Almacén', description: 'Puede ver el inventario' },
+      { key: 'view_iqc', name: 'Ver IQC', category: 'Calidad', description: 'Puede ver el módulo de inspección IQC' },
+      { key: 'write_iqc', name: 'Editar IQC', category: 'Calidad', description: 'Puede realizar inspecciones IQC' },
+      { key: 'view_quarantine', name: 'Ver Cuarentena', category: 'Calidad', description: 'Puede ver materiales en cuarentena' },
+      { key: 'send_quarantine', name: 'Enviar a Cuarentena', category: 'Calidad', description: 'Puede enviar material a cuarentena' },
+      { key: 'release_quarantine', name: 'Liberar Cuarentena', category: 'Calidad', description: 'Puede liberar material de cuarentena' },
+      { key: 'manage_users', name: 'Gestión de Usuarios', category: 'Sistema', description: 'Puede administrar usuarios y permisos' },
+      { key: 'view_reports', name: 'Ver Reportes', category: 'Reportes', description: 'Puede ver reportes del sistema' },
+      { key: 'export_data', name: 'Exportar Datos', category: 'Reportes', description: 'Puede exportar datos a Excel' },
+    ];
+    res.json(permissions);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/users/:id/permissions - Obtener permisos de un usuario
+app.get('/api/users/:id/permissions', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const [permissions] = await pool.query(
+      'SELECT permission_key, enabled FROM user_permissions_materiales WHERE user_id = ?',
+      [id]
+    );
+    res.json(permissions);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// PUT /api/users/:id/permissions - Actualizar permisos de un usuario
+app.put('/api/users/:id/permissions', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { permissions } = req.body; // Array de { permission_key, enabled }
+    
+    console.log('Actualizando permisos para usuario:', id);
+    console.log('Permisos recibidos:', JSON.stringify(permissions));
+    
+    if (!permissions || !Array.isArray(permissions)) {
+      return res.status(400).json({ error: 'Se requiere un array de permisos' });
+    }
+    
+    // Eliminar permisos anteriores
+    await pool.query('DELETE FROM user_permissions_materiales WHERE user_id = ?', [id]);
+    
+    // Insertar nuevos permisos (solo los habilitados)
+    let insertCount = 0;
+    for (const perm of permissions) {
+      if (perm.enabled === true) {
+        await pool.query(
+          'INSERT INTO user_permissions_materiales (user_id, permission_key, enabled) VALUES (?, ?, 1)',
+          [id, perm.permission_key]
+        );
+        insertCount++;
+      }
+    }
+    
+    console.log('Permisos insertados:', insertCount);
+    res.json({ success: true, message: 'Permisos actualizados', count: insertCount });
+  } catch (err) {
+    console.error('Error actualizando permisos:', err);
+    next(err);
+  }
+});
+
+// ============================================
+// RUTAS - IQC (Inspección de Calidad Entrante)
+// ============================================
+
+// GET /api/iqc/lot/:labelCode - Buscar lote por código de etiqueta escaneada
+app.get('/api/iqc/lot/:labelCode', async (req, res, next) => {
+  try {
+    const { labelCode } = req.params;
+    
+    if (!labelCode || labelCode.length < 20) {
+      return res.status(400).json({ error: 'Código de etiqueta inválido' });
+    }
+
+    // Extraer receiving_lot_code (primeros 20 caracteres)
+    const receiving_lot_code = labelCode.substring(0, 20);
+
+    // Buscar información del lote desde control_material_almacen
+    const [materials] = await pool.query(`
+      SELECT 
+        receiving_lot_code,
+        codigo_material,
+        numero_parte,
+        cliente,
+        fecha_recibo,
+        SUM(cantidad_actual) as total_qty,
+        COUNT(*) as total_labels,
+        MIN(iqc_status) as iqc_status
+      FROM control_material_almacen 
+      WHERE receiving_lot_code = ?
+      GROUP BY receiving_lot_code, codigo_material, numero_parte, cliente, fecha_recibo
+    `, [receiving_lot_code]);
+
+    if (materials.length === 0) {
+      return res.status(404).json({ error: 'Lote no encontrado' });
+    }
+
+    const lotInfo = materials[0];
+
+    // Buscar si ya existe inspección para este lote
+    const [inspections] = await pool.query(
+      'SELECT * FROM iqc_inspection_lot WHERE receiving_lot_code = ?',
+      [receiving_lot_code]
+    );
+
+    let inspection = null;
+    if (inspections.length > 0) {
+      inspection = inspections[0];
+    }
+
+    res.json({
+      receiving_lot_code,
+      scanned_label: labelCode,
+      material_code: lotInfo.codigo_material,
+      part_number: lotInfo.numero_parte,
+      customer: lotInfo.cliente,
+      arrival_date: lotInfo.fecha_recibo,
+      total_qty_received: lotInfo.total_qty,
+      total_labels: lotInfo.total_labels,
+      current_iqc_status: lotInfo.iqc_status,
+      inspection: inspection
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/iqc/pending - Listar lotes pendientes de inspección
+app.get('/api/iqc/pending', async (req, res, next) => {
+  try {
+    const [rows] = await pool.query(`
+      SELECT 
+        il.*,
+        (SELECT COUNT(*) FROM control_material_almacen WHERE receiving_lot_code = il.receiving_lot_code) as label_count
+      FROM iqc_inspection_lot il
+      WHERE il.status IN ('Pending', 'InProgress')
+      ORDER BY il.created_at DESC
+    `);
+    res.json(rows);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/iqc/history - Historial de inspecciones cerradas
+app.get('/api/iqc/history', async (req, res, next) => {
+  try {
+    const { fecha_inicio, fecha_fin, texto } = req.query;
+    let query = `
+      SELECT 
+        id, receiving_lot_code, sample_label_code, sample_label_id,
+        material_code, part_number, customer, supplier, arrival_date,
+        total_qty_received, total_labels, 
+        sample_qty as sample_size, aql_level,
+        rohs_result, brightness_result, dimension_result, color_result, appearance_result,
+        disposition, status, inspector, inspector_id, remarks,
+        created_at, updated_at, closed_at
+      FROM iqc_inspection_lot 
+      WHERE status = 'Closed'
+    `;
+    const params = [];
+
+    if (fecha_inicio && fecha_fin) {
+      // Ampliar rango +1 día para compensar diferencia de zona horaria UTC
+      query += ' AND DATE(closed_at) BETWEEN ? AND DATE_ADD(?, INTERVAL 1 DAY)';
+      params.push(fecha_inicio, fecha_fin);
+    }
+    
+    if (texto) {
+      query += ` AND (
+        receiving_lot_code LIKE ? OR
+        material_code LIKE ? OR
+        part_number LIKE ? OR
+        customer LIKE ?
+      )`;
+      const searchTerm = `%${texto}%`;
+      params.push(searchTerm, searchTerm, searchTerm, searchTerm);
+    }
+
+    query += ' ORDER BY closed_at DESC';
+
+    const [rows] = await pool.query(query, params);
+    res.json(rows);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/iqc/count-pending - Contador de lotes pendientes (para badge)
+app.get('/api/iqc/count-pending', async (req, res, next) => {
+  try {
+    const [rows] = await pool.query(`
+      SELECT COUNT(*) as count FROM iqc_inspection_lot 
+      WHERE status IN ('Pending', 'InProgress')
+    `);
+    res.json({ count: rows[0].count });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/warehousing/count-iqc-pending - Contador de materiales en proceso IQC (para badge almacén)
+app.get('/api/warehousing/count-iqc-pending', async (req, res, next) => {
+  try {
+    const [rows] = await pool.query(`
+      SELECT COUNT(*) as count FROM control_material_almacen 
+      WHERE iqc_status IN ('Pending', 'InProgress')
+    `);
+    res.json({ count: rows[0].count });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/iqc/inspection/:id - Obtener una inspección por ID
+app.get('/api/iqc/inspection/:id', async (req, res, next) => {
+  try {
+    const [rows] = await pool.query(
+      'SELECT * FROM iqc_inspection_lot WHERE id = ?',
+      [req.params.id]
+    );
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'Inspección no encontrada' });
+    }
+    
+    // Obtener detalles de mediciones
+    const [details] = await pool.query(
+      'SELECT * FROM iqc_inspection_detail WHERE inspection_lot_id = ? ORDER BY sample_number, characteristic',
+      [req.params.id]
+    );
+    
+    res.json({ ...rows[0], details });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/iqc/inspection - Crear o iniciar inspección
+app.post('/api/iqc/inspection', async (req, res, next) => {
+  try {
+    console.log('📦 IQC Inspection body:', JSON.stringify(req.body, null, 2));
+    
+    const {
+      receiving_lot_code,
+      sample_label_code,
+      sample_label_id,
+      material_code,
+      part_number,
+      customer,
+      supplier,
+      arrival_date,
+      total_qty_received,
+      total_labels,
+      inspector,
+      inspector_id,
+      // Campos adicionales de inspección
+      sample_size,
+      sampling_level,
+      aql,
+      rohs_result,
+      brightness_result,
+      dimension_result,
+      color_result,
+      appearance_result,
+      comments
+    } = req.body;
+    
+    // Asegurar que inspector sea string
+    const inspectorName = typeof inspector === 'object' ? (inspector?.username || 'unknown') : (inspector || 'unknown');
+    const inspectorIdNum = typeof inspector_id === 'object' ? (inspector_id?.id || null) : (inspector_id || null);
+
+    // Convertir fecha ISO a formato MySQL (YYYY-MM-DD)
+    let mysqlArrivalDate = null;
+    if (arrival_date) {
+      const dateObj = new Date(arrival_date);
+      if (!isNaN(dateObj.getTime())) {
+        mysqlArrivalDate = dateObj.toISOString().split('T')[0];
+      }
+    }
+    
+    // Mantener resultados como Pass/Fail/Pending (sin convertir a OK/NG)
+    const mapResult = (val) => {
+      if (!val || val === 'Pending') return 'Pending';
+      if (val === 'Pass' || val === 'OK') return 'Pass';
+      if (val === 'Fail' || val === 'NG') return 'Fail';
+      if (val === 'NA') return 'NA';
+      return 'Pending';
+    };
+
+    // Verificar si ya existe - buscar el lote más reciente NO cerrado
+    const [existing] = await pool.query(
+      `SELECT id, COALESCE(lot_sequence, 1) as lot_sequence 
+       FROM iqc_inspection_lot 
+       WHERE receiving_lot_code = ? AND status != 'Closed'
+       ORDER BY lot_sequence DESC 
+       LIMIT 1`,
+      [receiving_lot_code]
+    );
+
+    let inspectionId;
+    let currentLotSequence = 1;
+
+    if (existing.length > 0) {
+      // Actualizar existente y cambiar a InProgress
+      inspectionId = existing[0].id;
+      currentLotSequence = existing[0].lot_sequence;
+      await pool.query(`
+        UPDATE iqc_inspection_lot 
+        SET sample_label_code = ?, sample_label_id = ?, inspector = ?, inspector_id = ?,
+            sample_qty = ?, aql_level = ?,
+            rohs_result = ?, brightness_result = ?, dimension_result = ?, color_result = ?, appearance_result = ?,
+            remarks = ?, status = 'InProgress', updated_at = NOW()
+        WHERE id = ?
+      `, [
+        sample_label_code, sample_label_id, inspectorName, inspectorIdNum,
+        sample_size || null, aql || sampling_level || null,
+        mapResult(rohs_result), mapResult(brightness_result), mapResult(dimension_result), mapResult(color_result), mapResult(appearance_result),
+        comments || null, inspectionId
+      ]);
+    } else {
+      // Buscar el máximo lot_sequence para este receiving_lot_code
+      const [maxSeq] = await pool.query(
+        'SELECT MAX(COALESCE(lot_sequence, 1)) as max_seq FROM iqc_inspection_lot WHERE receiving_lot_code = ?',
+        [receiving_lot_code]
+      );
+      currentLotSequence = (maxSeq[0].max_seq || 0) + 1;
+      
+      // Crear nuevo
+      const [result] = await pool.query(`
+        INSERT INTO iqc_inspection_lot (
+          receiving_lot_code, sample_label_code, sample_label_id,
+          material_code, part_number, customer, supplier, arrival_date,
+          total_qty_received, total_labels, inspector, inspector_id,
+          sample_qty, aql_level, rohs_result, brightness_result, dimension_result, color_result, appearance_result,
+          remarks, status, lot_sequence
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'InProgress', ?)
+      `, [
+        receiving_lot_code, sample_label_code, sample_label_id,
+        material_code, part_number, customer, supplier, mysqlArrivalDate,
+        total_qty_received, total_labels, inspectorName, inspectorIdNum,
+        sample_size || null, aql || sampling_level || null,
+        mapResult(rohs_result), mapResult(brightness_result), mapResult(dimension_result), mapResult(color_result), mapResult(appearance_result),
+        comments || null, currentLotSequence
+      ]);
+      inspectionId = result.insertId;
+    }
+
+    // Actualizar iqc_status SOLO de las etiquetas que pertenecen a este lote específico
+    await pool.query(`
+      UPDATE control_material_almacen 
+      SET iqc_status = 'InProgress' 
+      WHERE receiving_lot_code = ? AND COALESCE(inspection_lot_sequence, 1) = ?
+    `, [receiving_lot_code, currentLotSequence]);
+
+    res.status(201).json({
+      id: inspectionId,
+      message: 'Inspección iniciada exitosamente'
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// PATCH /api/iqc/inspection/:id/result - Actualizar un campo de resultado específico
+app.patch('/api/iqc/inspection/:id/result', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { field, result } = req.body;
+    
+    // Validar campo permitido
+    const allowedFields = ['rohs_result', 'brightness_result', 'dimension_result', 'color_result', 'appearance_result'];
+    if (!allowedFields.includes(field)) {
+      return res.status(400).json({ error: `Campo no permitido: ${field}` });
+    }
+    
+    // Validar resultado
+    const allowedResults = ['Pass', 'Fail', 'NA', 'Pending'];
+    if (!allowedResults.includes(result)) {
+      return res.status(400).json({ error: `Resultado no válido: ${result}` });
+    }
+    
+    const [updateResult] = await pool.query(
+      `UPDATE iqc_inspection_lot SET ${field} = ?, updated_at = NOW() WHERE id = ?`,
+      [result, id]
+    );
+    
+    if (updateResult.affectedRows === 0) {
+      return res.status(404).json({ error: 'Inspección no encontrada' });
+    }
+    
+    res.json({ message: 'Resultado actualizado exitosamente', field, result });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// PUT /api/iqc/inspection/:id - Actualizar inspección (resultados parciales)
+app.put('/api/iqc/inspection/:id', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const body = req.body;
+    
+    // Definir campos permitidos para actualización
+    const allowedFields = [
+      'sample_label_code', 'sample_label_id', 'aql_level', 'sample_qty',
+      'qty_sample_ok', 'qty_sample_ng', 'rohs_result', 'brightness_result',
+      'dimension_result', 'color_result', 'appearance_result', 'disposition', 'status',
+      'inspector', 'inspector_id', 'remarks'
+    ];
+    
+    // Filtrar solo campos permitidos
+    const fields = {};
+    for (const key of allowedFields) {
+      if (body[key] !== undefined) {
+        fields[key] = body[key];
+      }
+    }
+    
+    if (Object.keys(fields).length === 0) {
+      return res.status(400).json({ error: 'No hay campos para actualizar' });
+    }
+
+    const setClause = Object.keys(fields).map(key => `${key} = ?`).join(', ');
+    const values = [...Object.values(fields), id];
+
+    const [result] = await pool.query(
+      `UPDATE iqc_inspection_lot SET ${setClause}, updated_at = NOW() WHERE id = ?`,
+      values
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'Inspección no encontrada' });
+    }
+
+    res.json({ message: 'Inspección actualizada exitosamente' });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// PUT /api/iqc/close/:id - Cerrar inspección y propagar disposición
+app.put('/api/iqc/close/:id', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { 
+      disposition, remarks, inspector, inspector_id,
+      rohs_result, brightness_result, dimension_result, color_result, appearance_result
+    } = req.body;
+
+    console.log(`📋 Cerrando inspección ID: ${id}`);
+    console.log(`   Disposition: ${disposition}`);
+
+    if (!disposition) {
+      return res.status(400).json({ error: 'La disposición es requerida' });
+    }
+    
+    // Asegurar que inspector sea string
+    const inspectorName = typeof inspector === 'object' ? (inspector?.username || null) : (inspector || null);
+    const inspectorIdNum = typeof inspector_id === 'object' ? (inspector_id?.id || null) : (inspector_id || null);
+
+    // Obtener la inspección
+    const [inspections] = await pool.query(
+      'SELECT receiving_lot_code, COALESCE(lot_sequence, 1) as lot_sequence FROM iqc_inspection_lot WHERE id = ?',
+      [id]
+    );
+
+    if (inspections.length === 0) {
+      return res.status(404).json({ error: 'Inspección no encontrada' });
+    }
+
+    const receiving_lot_code = inspections[0].receiving_lot_code;
+    const lot_sequence = inspections[0].lot_sequence;
+
+    console.log(`   receiving_lot_code: ${receiving_lot_code}`);
+    console.log(`   lot_sequence: ${lot_sequence}`);
+
+    // Mapear disposición a iqc_status para las etiquetas
+    const statusMapping = {
+      'Release': 'Released',
+      'Return': 'Return',
+      'Scrap': 'Scrap',
+      'Hold': 'Hold',
+      'Rework': 'Rework'
+    };
+    const newIqcStatus = statusMapping[disposition] || 'Rejected';
+
+    // Actualizar la inspección
+    const [updateResult] = await pool.query(`
+      UPDATE iqc_inspection_lot 
+      SET disposition = ?, status = 'Closed', remarks = ?, 
+          inspector = COALESCE(?, inspector), inspector_id = COALESCE(?, inspector_id),
+          rohs_result = COALESCE(?, rohs_result),
+          brightness_result = COALESCE(?, brightness_result),
+          dimension_result = COALESCE(?, dimension_result),
+          color_result = COALESCE(?, color_result),
+          appearance_result = COALESCE(?, appearance_result),
+          closed_at = NOW(), updated_at = NOW()
+      WHERE id = ?
+    `, [disposition, remarks, inspectorName, inspectorIdNum, 
+        rohs_result, brightness_result, dimension_result, color_result, appearance_result, id]);
+
+    console.log(`   ✓ Inspección actualizada, rows affected: ${updateResult.affectedRows}`);
+
+    // Propagar el estado a todas las etiquetas del lote (solo las que pertenecen a esta secuencia)
+    console.log(`   📦 Actualizando etiquetas: receiving_lot_code=${receiving_lot_code}, lot_sequence=${lot_sequence}, newStatus=${newIqcStatus}`);
+    const [labelUpdateResult] = await pool.query(`
+      UPDATE control_material_almacen 
+      SET iqc_status = ? 
+      WHERE receiving_lot_code = ? AND COALESCE(inspection_lot_sequence, 1) = ?
+    `, [newIqcStatus, receiving_lot_code, lot_sequence]);
+    console.log(`   ✓ Etiquetas actualizadas, rows affected: ${labelUpdateResult.affectedRows}`);
+
+    // Si es Return, Scrap, Hold o Rework, actualizar ubicación
+    if (['Return', 'Scrap', 'Hold', 'Rework'].includes(disposition)) {
+      const locationMapping = {
+        'Return': 'IQC-RETURN',
+        'Scrap': 'IQC-SCRAP',
+        'Hold': 'IQC-HOLD',
+        'Rework': 'IQC-REWORK'
+      };
+      await pool.query(`
+        UPDATE control_material_almacen 
+        SET ubicacion_salida = ? 
+        WHERE receiving_lot_code = ? AND COALESCE(inspection_lot_sequence, 1) = ?
+      `, [locationMapping[disposition], receiving_lot_code, lot_sequence]);
+    }
+
+    res.json({ 
+      message: 'Inspección cerrada exitosamente',
+      iqc_status: newIqcStatus,
+      labels_updated: true
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/iqc/detail - Agregar detalle de medición
+app.post('/api/iqc/detail', async (req, res, next) => {
+  try {
+    const {
+      inspection_lot_id,
+      sample_number,
+      characteristic,
+      test_name,
+      measured_value,
+      unit,
+      min_spec,
+      max_spec,
+      result,
+      remarks,
+      measured_by
+    } = req.body;
+
+    const [insertResult] = await pool.query(`
+      INSERT INTO iqc_inspection_detail (
+        inspection_lot_id, sample_number, characteristic, test_name,
+        measured_value, unit, min_spec, max_spec, result, remarks, measured_by
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [
+      inspection_lot_id, sample_number, characteristic, test_name,
+      measured_value, unit, min_spec, max_spec, result, remarks, measured_by
+    ]);
+
+    res.status(201).json({
+      id: insertResult.insertId,
+      message: 'Detalle agregado exitosamente'
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/iqc/detail/:inspectionId - Obtener detalles de una inspección
+app.get('/api/iqc/detail/:inspectionId', async (req, res, next) => {
+  try {
+    const [rows] = await pool.query(
+      'SELECT * FROM iqc_inspection_detail WHERE inspection_lot_id = ? ORDER BY sample_number, characteristic',
+      [req.params.inspectionId]
+    );
+    res.json(rows);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// DELETE /api/iqc/detail/:id - Eliminar detalle de medición
+app.delete('/api/iqc/detail/:id', async (req, res, next) => {
+  try {
+    const [result] = await pool.query(
+      'DELETE FROM iqc_inspection_detail WHERE id = ?',
+      [req.params.id]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'Detalle no encontrado' });
+    }
+
+    res.json({ message: 'Detalle eliminado exitosamente' });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/iqc/:id/measurements - Guardar mediciones en batch
+app.post('/api/iqc/:id/measurements', async (req, res, next) => {
+  try {
+    const inspectionId = req.params.id;
+    const { measurements } = req.body;
+    // measurements: [{ type: 'brightness', sampleNum: 1, result: 'Pass', value: '123.5' }, ...]
+    
+    if (!measurements || !Array.isArray(measurements)) {
+      return res.status(400).json({ error: 'measurements array requerido' });
+    }
+    
+    // Primero eliminar mediciones existentes de esta inspección
+    await pool.query('DELETE FROM iqc_inspection_detail WHERE inspection_lot_id = ?', [inspectionId]);
+    
+    // Insertar nuevas mediciones
+    for (const m of measurements) {
+      if (m.result && m.result !== 'Pending') {
+        await pool.query(`
+          INSERT INTO iqc_inspection_detail 
+          (inspection_lot_id, sample_number, characteristic, measured_value, result, measured_at)
+          VALUES (?, ?, ?, ?, ?, NOW())
+        `, [
+          inspectionId,
+          m.sampleNum,
+          m.type,
+          m.value || null,
+          m.result
+        ]);
+      }
+    }
+    
+    res.json({ success: true, message: 'Mediciones guardadas exitosamente' });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/iqc/:id/measurements - Obtener mediciones agrupadas por tipo
+app.get('/api/iqc/:id/measurements', async (req, res, next) => {
+  try {
+    const inspectionId = req.params.id;
+    
+    const [rows] = await pool.query(`
+      SELECT id, sample_number as sampleNum, characteristic as type, measured_value as value, result
+      FROM iqc_inspection_detail 
+      WHERE inspection_lot_id = ?
+      ORDER BY characteristic, sample_number
+    `, [inspectionId]);
+    
+    // Agrupar por tipo
+    const grouped = {
+      brightness: [],
+      dimension: [],
+      color: [],
+      appearance: []
+    };
+    
+    for (const row of rows) {
+      const type = row.type?.toLowerCase() || 'other';
+      if (grouped[type]) {
+        grouped[type].push({
+          sampleNum: row.sampleNum,
+          result: row.result,
+          value: row.value || ''
+        });
+      }
+    }
+    
+    res.json({ success: true, data: grouped });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ============================================
+// QUALITY SPECS - Especificaciones de Calidad
+// ============================================
+
+// Función de validación de specs
+function validateSpecItem(item) {
+  const errors = [];
+  
+  if (!item.numero_parte) errors.push('numero_parte requerido');
+  if (!item.spec_code) errors.push('spec_code requerido');
+  if (!item.inspection_item) errors.push('inspection_item requerido');
+  
+  // BRIGHTNESS y DIMENSION requieren valores numéricos y son bloqueantes
+  if (['BRIGHTNESS', 'DIMENSION'].includes(item.spec_code)) {
+    item.measure_type = 'Continuous';
+    item.is_blocking = 1;
+    if (item.target_value === null || item.target_value === undefined || item.target_value === '') 
+      errors.push(`${item.spec_code} requiere target_value`);
+    if (item.lsl === null || item.lsl === undefined || item.lsl === '') 
+      errors.push(`${item.spec_code} requiere LSL`);
+    if (item.usl === null || item.usl === undefined || item.usl === '') 
+      errors.push(`${item.spec_code} requiere USL`);
+  }
+  
+  // ROHS es Discrete y NO bloqueante
+  if (item.spec_code === 'ROHS') {
+    item.measure_type = 'Discrete';
+    item.is_blocking = 0;
+  }
+  
+  // COLOR, APPEARANCE, FUNCTION son Discrete
+  if (['COLOR', 'APPEARANCE', 'FUNCTION', 'OTHER'].includes(item.spec_code)) {
+    item.measure_type = 'Discrete';
+  }
+  
+  return errors;
+}
+
+// GET - Listar specs con filtros
+app.get('/api/quality-specs', async (req, res, next) => {
+  try {
+    const { numero_parte, spec_code, is_active } = req.query;
+    let query = `
+      SELECT qs.*, m.codigo_material, m.clasificacion 
+      FROM quality_specs qs
+      LEFT JOIN materiales m ON qs.numero_parte = m.numero_parte
+      WHERE 1=1
+    `;
+    const params = [];
+    
+    if (numero_parte) {
+      query += ' AND qs.numero_parte LIKE ?';
+      params.push(`%${numero_parte}%`);
+    }
+    if (spec_code) {
+      query += ' AND qs.spec_code = ?';
+      params.push(spec_code);
+    }
+    if (is_active !== undefined && is_active !== '') {
+      query += ' AND qs.is_active = ?';
+      params.push(is_active);
+    }
+    
+    query += ' ORDER BY qs.numero_parte, qs.order_index';
+    const [rows] = await pool.query(query, params);
+    res.json(rows);
+  } catch (err) { next(err); }
+});
+
+// GET - Specs por part number (para inspección)
+app.get('/api/quality-specs/part/:partNumber', async (req, res, next) => {
+  try {
+    const [rows] = await pool.query(
+      'SELECT * FROM quality_specs WHERE numero_parte = ? AND is_active = 1 ORDER BY order_index',
+      [req.params.partNumber]
+    );
+    res.json(rows);
+  } catch (err) { next(err); }
+});
+
+// GET - Obtener spec por ID
+app.get('/api/quality-specs/:id', async (req, res, next) => {
+  try {
+    const [rows] = await pool.query('SELECT * FROM quality_specs WHERE id = ?', [req.params.id]);
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'Spec no encontrada' });
+    }
+    res.json(rows[0]);
+  } catch (err) { next(err); }
+});
+
+// POST - Crear spec
+app.post('/api/quality-specs', async (req, res, next) => {
+  try {
+    const spec = req.body;
+    const errors = validateSpecItem(spec);
+    if (errors.length > 0) {
+      return res.status(400).json({ error: errors.join(', ') });
+    }
+    
+    // Limpiar campos vacíos
+    if (spec.target_value === '') spec.target_value = null;
+    if (spec.lsl === '') spec.lsl = null;
+    if (spec.usl === '') spec.usl = null;
+    
+    const [result] = await pool.query('INSERT INTO quality_specs SET ?', spec);
+    res.json({ id: result.insertId, ...spec });
+  } catch (err) { next(err); }
+});
+
+// PUT - Actualizar spec
+app.put('/api/quality-specs/:id', async (req, res, next) => {
+  try {
+    const spec = req.body;
+    delete spec.id; // No actualizar el ID
+    delete spec.created_at;
+    
+    const errors = validateSpecItem(spec);
+    if (errors.length > 0) {
+      return res.status(400).json({ error: errors.join(', ') });
+    }
+    
+    // Limpiar campos vacíos
+    if (spec.target_value === '') spec.target_value = null;
+    if (spec.lsl === '') spec.lsl = null;
+    if (spec.usl === '') spec.usl = null;
+    
+    await pool.query('UPDATE quality_specs SET ? WHERE id = ?', [spec, req.params.id]);
+    res.json({ success: true });
+  } catch (err) { next(err); }
+});
+
+// DELETE - Soft delete
+app.delete('/api/quality-specs/:id', async (req, res, next) => {
+  try {
+    await pool.query('UPDATE quality_specs SET is_active = 0 WHERE id = ?', [req.params.id]);
+    res.json({ success: true });
+  } catch (err) { next(err); }
+});
+
+// POST - Carga masiva desde Excel
+app.post('/api/quality-specs/bulk-upload', async (req, res, next) => {
+  try {
+    const { specs, created_by } = req.body;
+    let inserted = 0, updated = 0, errors = [];
+    
+    for (const spec of specs) {
+      try {
+        spec.created_by = created_by;
+        spec.is_active = 1;
+        
+        const validationErrors = validateSpecItem(spec);
+        if (validationErrors.length > 0) {
+          errors.push({ row: `${spec.numero_parte} - ${spec.inspection_item}`, errors: validationErrors });
+          continue;
+        }
+        
+        // Limpiar campos vacíos
+        if (spec.target_value === '') spec.target_value = null;
+        if (spec.lsl === '') spec.lsl = null;
+        if (spec.usl === '') spec.usl = null;
+        
+        // Upsert: si existe numero_parte + spec_code + inspection_item, actualizar
+        const [existing] = await pool.query(
+          'SELECT id FROM quality_specs WHERE numero_parte = ? AND spec_code = ? AND inspection_item = ?',
+          [spec.numero_parte, spec.spec_code, spec.inspection_item]
+        );
+        
+        if (existing.length > 0) {
+          delete spec.created_by;
+          await pool.query('UPDATE quality_specs SET ? WHERE id = ?', [spec, existing[0].id]);
+          updated++;
+        } else {
+          await pool.query('INSERT INTO quality_specs SET ?', spec);
+          inserted++;
+        }
+      } catch (e) {
+        errors.push({ row: spec.numero_parte || 'unknown', errors: [e.message] });
+      }
+    }
+    
+    res.json({ inserted, updated, errors, total: specs.length });
+  } catch (err) { next(err); }
+});
+
+// GET - Validar si lote puede liberarse
+app.get('/api/iqc/inspection/:id/can-release', async (req, res, next) => {
+  try {
+    const [blockingNGs] = await pool.query(`
+      SELECT ir.id, ir.judgment, qs.spec_code, qs.inspection_item
+      FROM iqc_inspection_result ir
+      JOIN quality_specs qs ON ir.spec_id = qs.id
+      WHERE ir.inspection_lot_id = ? AND ir.judgment = 'NG' AND qs.is_blocking = 1
+    `, [req.params.id]);
+    
+    res.json({
+      canRelease: blockingNGs.length === 0,
+      blockingItems: blockingNGs
+    });
+  } catch (err) { next(err); }
+});
+
+// GET - Materiales que requieren IQC
+app.get('/api/materiales/iqc-required', async (req, res, next) => {
+  try {
+    const [rows] = await pool.query(
+      'SELECT numero_parte, codigo_material, clasificacion FROM materiales WHERE iqc_required = 1'
+    );
+    res.json(rows);
+  } catch (err) { next(err); }
+});
+
+// PUT - Marcar material como iqc_required
+app.put('/api/materiales/:numeroParte/iqc-required', async (req, res, next) => {
+  try {
+    const { iqc_required } = req.body;
+    await pool.query(
+      'UPDATE materiales SET iqc_required = ? WHERE numero_parte = ?',
+      [iqc_required ? 1 : 0, req.params.numeroParte]
+    );
+    res.json({ success: true });
+  } catch (err) { next(err); }
+});
+
+// POST - Copiar specs de un part number a otro
+app.post('/api/quality-specs/copy', async (req, res, next) => {
+  try {
+    const { from_part, to_part, created_by } = req.body;
+    
+    // Verificar que el part number destino existe
+    const [targetMaterial] = await pool.query(
+      'SELECT numero_parte FROM materiales WHERE numero_parte = ?', [to_part]
+    );
+    if (targetMaterial.length === 0) {
+      return res.status(400).json({ error: 'Part number destino no existe en materiales' });
+    }
+    
+    // Obtener specs del origen
+    const [sourceSpecs] = await pool.query(
+      'SELECT * FROM quality_specs WHERE numero_parte = ? AND is_active = 1', [from_part]
+    );
+    
+    if (sourceSpecs.length === 0) {
+      return res.status(400).json({ error: 'No hay specs en el part number origen' });
+    }
+    
+    let inserted = 0;
+    for (const spec of sourceSpecs) {
+      // Verificar si ya existe
+      const [existing] = await pool.query(
+        'SELECT id FROM quality_specs WHERE numero_parte = ? AND spec_code = ? AND inspection_item = ?',
+        [to_part, spec.spec_code, spec.inspection_item]
+      );
+      
+      if (existing.length === 0) {
+        delete spec.id;
+        spec.numero_parte = to_part;
+        spec.created_by = created_by;
+        spec.created_at = new Date();
+        await pool.query('INSERT INTO quality_specs SET ?', spec);
+        inserted++;
+      }
+    }
+    
+    res.json({ copied: inserted, total: sourceSpecs.length });
+  } catch (err) { next(err); }
+});
+
+// ============================================
+// RUTAS - IQC CONFIGURATION BY MATERIAL
+// ============================================
+
+// GET - Lista materiales con configuración IQC
+app.get('/api/materiales/iqc-config', async (req, res, next) => {
+  try {
+    const [rows] = await pool.query(`
+      SELECT 
+        numero_parte,
+        codigo_material,
+        clasificacion,
+        especificacion_material,
+        COALESCE(iqc_required, 0) as iqc_required,
+        -- RoHS (solo enabled, sin sampling/aql)
+        COALESCE(rohs_enabled, 0) as rohs_enabled,
+        -- Brightness
+        COALESCE(brightness_enabled, 0) as brightness_enabled,
+        COALESCE(brightness_sampling_level, 'S-1') as brightness_sampling_level,
+        COALESCE(brightness_aql_level, '2.5') as brightness_aql_level,
+        brightness_target,
+        brightness_lsl,
+        brightness_usl,
+        -- Dimension (mm)
+        COALESCE(dimension_enabled, 0) as dimension_enabled,
+        COALESCE(dimension_sampling_level, 'S-1') as dimension_sampling_level,
+        COALESCE(dimension_aql_level, '2.5') as dimension_aql_level,
+        dimension_length,
+        dimension_length_tol,
+        dimension_width,
+        dimension_width_tol,
+        dimension_height,
+        dimension_height_tol,
+        -- Color
+        COALESCE(color_enabled, 0) as color_enabled,
+        COALESCE(color_sampling_level, 'S-1') as color_sampling_level,
+        COALESCE(color_aql_level, '2.5') as color_aql_level,
+        color_spec,
+        -- Appearance
+        COALESCE(appearance_enabled, 0) as appearance_enabled,
+        COALESCE(appearance_sampling_level, 'S-1') as appearance_sampling_level,
+        COALESCE(appearance_aql_level, '2.5') as appearance_aql_level,
+        appearance_spec
+      FROM materiales
+      ORDER BY iqc_required DESC, numero_parte
+    `);
+    res.json(rows);
+  } catch (err) { next(err); }
+});
+
+// GET - Obtener configuración IQC de un material específico por part number
+app.get('/api/materiales/:partNumber/iqc-config', async (req, res, next) => {
+  try {
+    const { partNumber } = req.params;
+    const [rows] = await pool.query(`
+      SELECT 
+        numero_parte,
+        COALESCE(iqc_required, 0) as iqc_required,
+        COALESCE(rohs_enabled, 0) as rohs_enabled,
+        COALESCE(brightness_enabled, 0) as brightness_enabled,
+        COALESCE(brightness_sampling_level, 'S-1') as brightness_sampling_level,
+        COALESCE(brightness_aql_level, '2.5') as brightness_aql_level,
+        brightness_target, brightness_lsl, brightness_usl,
+        COALESCE(dimension_enabled, 0) as dimension_enabled,
+        COALESCE(dimension_sampling_level, 'S-1') as dimension_sampling_level,
+        COALESCE(dimension_aql_level, '2.5') as dimension_aql_level,
+        dimension_length, dimension_length_tol,
+        dimension_width, dimension_width_tol,
+        dimension_height, dimension_height_tol,
+        COALESCE(color_enabled, 0) as color_enabled,
+        COALESCE(color_sampling_level, 'S-1') as color_sampling_level,
+        COALESCE(color_aql_level, '2.5') as color_aql_level,
+        color_spec,
+        COALESCE(appearance_enabled, 0) as appearance_enabled,
+        COALESCE(appearance_sampling_level, 'S-1') as appearance_sampling_level,
+        COALESCE(appearance_aql_level, '2.5') as appearance_aql_level,
+        appearance_spec
+      FROM materiales
+      WHERE numero_parte = ?
+    `, [partNumber]);
+    
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'Material not found' });
+    }
+    
+    res.json(rows[0]);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// PUT - Actualizar configuración IQC de un material
+app.put('/api/materiales/:numeroParte/iqc-config', async (req, res, next) => {
+  try {
+    const { numeroParte } = req.params;
+    const body = req.body;
+    
+    // Lista de campos permitidos
+    const allowedFields = [
+      'iqc_required',
+      // RoHS
+      'rohs_enabled', 'rohs_sampling_level', 'rohs_aql_level',
+      // Brightness
+      'brightness_enabled', 'brightness_sampling_level', 'brightness_aql_level',
+      'brightness_target', 'brightness_lsl', 'brightness_usl',
+      // Dimension
+      'dimension_enabled', 'dimension_sampling_level', 'dimension_aql_level',
+      'dimension_length', 'dimension_length_tol',
+      'dimension_width', 'dimension_width_tol',
+      'dimension_height', 'dimension_height_tol',
+      // Color
+      'color_enabled', 'color_sampling_level', 'color_aql_level', 'color_spec',
+      // Appearance
+      'appearance_enabled', 'appearance_sampling_level', 'appearance_aql_level', 'appearance_spec',
+      // Legacy
+      'sampling_level', 'aql_level', 'dimension_spec'
+    ];
+    
+    // Construir update dinámico
+    const updates = [];
+    const values = [];
+    
+    for (const field of allowedFields) {
+      if (body[field] !== undefined) {
+        updates.push(`${field} = ?`);
+        values.push(body[field]);
+      }
+    }
+    
+    if (updates.length === 0) {
+      return res.status(400).json({ success: false, message: 'No fields to update' });
+    }
+    
+    values.push(numeroParte);
+    
+    await pool.query(
+      `UPDATE materiales SET ${updates.join(', ')} WHERE numero_parte = ?`,
+      values
+    );
+    
+    res.json({ success: true, message: 'Configuration updated' });
+  } catch (err) { next(err); }
+});
+
+// POST - Bulk update configuración IQC
+app.post('/api/materiales/iqc-config/bulk', async (req, res, next) => {
+  try {
+    const { configs } = req.body;
+    if (!Array.isArray(configs)) {
+      return res.status(400).json({ error: 'configs must be an array' });
+    }
+    
+    let updated = 0;
+    const errors = [];
+    
+    for (const config of configs) {
+      try {
+        if (!config.numero_parte) continue;
+        
+        const updates = [];
+        const values = [];
+        
+        if (config.iqc_required !== undefined) { updates.push('iqc_required = ?'); values.push(config.iqc_required); }
+        if (config.sampling_level !== undefined) { updates.push('sampling_level = ?'); values.push(config.sampling_level); }
+        if (config.aql_level !== undefined) { updates.push('aql_level = ?'); values.push(config.aql_level); }
+        if (config.rohs_enabled !== undefined) { updates.push('rohs_enabled = ?'); values.push(config.rohs_enabled); }
+        if (config.brightness_enabled !== undefined) { updates.push('brightness_enabled = ?'); values.push(config.brightness_enabled); }
+        if (config.dimension_enabled !== undefined) { updates.push('dimension_enabled = ?'); values.push(config.dimension_enabled); }
+        if (config.color_enabled !== undefined) { updates.push('color_enabled = ?'); values.push(config.color_enabled); }
+        if (config.brightness_target !== undefined) { updates.push('brightness_target = ?'); values.push(config.brightness_target); }
+        if (config.brightness_lsl !== undefined) { updates.push('brightness_lsl = ?'); values.push(config.brightness_lsl); }
+        if (config.brightness_usl !== undefined) { updates.push('brightness_usl = ?'); values.push(config.brightness_usl); }
+        if (config.dimension_spec !== undefined) { updates.push('dimension_spec = ?'); values.push(config.dimension_spec); }
+        
+        if (updates.length > 0) {
+          values.push(config.numero_parte);
+          await pool.query(
+            `UPDATE materiales SET ${updates.join(', ')} WHERE numero_parte = ?`,
+            values
+          );
+          updated++;
+        }
+      } catch (e) {
+        errors.push({ numero_parte: config.numero_parte, error: e.message });
+      }
+    }
+    
+    res.json({ success: true, updated, errors, total: configs.length });
+  } catch (err) { next(err); }
+});
+
+// ============================================
+// QUARANTINE (CUARENTENA) - CRUD
+// ============================================
+
+// Crear tablas de cuarentena si no existen
+async function createQuarantineTablesIfNotExist() {
+  try {
+    // Tabla principal de cuarentena
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS quarantine (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        warehousing_id INT NULL,
+        codigo_material_recibido VARCHAR(50) NOT NULL,
+        part_number VARCHAR(150) NULL,
+        material_code TEXT NULL,
+        cantidad INT DEFAULT 0,
+        especificacion TEXT NULL,
+        ubicacion_original VARCHAR(50) NULL,
+        reason TEXT NULL,
+        status ENUM('InQuarantine','Released','Scrapped','Returned') DEFAULT 'InQuarantine',
+        created_by_id INT NULL,
+        created_by_name VARCHAR(100) NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        closed_at DATETIME NULL,
+        closed_by_id INT NULL,
+        closed_by_name VARCHAR(100) NULL,
+        INDEX idx_quarantine_status (status),
+        INDEX idx_quarantine_codigo (codigo_material_recibido),
+        INDEX idx_quarantine_part (part_number)
+      )
+    `);
+    
+    // Tabla de historial de cambios en cuarentena
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS quarantine_history (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        quarantine_id INT NOT NULL,
+        action ENUM('Created','StatusChanged','CommentAdded','Released','Scrapped','Returned') NOT NULL,
+        old_status VARCHAR(50) NULL,
+        new_status VARCHAR(50) NULL,
+        comments TEXT NULL,
+        action_by_id INT NULL,
+        action_by_name VARCHAR(100) NULL,
+        action_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_qh_quarantine (quarantine_id),
+        FOREIGN KEY (quarantine_id) REFERENCES quarantine(id) ON DELETE CASCADE
+      )
+    `);
+    
+    // Agregar columna en_cuarentena a control_material_almacen
+    const [cols] = await pool.query(`
+      SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS 
+      WHERE TABLE_SCHEMA = DATABASE() 
+      AND TABLE_NAME = 'control_material_almacen' 
+      AND COLUMN_NAME = 'en_cuarentena'
+    `);
+    
+    if (cols.length === 0) {
+      await pool.query(`ALTER TABLE control_material_almacen ADD COLUMN en_cuarentena TINYINT DEFAULT 0`);
+      console.log('✓ Columna "en_cuarentena" agregada a control_material_almacen');
+    }
+    
+    console.log('✓ Tablas de cuarentena verificadas/creadas');
+  } catch (err) {
+    console.error('Error creando tablas de cuarentena:', err.message);
+  }
+}
+createQuarantineTablesIfNotExist();
+
+// GET - Obtener materiales en cuarentena
+app.get('/api/quarantine', async (req, res, next) => {
+  try {
+    const { status } = req.query;
+    let query = `SELECT * FROM quarantine`;
+    const params = [];
+    
+    if (status) {
+      query += ` WHERE status = ?`;
+      params.push(status);
+    }
+    
+    query += ` ORDER BY created_at DESC`;
+    
+    const [rows] = await pool.query(query, params);
+    res.json(rows);
+  } catch (err) { next(err); }
+});
+
+// GET - Obtener historial de un item de cuarentena
+app.get('/api/quarantine/:id/history', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const [rows] = await pool.query(
+      `SELECT * FROM quarantine_history WHERE quarantine_id = ? ORDER BY action_at DESC`,
+      [id]
+    );
+    res.json(rows);
+  } catch (err) { next(err); }
+});
+
+// GET - Historial completo de cuarentena (items cerrados)
+app.get('/api/quarantine/history/all', async (req, res, next) => {
+  try {
+    const { fecha_inicio, fecha_fin } = req.query;
+    let query = `SELECT q.*, 
+                   (SELECT COUNT(*) FROM quarantine_history WHERE quarantine_id = q.id) as history_count
+                 FROM quarantine q 
+                 WHERE q.status != 'InQuarantine'`;
+    const params = [];
+    
+    if (fecha_inicio && fecha_fin) {
+      query += ` AND DATE(q.closed_at) BETWEEN ? AND ?`;
+      params.push(fecha_inicio, fecha_fin);
+    }
+    
+    query += ` ORDER BY q.closed_at DESC`;
+    
+    const [rows] = await pool.query(query, params);
+    res.json(rows);
+  } catch (err) { next(err); }
+});
+
+// POST - Enviar materiales a cuarentena (bulk)
+app.post('/api/quarantine/send', async (req, res, next) => {
+  try {
+    const { items, reason, userId, userName } = req.body;
+    
+    if (!items || !Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: 'No items provided' });
+    }
+    
+    const created = [];
+    const errors = [];
+    
+    for (const item of items) {
+      try {
+        // Verificar que el material existe y no está ya en cuarentena
+        const [existing] = await pool.query(
+          `SELECT id, en_cuarentena FROM control_material_almacen WHERE codigo_material_recibido = ?`,
+          [item.codigo_material_recibido]
+        );
+        
+        if (existing.length === 0) {
+          errors.push({ codigo: item.codigo_material_recibido, error: 'Material not found' });
+          continue;
+        }
+        
+        if (existing[0].en_cuarentena === 1) {
+          errors.push({ codigo: item.codigo_material_recibido, error: 'Already in quarantine' });
+          continue;
+        }
+        
+        // Insertar en cuarentena
+        const [result] = await pool.query(
+          `INSERT INTO quarantine (
+            warehousing_id, codigo_material_recibido, part_number, material_code,
+            cantidad, especificacion, ubicacion_original, reason,
+            created_by_id, created_by_name
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            item.id || existing[0].id,
+            item.codigo_material_recibido,
+            item.numero_parte || item.part_number,
+            item.codigo_material || item.material_code,
+            item.cantidad_actual || item.cantidad || 0,
+            item.especificacion,
+            item.ubicacion_salida || item.ubicacion_original,
+            reason,
+            userId,
+            userName
+          ]
+        );
+        
+        const quarantineId = result.insertId;
+        
+        // Registrar en historial
+        await pool.query(
+          `INSERT INTO quarantine_history (quarantine_id, action, new_status, comments, action_by_id, action_by_name)
+           VALUES (?, 'Created', 'InQuarantine', ?, ?, ?)`,
+          [quarantineId, reason, userId, userName]
+        );
+        
+        // Marcar material como en cuarentena
+        await pool.query(
+          `UPDATE control_material_almacen SET en_cuarentena = 1 WHERE codigo_material_recibido = ?`,
+          [item.codigo_material_recibido]
+        );
+        
+        created.push({ id: quarantineId, codigo: item.codigo_material_recibido });
+      } catch (e) {
+        errors.push({ codigo: item.codigo_material_recibido, error: e.message });
+      }
+    }
+    
+    res.status(201).json({ 
+      success: true, 
+      created: created.length, 
+      errors: errors.length,
+      createdItems: created,
+      errorItems: errors 
+    });
+  } catch (err) { next(err); }
+});
+
+// PUT - Actualizar estado de cuarentena
+app.put('/api/quarantine/:id', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { status, comments, userId, userName } = req.body;
+    
+    // Obtener estado actual y datos del material
+    const [current] = await pool.query(
+      `SELECT status, codigo_material_recibido, cantidad FROM quarantine WHERE id = ?`, 
+      [id]
+    );
+    if (current.length === 0) {
+      return res.status(404).json({ error: 'Quarantine item not found' });
+    }
+    
+    const oldStatus = current[0].status;
+    const codigo = current[0].codigo_material_recibido;
+    const cantidad = current[0].cantidad || 0;
+    
+    // Determinar acción
+    let action = 'StatusChanged';
+    if (status === 'Released') action = 'Released';
+    else if (status === 'Scrapped') action = 'Scrapped';
+    else if (status === 'Returned') action = 'Returned';
+    
+    // Actualizar cuarentena
+    const updateFields = ['updated_at = NOW()'];
+    const updateValues = [];
+    
+    if (status) {
+      updateFields.push('status = ?');
+      updateValues.push(status);
+      
+      if (status !== 'InQuarantine') {
+        updateFields.push('closed_at = NOW()', 'closed_by_id = ?', 'closed_by_name = ?');
+        updateValues.push(userId, userName);
+      }
+    }
+    
+    updateValues.push(id);
+    await pool.query(`UPDATE quarantine SET ${updateFields.join(', ')} WHERE id = ?`, updateValues);
+    
+    // Registrar en historial
+    await pool.query(
+      `INSERT INTO quarantine_history (quarantine_id, action, old_status, new_status, comments, action_by_id, action_by_name)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [id, action, oldStatus, status || oldStatus, comments, userId, userName]
+    );
+    
+    // Si se libera, quitar marca de cuarentena
+    if (status === 'Released') {
+      await pool.query(
+        `UPDATE control_material_almacen SET en_cuarentena = 0 WHERE codigo_material_recibido = ?`,
+        [codigo]
+      );
+    }
+    
+    // Si se desecha o devuelve, sacar del inventario
+    if (status === 'Scrapped' || status === 'Returned') {
+      // Quitar marca de cuarentena y marcar como desecho
+      await pool.query(
+        `UPDATE control_material_almacen SET en_cuarentena = 0, estado_desecho = 1 WHERE codigo_material_recibido = ?`,
+        [codigo]
+      );
+      
+      // Actualizar total_salida para que stock_actual quede en 0 (stock_actual es columna generada)
+      await pool.query(
+        `UPDATE inventario_lotes SET total_salida = total_entrada WHERE codigo_material_recibido = ?`,
+        [codigo]
+      );
+    }
+    
+    res.json({ success: true, message: 'Quarantine updated' });
+  } catch (err) { next(err); }
+});
+
+// POST - Agregar comentario a cuarentena
+app.post('/api/quarantine/:id/comment', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { comments, userId, userName } = req.body;
+    
+    // Verificar que existe
+    const [current] = await pool.query(`SELECT status FROM quarantine WHERE id = ?`, [id]);
+    if (current.length === 0) {
+      return res.status(404).json({ error: 'Quarantine item not found' });
+    }
+    
+    // Registrar comentario en historial
+    await pool.query(
+      `INSERT INTO quarantine_history (quarantine_id, action, old_status, new_status, comments, action_by_id, action_by_name)
+       VALUES (?, 'CommentAdded', ?, ?, ?, ?, ?)`,
+      [id, current[0].status, current[0].status, comments, userId, userName]
+    );
+    
+    // Actualizar timestamp
+    await pool.query(`UPDATE quarantine SET updated_at = NOW() WHERE id = ?`, [id]);
+    
+    res.json({ success: true, message: 'Comment added' });
+  } catch (err) { next(err); }
+});
+
+// ============================================
+// Middleware de errores
+// ============================================
+app.use((err, req, res, next) => {
+  console.error('Error:', err.message);
+  res.status(500).json({ error: 'Error interno del servidor', details: err.message });
+});
+
+// ============================================
+// Iniciar servidor
+// ============================================
+const PORT = process.env.PORT || 3000;
+
+app.listen(PORT, async () => {
+  console.log(`🚀 API escuchando en http://localhost:${PORT}`);
+  await testConnection();
+  await runMigrations(); // Ejecutar migraciones desde utils/dbMigrations.js
+});
