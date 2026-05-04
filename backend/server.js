@@ -88,6 +88,7 @@ const shortageRoutes = require('./routes/shortage.routes');
 
 // Fase 13: PCB Inventory (Inventario de PCBs por escaneo)
 const pcbInventoryRoutes = require('./routes/pcb-inventory.routes');
+const pcbDefectsRoutes = require('./routes/pcb-defects.routes');
 
 const app = express();
 const jsonParser = express.json({
@@ -178,6 +179,7 @@ app.use('/api/shortage', shortageRoutes);
 
 // Fase 13: PCB Inventory (Inventario de PCBs por escaneo)
 app.use('/api/pcb-inventory', pcbInventoryRoutes);
+app.use('/api/pcb-defects', pcbDefectsRoutes);
 
 // ============================================
 // RUTA DE PRUEBA (Health Check)

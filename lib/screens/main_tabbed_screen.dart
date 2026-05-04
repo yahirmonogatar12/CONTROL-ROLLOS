@@ -20,6 +20,7 @@ import 'package:material_warehousing_flutter/screens/material_shortage/material_
 import 'package:material_warehousing_flutter/screens/pcb_entrada/pcb_entrada_screen.dart';
 import 'package:material_warehousing_flutter/screens/pcb_salida/pcb_salida_screen.dart';
 import 'package:material_warehousing_flutter/screens/pcb_inventario/pcb_inventario_screen.dart';
+import 'package:material_warehousing_flutter/screens/pcb_defects/pcb_defects_screen.dart';
 import 'package:material_warehousing_flutter/screens/smt_requests/smt_requests_screen.dart';
 import 'package:material_warehousing_flutter/core/widgets/smt_notification_overlay.dart';
 import 'dart:async';
@@ -29,7 +30,7 @@ class _TabInfo {
   final String key;
   final String titleKey;
   final int Function()? getBadgeCount;
-  
+
   _TabInfo({
     required this.key,
     required this.titleKey,
@@ -40,9 +41,9 @@ class _TabInfo {
 class MainTabbedScreen extends StatefulWidget {
   final LanguageProvider languageProvider;
   final VoidCallback? onLogout;
-  
+
   const MainTabbedScreen({
-    super.key, 
+    super.key,
     required this.languageProvider,
     this.onLogout,
   });
@@ -53,21 +54,24 @@ class MainTabbedScreen extends StatefulWidget {
 
 class _MainTabbedScreenState extends State<MainTabbedScreen> {
   int _activeTab = 0;
-  
+
   // Contadores de badges
   int _requirementsPendingCount = 0;
   int _smtPendingCount = 0;
   bool _smtFirstLoad = true; // No mostrar notificaciones en la primera carga
   Timer? _badgeTimer;
-  
+
   // Keys para acceder a los screens y refrescar datos
-  final GlobalKey<MaterialWarehousingScreenState> _warehousingScreenKey = GlobalKey();
+  final GlobalKey<MaterialWarehousingScreenState> _warehousingScreenKey =
+      GlobalKey();
   final GlobalKey<MaterialOutgoingScreenState> _outgoingScreenKey = GlobalKey();
   final GlobalKey<MaterialReturnScreenState> _returnScreenKey = GlobalKey();
-  final GlobalKey<LocationSearchScreenState> _locationSearchScreenKey = GlobalKey();
-  final GlobalKey<LongTermInventoryScreenState> _inventoryScreenKey = GlobalKey();
+  final GlobalKey<LocationSearchScreenState> _locationSearchScreenKey =
+      GlobalKey();
+  final GlobalKey<LongTermInventoryScreenState> _inventoryScreenKey =
+      GlobalKey();
   final GlobalKey<SMTRequestsScreenState> _smtRequestsScreenKey = GlobalKey();
-  
+
   // Lista de tabs visibles según permisos
   List<_TabInfo> _visibleTabs = [];
 
@@ -77,7 +81,8 @@ class _MainTabbedScreenState extends State<MainTabbedScreen> {
     widget.languageProvider.addListener(_onLanguageChanged);
     _buildVisibleTabs();
     _loadBadgeCounts();
-    _badgeTimer = Timer.periodic(const Duration(seconds: 30), (_) => _loadBadgeCounts());
+    _badgeTimer =
+        Timer.periodic(const Duration(seconds: 30), (_) => _loadBadgeCounts());
     HardwareKeyboard.instance.addHandler(_handleKeyEvent);
   }
 
@@ -99,7 +104,8 @@ class _MainTabbedScreenState extends State<MainTabbedScreen> {
 
     // Ctrl+Shift+Tab → tab anterior
     if (isShift && event.logicalKey == LogicalKeyboardKey.tab) {
-      setState(() => _activeTab = (_activeTab - 1 + _visibleTabs.length) % _visibleTabs.length);
+      setState(() => _activeTab =
+          (_activeTab - 1 + _visibleTabs.length) % _visibleTabs.length);
       _loadBadgeCounts();
       _requestScanFocusForActiveTab();
       return true;
@@ -127,11 +133,11 @@ class _MainTabbedScreenState extends State<MainTabbedScreen> {
 
     return false;
   }
-  
+
   /// Construye la lista de tabs visibles según los permisos del usuario
   void _buildVisibleTabs() {
     _visibleTabs = [];
-    
+
     print('========================================');
     print('CONSTRUYENDO TABS VISIBLES');
     print('canViewWarehousing: ${AuthService.canViewWarehousing}');
@@ -139,7 +145,7 @@ class _MainTabbedScreenState extends State<MainTabbedScreen> {
     print('canViewInventory: ${AuthService.canViewInventory}');
     print('canManageUsers: ${AuthService.canManageUsers}');
     print('========================================');
-    
+
     // Material Warehousing - requiere view_warehousing
     if (AuthService.canViewWarehousing) {
       _visibleTabs.add(_TabInfo(
@@ -147,7 +153,7 @@ class _MainTabbedScreenState extends State<MainTabbedScreen> {
         titleKey: 'material_warehousing',
       ));
     }
-    
+
     // Material Outgoing - requiere view_outgoing
     if (AuthService.canViewOutgoing) {
       _visibleTabs.add(_TabInfo(
@@ -155,7 +161,7 @@ class _MainTabbedScreenState extends State<MainTabbedScreen> {
         titleKey: 'material_outgoing',
       ));
     }
-    
+
     // Material Return - requiere view_material_return
     if (AuthService.canViewMaterialReturn) {
       _visibleTabs.add(_TabInfo(
@@ -163,7 +169,7 @@ class _MainTabbedScreenState extends State<MainTabbedScreen> {
         titleKey: 'material_return',
       ));
     }
-    
+
     // Long Term Inventory - requiere view_inventory
     if (AuthService.canViewInventory) {
       _visibleTabs.add(_TabInfo(
@@ -171,7 +177,7 @@ class _MainTabbedScreenState extends State<MainTabbedScreen> {
         titleKey: 'long_term_inventory',
       ));
     }
-    
+
     // Reentry (Reingreso) - requiere view_reentry
     if (AuthService.canViewReentry) {
       _visibleTabs.add(_TabInfo(
@@ -179,7 +185,7 @@ class _MainTabbedScreenState extends State<MainTabbedScreen> {
         titleKey: 'nav_reentry',
       ));
     }
-    
+
     // Location Search (Búsqueda de Ubicación) - requiere view_location_search
     if (AuthService.canViewLocationSearch) {
       _visibleTabs.add(_TabInfo(
@@ -187,7 +193,7 @@ class _MainTabbedScreenState extends State<MainTabbedScreen> {
         titleKey: 'nav_location_search',
       ));
     }
-    
+
     // Material Control - requiere view_inventory
     if (AuthService.canViewInventory) {
       _visibleTabs.add(_TabInfo(
@@ -195,7 +201,7 @@ class _MainTabbedScreenState extends State<MainTabbedScreen> {
         titleKey: 'material_control',
       ));
     }
-    
+
     // Material Requirements - requiere view_requirements
     if (AuthService.canViewRequirements) {
       _visibleTabs.add(_TabInfo(
@@ -204,7 +210,7 @@ class _MainTabbedScreenState extends State<MainTabbedScreen> {
         getBadgeCount: () => _requirementsPendingCount,
       ));
     }
-    
+
     // Material Shortage - requiere view_inventory
     if (AuthService.canViewInventory) {
       _visibleTabs.add(_TabInfo(
@@ -237,6 +243,14 @@ class _MainTabbedScreenState extends State<MainTabbedScreen> {
       ));
     }
 
+    // Catalogo de defectos PCB - requiere view_pcb_inventario
+    if (AuthService.canViewPcbInventario) {
+      _visibleTabs.add(_TabInfo(
+        key: 'pcb_defects',
+        titleKey: 'pcb_defects_title',
+      ));
+    }
+
     // Inventory Audit - requiere view_audit
     if (AuthService.canViewAudit) {
       _visibleTabs.add(_TabInfo(
@@ -261,15 +275,15 @@ class _MainTabbedScreenState extends State<MainTabbedScreen> {
         titleKey: 'user_management',
       ));
     }
-    
+
     print('TABS VISIBLES: ${_visibleTabs.map((t) => t.key).toList()}');
-    
+
     // Fallback: si no hay tabs, mostrar mensaje vacío
     if (_visibleTabs.isEmpty) {
       print('ADVERTENCIA: Usuario sin permisos para ningún módulo');
     }
   }
-  
+
   @override
   void dispose() {
     HardwareKeyboard.instance.removeHandler(_handleKeyEvent);
@@ -277,11 +291,11 @@ class _MainTabbedScreenState extends State<MainTabbedScreen> {
     _badgeTimer?.cancel();
     super.dispose();
   }
-  
+
   void _onLanguageChanged() {
     if (mounted) setState(() {});
   }
-  
+
   Future<void> _loadBadgeCounts() async {
     try {
       final requirementsCount = await ApiService.getRequirementsPendingCount();
@@ -335,7 +349,7 @@ class _MainTabbedScreenState extends State<MainTabbedScreen> {
       }
     }
   }
-  
+
   /// Refrescar datos maestros (materiales, clientes, etc.)
   Future<void> _refreshMasterData() async {
     // Mostrar indicador de carga
@@ -347,7 +361,8 @@ class _MainTabbedScreenState extends State<MainTabbedScreen> {
               const SizedBox(
                 width: 16,
                 height: 16,
-                child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                child: CircularProgressIndicator(
+                    strokeWidth: 2, color: Colors.white),
               ),
               const SizedBox(width: 12),
               Text(widget.languageProvider.tr('refreshing_data')),
@@ -358,16 +373,16 @@ class _MainTabbedScreenState extends State<MainTabbedScreen> {
         ),
       );
     }
-    
+
     try {
       // Recargar materiales (esto actualiza el cache en api_service)
       await ApiService.getMateriales();
       // Recargar contadores de badges
       await _loadBadgeCounts();
-      
+
       // Recargar materiales en el formulario de Warehousing (actualiza checkboxes IQC/Lote)
       await _warehousingScreenKey.currentState?.reloadFormMateriales();
-      
+
       // Recargar materiales en búsqueda de ubicación
       await _locationSearchScreenKey.currentState?.reloadMateriales();
 
@@ -377,7 +392,7 @@ class _MainTabbedScreenState extends State<MainTabbedScreen> {
       if (mounted) {
         // Forzar rebuild de la UI
         setState(() {});
-        
+
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('✅ ${widget.languageProvider.tr('data_refreshed')}'),
@@ -398,13 +413,13 @@ class _MainTabbedScreenState extends State<MainTabbedScreen> {
       }
     }
   }
-  
+
   /// Solicita focus en el campo de escaneo del tab activo
   void _requestScanFocusForActiveTab() {
     if (_visibleTabs.isEmpty) return;
-    
+
     final activeTabKey = _visibleTabs[_activeTab].key;
-    
+
     // Solicitar focus con un pequeño delay para asegurar que el widget esté montado
     WidgetsBinding.instance.addPostFrameCallback((_) {
       switch (activeTabKey) {
@@ -420,7 +435,7 @@ class _MainTabbedScreenState extends State<MainTabbedScreen> {
       }
     });
   }
-  
+
   /// Construye el widget correspondiente a cada tab
   Widget _buildTabContent(String key, String currentLocale) {
     switch (key) {
@@ -484,6 +499,11 @@ class _MainTabbedScreenState extends State<MainTabbedScreen> {
           key: ValueKey('pcb_inventario_$currentLocale'),
           languageProvider: widget.languageProvider,
         );
+      case 'pcb_defects':
+        return PcbDefectsScreen(
+          key: ValueKey('pcb_defects_$currentLocale'),
+          languageProvider: widget.languageProvider,
+        );
       case 'inventory_audit':
         return InventoryAuditScreen(
           key: ValueKey('inventory_audit_$currentLocale'),
@@ -507,7 +527,7 @@ class _MainTabbedScreenState extends State<MainTabbedScreen> {
   @override
   Widget build(BuildContext context) {
     final currentLocale = widget.languageProvider.currentLocale;
-    
+
     // Si no hay tabs visibles, mostrar mensaje
     if (_visibleTabs.isEmpty) {
       return Scaffold(
@@ -543,12 +563,12 @@ class _MainTabbedScreenState extends State<MainTabbedScreen> {
         ),
       );
     }
-    
+
     // Asegurar que el índice activo sea válido
     if (_activeTab >= _visibleTabs.length) {
       _activeTab = 0;
     }
-    
+
     return Scaffold(
       body: SafeArea(
         child: Column(
@@ -570,9 +590,9 @@ class _MainTabbedScreenState extends State<MainTabbedScreen> {
               child: IndexedStack(
                 key: ValueKey('tabs_$currentLocale'),
                 index: _activeTab,
-                children: _visibleTabs.map((tab) => 
-                  _buildTabContent(tab.key, currentLocale)
-                ).toList(),
+                children: _visibleTabs
+                    .map((tab) => _buildTabContent(tab.key, currentLocale))
+                    .toList(),
               ),
             ),
           ],
@@ -596,7 +616,7 @@ class _TopTabBarSimple extends StatelessWidget {
   Widget build(BuildContext context) {
     final currentUser = AuthService.currentUser;
     final tr = languageProvider.tr;
-    
+
     return Container(
       height: 28,
       color: const Color(0xFF1E2228),
@@ -607,9 +627,9 @@ class _TopTabBarSimple extends StatelessWidget {
             const Icon(Icons.person, size: 14, color: Colors.white54),
             const SizedBox(width: 4),
             Text(
-              currentUser.nombreCompleto.isNotEmpty 
-                ? currentUser.nombreCompleto 
-                : currentUser.username,
+              currentUser.nombreCompleto.isNotEmpty
+                  ? currentUser.nombreCompleto
+                  : currentUser.username,
               style: const TextStyle(fontSize: 11, color: Colors.white70),
             ),
             const SizedBox(width: 8),
@@ -628,7 +648,9 @@ class _TopTabBarSimple extends StatelessWidget {
                   children: [
                     const Icon(Icons.logout, size: 12, color: Colors.red),
                     const SizedBox(width: 4),
-                    Text(tr('logout'), style: const TextStyle(fontSize: 10, color: Colors.red)),
+                    Text(tr('logout'),
+                        style:
+                            const TextStyle(fontSize: 10, color: Colors.red)),
                   ],
                 ),
               ),
@@ -695,7 +717,8 @@ class _TopTabBarDynamicState extends State<_TopTabBarDynamic> {
     if (!_scrollController.hasClients) return;
     final pos = _scrollController.position;
     final newLeft = pos.pixels > 0;
-    final newRight = pos.maxScrollExtent > 0 && pos.pixels < pos.maxScrollExtent - 0.5;
+    final newRight =
+        pos.maxScrollExtent > 0 && pos.pixels < pos.maxScrollExtent - 0.5;
     if (newLeft != _canScrollLeft || newRight != _canScrollRight) {
       setState(() {
         _canScrollLeft = newLeft;
@@ -706,14 +729,18 @@ class _TopTabBarDynamicState extends State<_TopTabBarDynamic> {
 
   void _scrollLeft() {
     if (!_scrollController.hasClients) return;
-    final target = (_scrollController.offset - 200).clamp(0.0, _scrollController.position.maxScrollExtent);
-    _scrollController.animateTo(target, duration: const Duration(milliseconds: 180), curve: Curves.easeOut);
+    final target = (_scrollController.offset - 200)
+        .clamp(0.0, _scrollController.position.maxScrollExtent);
+    _scrollController.animateTo(target,
+        duration: const Duration(milliseconds: 180), curve: Curves.easeOut);
   }
 
   void _scrollRight() {
     if (!_scrollController.hasClients) return;
-    final target = (_scrollController.offset + 200).clamp(0.0, _scrollController.position.maxScrollExtent);
-    _scrollController.animateTo(target, duration: const Duration(milliseconds: 180), curve: Curves.easeOut);
+    final target = (_scrollController.offset + 200)
+        .clamp(0.0, _scrollController.position.maxScrollExtent);
+    _scrollController.animateTo(target,
+        duration: const Duration(milliseconds: 180), curve: Curves.easeOut);
   }
 
   void _scrollToActiveTab() {
@@ -738,9 +765,7 @@ class _TopTabBarDynamicState extends State<_TopTabBarDynamic> {
         margin: const EdgeInsets.only(right: 1),
         padding: const EdgeInsets.symmetric(horizontal: 10),
         decoration: BoxDecoration(
-          color: isActive
-              ? const Color(0xFF3C4654)
-              : const Color(0xFF2D333B),
+          color: isActive ? const Color(0xFF3C4654) : const Color(0xFF2D333B),
           borderRadius: const BorderRadius.only(
             topLeft: Radius.circular(3),
             topRight: Radius.circular(3),
@@ -761,7 +786,8 @@ class _TopTabBarDynamicState extends State<_TopTabBarDynamic> {
               if (badgeCount > 0) ...[
                 const SizedBox(width: 6),
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                   decoration: BoxDecoration(
                     color: Colors.orange,
                     borderRadius: BorderRadius.circular(10),
@@ -823,7 +849,8 @@ class _TopTabBarDynamicState extends State<_TopTabBarDynamic> {
                   final index = entry.key;
                   final tab = entry.value;
                   final badgeCount = tab.getBadgeCount?.call() ?? 0;
-                  return _buildTab(tr(tab.titleKey), index, badgeCount: badgeCount);
+                  return _buildTab(tr(tab.titleKey), index,
+                      badgeCount: badgeCount);
                 }).toList(),
               ),
             ),
@@ -843,7 +870,8 @@ class _TopTabBarDynamicState extends State<_TopTabBarDynamic> {
                   color: Colors.white.withOpacity(0.05),
                   borderRadius: BorderRadius.circular(4),
                 ),
-                child: const Icon(Icons.refresh, size: 16, color: Colors.white70),
+                child:
+                    const Icon(Icons.refresh, size: 16, color: Colors.white70),
               ),
             ),
           ),
@@ -853,12 +881,14 @@ class _TopTabBarDynamicState extends State<_TopTabBarDynamic> {
             PopupMenuButton<String>(
               offset: const Offset(0, 28),
               color: const Color(0xFF2D333B),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(8)),
               onSelected: (value) {
                 if (value == 'change_password') {
                   _showChangePasswordDialog(context, tr, currentUser.id);
                 } else if (value == 'check_updates') {
-                  UpdateService.checkAndPrompt(context, showNoUpdateMessage: true);
+                  UpdateService.checkAndPrompt(context,
+                      showNoUpdateMessage: true);
                 } else if (value == 'logout') {
                   _showLogoutConfirmation(context, tr, widget.onLogout);
                 }
@@ -868,9 +898,12 @@ class _TopTabBarDynamicState extends State<_TopTabBarDynamic> {
                   value: 'change_password',
                   child: Row(
                     children: [
-                      const Icon(Icons.lock_outline, size: 16, color: Colors.white70),
+                      const Icon(Icons.lock_outline,
+                          size: 16, color: Colors.white70),
                       const SizedBox(width: 8),
-                      Text(tr('change_password'), style: const TextStyle(color: Colors.white70, fontSize: 12)),
+                      Text(tr('change_password'),
+                          style: const TextStyle(
+                              color: Colors.white70, fontSize: 12)),
                     ],
                   ),
                 ),
@@ -879,9 +912,12 @@ class _TopTabBarDynamicState extends State<_TopTabBarDynamic> {
                   value: 'check_updates',
                   child: Row(
                     children: [
-                      const Icon(Icons.system_update, size: 16, color: Colors.blue),
+                      const Icon(Icons.system_update,
+                          size: 16, color: Colors.blue),
                       const SizedBox(width: 8),
-                      Text('Buscar actualizaciones', style: const TextStyle(color: Colors.white70, fontSize: 12)),
+                      Text('Buscar actualizaciones',
+                          style: const TextStyle(
+                              color: Colors.white70, fontSize: 12)),
                     ],
                   ),
                 ),
@@ -900,7 +936,9 @@ class _TopTabBarDynamicState extends State<_TopTabBarDynamic> {
                     children: [
                       const Icon(Icons.logout, size: 16, color: Colors.red),
                       const SizedBox(width: 8),
-                      Text(tr('logout'), style: const TextStyle(color: Colors.red, fontSize: 12)),
+                      Text(tr('logout'),
+                          style:
+                              const TextStyle(color: Colors.red, fontSize: 12)),
                     ],
                   ),
                 ),
@@ -917,13 +955,15 @@ class _TopTabBarDynamicState extends State<_TopTabBarDynamic> {
                     const Icon(Icons.person, size: 14, color: Colors.white54),
                     const SizedBox(width: 4),
                     Text(
-                      currentUser.nombreCompleto.isNotEmpty 
-                        ? currentUser.nombreCompleto 
-                        : currentUser.username,
-                      style: const TextStyle(fontSize: 11, color: Colors.white70),
+                      currentUser.nombreCompleto.isNotEmpty
+                          ? currentUser.nombreCompleto
+                          : currentUser.username,
+                      style:
+                          const TextStyle(fontSize: 11, color: Colors.white70),
                     ),
                     const SizedBox(width: 4),
-                    const Icon(Icons.arrow_drop_down, size: 16, color: Colors.white54),
+                    const Icon(Icons.arrow_drop_down,
+                        size: 16, color: Colors.white54),
                   ],
                 ),
               ),
@@ -938,7 +978,8 @@ class _TopTabBarDynamicState extends State<_TopTabBarDynamic> {
   }
 }
 
-void _showChangePasswordDialog(BuildContext context, String Function(String) tr, int userId) {
+void _showChangePasswordDialog(
+    BuildContext context, String Function(String) tr, int userId) {
   final currentPasswordController = TextEditingController();
   final newPasswordController = TextEditingController();
   final confirmPasswordController = TextEditingController();
@@ -958,7 +999,8 @@ void _showChangePasswordDialog(BuildContext context, String Function(String) tr,
           children: [
             const Icon(Icons.lock_outline, color: Colors.white70, size: 20),
             const SizedBox(width: 8),
-            Text(tr('change_password'), style: const TextStyle(color: Colors.white)),
+            Text(tr('change_password'),
+                style: const TextStyle(color: Colors.white)),
           ],
         ),
         content: SizedBox(
@@ -973,11 +1015,19 @@ void _showChangePasswordDialog(BuildContext context, String Function(String) tr,
                 decoration: InputDecoration(
                   labelText: tr('current_password'),
                   labelStyle: const TextStyle(color: Colors.white54),
-                  enabledBorder: const OutlineInputBorder(borderSide: BorderSide(color: Colors.white24)),
-                  focusedBorder: const OutlineInputBorder(borderSide: BorderSide(color: Colors.blue)),
+                  enabledBorder: const OutlineInputBorder(
+                      borderSide: BorderSide(color: Colors.white24)),
+                  focusedBorder: const OutlineInputBorder(
+                      borderSide: BorderSide(color: Colors.blue)),
                   suffixIcon: IconButton(
-                    icon: Icon(obscureCurrentPassword ? Icons.visibility_off : Icons.visibility, color: Colors.white54, size: 20),
-                    onPressed: () => setState(() => obscureCurrentPassword = !obscureCurrentPassword),
+                    icon: Icon(
+                        obscureCurrentPassword
+                            ? Icons.visibility_off
+                            : Icons.visibility,
+                        color: Colors.white54,
+                        size: 20),
+                    onPressed: () => setState(
+                        () => obscureCurrentPassword = !obscureCurrentPassword),
                   ),
                 ),
               ),
@@ -989,11 +1039,19 @@ void _showChangePasswordDialog(BuildContext context, String Function(String) tr,
                 decoration: InputDecoration(
                   labelText: tr('new_password'),
                   labelStyle: const TextStyle(color: Colors.white54),
-                  enabledBorder: const OutlineInputBorder(borderSide: BorderSide(color: Colors.white24)),
-                  focusedBorder: const OutlineInputBorder(borderSide: BorderSide(color: Colors.blue)),
+                  enabledBorder: const OutlineInputBorder(
+                      borderSide: BorderSide(color: Colors.white24)),
+                  focusedBorder: const OutlineInputBorder(
+                      borderSide: BorderSide(color: Colors.blue)),
                   suffixIcon: IconButton(
-                    icon: Icon(obscureNewPassword ? Icons.visibility_off : Icons.visibility, color: Colors.white54, size: 20),
-                    onPressed: () => setState(() => obscureNewPassword = !obscureNewPassword),
+                    icon: Icon(
+                        obscureNewPassword
+                            ? Icons.visibility_off
+                            : Icons.visibility,
+                        color: Colors.white54,
+                        size: 20),
+                    onPressed: () => setState(
+                        () => obscureNewPassword = !obscureNewPassword),
                   ),
                 ),
               ),
@@ -1005,17 +1063,26 @@ void _showChangePasswordDialog(BuildContext context, String Function(String) tr,
                 decoration: InputDecoration(
                   labelText: tr('confirm_password'),
                   labelStyle: const TextStyle(color: Colors.white54),
-                  enabledBorder: const OutlineInputBorder(borderSide: BorderSide(color: Colors.white24)),
-                  focusedBorder: const OutlineInputBorder(borderSide: BorderSide(color: Colors.blue)),
+                  enabledBorder: const OutlineInputBorder(
+                      borderSide: BorderSide(color: Colors.white24)),
+                  focusedBorder: const OutlineInputBorder(
+                      borderSide: BorderSide(color: Colors.blue)),
                   suffixIcon: IconButton(
-                    icon: Icon(obscureConfirmPassword ? Icons.visibility_off : Icons.visibility, color: Colors.white54, size: 20),
-                    onPressed: () => setState(() => obscureConfirmPassword = !obscureConfirmPassword),
+                    icon: Icon(
+                        obscureConfirmPassword
+                            ? Icons.visibility_off
+                            : Icons.visibility,
+                        color: Colors.white54,
+                        size: 20),
+                    onPressed: () => setState(
+                        () => obscureConfirmPassword = !obscureConfirmPassword),
                   ),
                 ),
               ),
               if (errorMessage != null) ...[
                 const SizedBox(height: 12),
-                Text(errorMessage!, style: const TextStyle(color: Colors.red, fontSize: 12)),
+                Text(errorMessage!,
+                    style: const TextStyle(color: Colors.red, fontSize: 12)),
               ],
             ],
           ),
@@ -1023,56 +1090,65 @@ void _showChangePasswordDialog(BuildContext context, String Function(String) tr,
         actions: [
           TextButton(
             onPressed: isLoading ? null : () => Navigator.pop(context),
-            child: Text(tr('cancel'), style: const TextStyle(color: Colors.white54)),
+            child: Text(tr('cancel'),
+                style: const TextStyle(color: Colors.white54)),
           ),
           ElevatedButton(
-            onPressed: isLoading ? null : () async {
-              // Validaciones
-              if (currentPasswordController.text.isEmpty || 
-                  newPasswordController.text.isEmpty || 
-                  confirmPasswordController.text.isEmpty) {
-                setState(() => errorMessage = tr('all_fields_required'));
-                return;
-              }
-              if (newPasswordController.text != confirmPasswordController.text) {
-                setState(() => errorMessage = tr('passwords_not_match'));
-                return;
-              }
-              if (newPasswordController.text.length < 4) {
-                setState(() => errorMessage = tr('password_min_length'));
-                return;
-              }
-              
-              setState(() {
-                isLoading = true;
-                errorMessage = null;
-              });
-              
-              final result = await ApiService.changeOwnPassword(
-                userId: userId,
-                currentPassword: currentPasswordController.text,
-                newPassword: newPasswordController.text,
-              );
-              
-              if (result['success'] == true) {
-                Navigator.pop(context);
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: Text(tr('password_changed_success')),
-                    backgroundColor: Colors.green,
-                  ),
-                );
-              } else {
-                setState(() {
-                  isLoading = false;
-                  errorMessage = result['error'] ?? tr('password_change_error');
-                });
-              }
-            },
+            onPressed: isLoading
+                ? null
+                : () async {
+                    // Validaciones
+                    if (currentPasswordController.text.isEmpty ||
+                        newPasswordController.text.isEmpty ||
+                        confirmPasswordController.text.isEmpty) {
+                      setState(() => errorMessage = tr('all_fields_required'));
+                      return;
+                    }
+                    if (newPasswordController.text !=
+                        confirmPasswordController.text) {
+                      setState(() => errorMessage = tr('passwords_not_match'));
+                      return;
+                    }
+                    if (newPasswordController.text.length < 4) {
+                      setState(() => errorMessage = tr('password_min_length'));
+                      return;
+                    }
+
+                    setState(() {
+                      isLoading = true;
+                      errorMessage = null;
+                    });
+
+                    final result = await ApiService.changeOwnPassword(
+                      userId: userId,
+                      currentPassword: currentPasswordController.text,
+                      newPassword: newPasswordController.text,
+                    );
+
+                    if (result['success'] == true) {
+                      Navigator.pop(context);
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text(tr('password_changed_success')),
+                          backgroundColor: Colors.green,
+                        ),
+                      );
+                    } else {
+                      setState(() {
+                        isLoading = false;
+                        errorMessage =
+                            result['error'] ?? tr('password_change_error');
+                      });
+                    }
+                  },
             style: ElevatedButton.styleFrom(backgroundColor: Colors.blue),
-            child: isLoading 
-              ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-              : Text(tr('save')),
+            child: isLoading
+                ? const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(
+                        strokeWidth: 2, color: Colors.white))
+                : Text(tr('save')),
           ),
         ],
       ),
@@ -1080,17 +1156,20 @@ void _showChangePasswordDialog(BuildContext context, String Function(String) tr,
   );
 }
 
-void _showLogoutConfirmation(BuildContext context, String Function(String) tr, VoidCallback? onLogout) {
+void _showLogoutConfirmation(
+    BuildContext context, String Function(String) tr, VoidCallback? onLogout) {
   showDialog(
     context: context,
     builder: (context) => AlertDialog(
       backgroundColor: AppColors.panelBackground,
       title: Text(tr('logout'), style: const TextStyle(color: Colors.white)),
-      content: Text(tr('logout_confirm'), style: const TextStyle(color: Colors.white70)),
+      content: Text(tr('logout_confirm'),
+          style: const TextStyle(color: Colors.white70)),
       actions: [
         TextButton(
           onPressed: () => Navigator.pop(context),
-          child: Text(tr('cancel'), style: const TextStyle(color: Colors.white54)),
+          child:
+              Text(tr('cancel'), style: const TextStyle(color: Colors.white54)),
         ),
         ElevatedButton(
           onPressed: () {

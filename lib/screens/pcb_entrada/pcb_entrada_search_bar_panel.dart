@@ -91,6 +91,8 @@ class _PcbEntradaSearchBarPanelState extends State<PcbEntradaSearchBarPanel> {
     final headers = [
       tr('pcb_scanned_code'),
       tr('pcb_area'),
+      tr('pcb_defect_type'),
+      tr('pcb_component_location'),
       tr('pcb_qty'),
       tr('pcb_array_count'),
       tr('pcb_part_no'),
@@ -104,6 +106,8 @@ class _PcbEntradaSearchBarPanelState extends State<PcbEntradaSearchBarPanel> {
     final fields = [
       'scanned_original',
       'area',
+      'defect_type',
+      'component_location',
       'qty',
       'array_count',
       'pcb_part_no',

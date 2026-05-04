@@ -1,11 +1,19 @@
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:archive/archive.dart';
 import 'package:flutter/material.dart';
 import 'package:dropdown_button2/dropdown_button2.dart';
+import 'package:excel/excel.dart' as xl;
+import 'package:file_picker/file_picker.dart';
 import 'package:material_warehousing_flutter/core/localization/app_translations.dart';
 import 'package:material_warehousing_flutter/core/theme/app_colors.dart';
 import 'package:material_warehousing_flutter/core/services/api_service.dart';
+import 'package:material_warehousing_flutter/core/services/auth_service.dart';
 import 'package:material_warehousing_flutter/core/services/excel_export_service.dart';
 import 'package:material_warehousing_flutter/core/widgets/field_decoration.dart';
 import 'package:material_warehousing_flutter/core/widgets/resizable_grid_header.dart';
+import 'package:xml/xml.dart';
 
 class PcbInventarioScreen extends StatefulWidget {
   final LanguageProvider languageProvider;
@@ -74,6 +82,8 @@ class PcbInventarioScreenState extends State<PcbInventarioScreen>
     'pcb_part_no',
     'modelo',
     'area',
+    'defect_type',
+    'component_location',
     'qty',
     'array_count',
     'proceso',
@@ -100,6 +110,8 @@ class PcbInventarioScreenState extends State<PcbInventarioScreen>
         tr('pcb_part_no'),
         tr('pcb_modelo'),
         tr('pcb_area'),
+        tr('pcb_defect_type'),
+        tr('pcb_component_location'),
         tr('pcb_qty'),
         tr('pcb_array_count'),
         tr('pcb_proceso'),
@@ -146,11 +158,13 @@ class PcbInventarioScreenState extends State<PcbInventarioScreen>
       initColumnFlex(8, 'pcb_inv_summary',
           defaultFlexValues: [1.8, 1.8, 1.3, 1.3, 1.0, 1.0, 1.0, 1.2]);
     } else {
-      initColumnFlex(12, 'pcb_inv_detail', defaultFlexValues: [
+      initColumnFlex(14, 'pcb_inv_detail', defaultFlexValues: [
         1.2,
         2.5,
         1.5,
         1.5,
+        1.3,
+        1.4,
         1.3,
         0.8,
         1.0,
@@ -395,6 +409,27 @@ class PcbInventarioScreenState extends State<PcbInventarioScreen>
     }
   }
 
+  Future<void> _showInitialStockImportDialog() async {
+    final successMessage = await showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => _InitialStockImportDialog(
+        tr: tr,
+      ),
+    );
+    if (successMessage != null && mounted) {
+      await _loadData();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(successMessage),
+          backgroundColor: Colors.green,
+          duration: const Duration(seconds: 4),
+        ),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Column(
@@ -419,7 +454,7 @@ class PcbInventarioScreenState extends State<PcbInventarioScreen>
     return Container(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
       decoration: BoxDecoration(
-        color: AppColors.panelBackground,
+        color: AppColors.subPanelBackground,
         border: Border(bottom: BorderSide(color: AppColors.border, width: 1)),
       ),
       child: Row(
@@ -578,6 +613,24 @@ class PcbInventarioScreenState extends State<PcbInventarioScreen>
           Text(tr('pcb_include_zero_stock'),
               style: const TextStyle(fontSize: 14, color: Colors.white)),
           const Spacer(),
+          SizedBox(
+            height: 32,
+            child: ElevatedButton.icon(
+              onPressed: AuthService.canWritePcbInventory
+                  ? _showInitialStockImportDialog
+                  : null,
+              icon: const Icon(Icons.upload_file, size: 15),
+              label: Text(tr('pcb_initial_stock_upload'),
+                  style: const TextStyle(fontSize: 12)),
+              style: ElevatedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                backgroundColor: AppColors.buttonSave,
+                foregroundColor: Colors.white,
+                disabledBackgroundColor: Colors.grey.shade700,
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
           // Search
           SizedBox(
             height: 32,
@@ -671,13 +724,14 @@ class PcbInventarioScreenState extends State<PcbInventarioScreen>
                         height: 30,
                         decoration: BoxDecoration(
                           color: isSelected
-                              ? Colors.cyan.withOpacity(0.20)
+                              ? Colors.cyan.withValues(alpha: 0.20)
                               : (index.isEven
                                   ? AppColors.gridRowEven
                                   : AppColors.gridRowOdd),
                           border: Border(
                               bottom: BorderSide(
-                                  color: AppColors.border.withOpacity(0.3))),
+                                  color:
+                                      AppColors.border.withValues(alpha: 0.3))),
                         ),
                         child: Row(
                           children: List.generate(_summaryFields.length, (ci) {
@@ -771,13 +825,14 @@ class PcbInventarioScreenState extends State<PcbInventarioScreen>
                         height: 30,
                         decoration: BoxDecoration(
                           color: isSelected
-                              ? Colors.cyan.withOpacity(0.20)
+                              ? Colors.cyan.withValues(alpha: 0.20)
                               : (index.isEven
                                   ? AppColors.gridRowEven
                                   : AppColors.gridRowOdd),
                           border: Border(
                               bottom: BorderSide(
-                                  color: AppColors.border.withOpacity(0.3))),
+                                  color:
+                                      AppColors.border.withValues(alpha: 0.3))),
                         ),
                         child: Row(
                           children: List.generate(_detailFields.length, (ci) {
@@ -831,7 +886,7 @@ class PcbInventarioScreenState extends State<PcbInventarioScreen>
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
             decoration: BoxDecoration(
-              color: Colors.cyan.withOpacity(0.15),
+              color: Colors.cyan.withValues(alpha: 0.15),
               borderRadius: BorderRadius.circular(4),
             ),
             child: Text(
@@ -871,4 +926,706 @@ class PcbInventarioScreenState extends State<PcbInventarioScreen>
       ),
     );
   }
+}
+
+class _InitialStockImportDialog extends StatefulWidget {
+  final String Function(String key) tr;
+
+  const _InitialStockImportDialog({
+    required this.tr,
+  });
+
+  @override
+  State<_InitialStockImportDialog> createState() =>
+      _InitialStockImportDialogState();
+}
+
+class _InitialStockImportDialogState extends State<_InitialStockImportDialog> {
+  final TextEditingController _dateController = TextEditingController();
+  final TextEditingController _commentController = TextEditingController();
+  DateTime _inventoryDate = DateTime.now();
+  String _selectedArea = 'INVENTARIO';
+  String _selectedProceso = 'SMD';
+  String? _fileName;
+  bool _isSubmitting = false;
+  int _submittedBatches = 0;
+  int _totalBatches = 0;
+  List<Map<String, dynamic>> _items = [];
+  List<Map<String, dynamic>> _parseErrors = [];
+
+  static const _areas = ['INVENTARIO', 'REPARACION'];
+  static const _procesos = ['SMD', 'IMD', 'ASSY'];
+
+  String tr(String key) => widget.tr(key);
+
+  @override
+  void initState() {
+    super.initState();
+    _dateController.text = _fmt(_inventoryDate);
+  }
+
+  @override
+  void dispose() {
+    _dateController.dispose();
+    _commentController.dispose();
+    super.dispose();
+  }
+
+  String _fmt(DateTime d) =>
+      '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+
+  Future<void> _pickDate() async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _inventoryDate,
+      firstDate: DateTime(2024),
+      lastDate: DateTime(2030),
+    );
+    if (picked != null && mounted) {
+      setState(() {
+        _inventoryDate = picked;
+        _dateController.text = _fmt(picked);
+      });
+    }
+  }
+
+  Future<void> _selectFile() async {
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['xlsx', 'xls', 'csv'],
+        dialogTitle: tr('pcb_select_initial_stock_file'),
+      );
+      if (result == null || result.files.isEmpty) return;
+
+      final path = result.files.single.path;
+      if (path == null) return;
+
+      final file = File(path);
+      final bytes = await file.readAsBytes();
+      final extension = result.files.single.extension?.toLowerCase();
+
+      final parsed = extension == 'csv'
+          ? _parseCsv(String.fromCharCodes(bytes))
+          : _parseExcel(bytes);
+
+      setState(() {
+        _fileName = result.files.single.name;
+        _items = parsed.items;
+        _parseErrors = parsed.errors;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _items = [];
+        _parseErrors = [
+          {
+            'row': '-',
+            'message': '${tr('pcb_initial_stock_file_error')}: $e',
+          }
+        ];
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(tr('pcb_initial_stock_file_error')),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
+  _ParsedInitialStock _parseCsv(String content) {
+    final rows = content
+        .split(RegExp(r'\r?\n'))
+        .map((line) => line.trim())
+        .where((line) => line.isNotEmpty)
+        .map((line) => line.split(RegExp(r'\t|,|;')))
+        .toList();
+    return _parseRows(rows);
+  }
+
+  _ParsedInitialStock _parseExcel(List<int> bytes) {
+    try {
+      final book = xl.Excel.decodeBytes(bytes);
+      if (book.tables.isEmpty) {
+        return _ParsedInitialStock(items: [], errors: []);
+      }
+      final sheet = book.tables.values.first;
+      final rows = <List<String>>[];
+      for (var i = 0; i < sheet.maxRows; i++) {
+        final row = sheet.row(i);
+        rows.add(row.map((cell) => cell?.value?.toString() ?? '').toList());
+      }
+      return _parseRows(rows);
+    } catch (_) {
+      final rows = _parseXlsxWithoutStyles(bytes);
+      return _parseRows(rows);
+    }
+  }
+
+  List<List<String>> _parseXlsxWithoutStyles(List<int> bytes) {
+    final archive = ZipDecoder().decodeBytes(bytes);
+    final sharedStrings = _readSharedStrings(archive);
+    final sheetPath = _findFirstWorksheetPath(archive);
+    final sheetFile = archive.files.firstWhere(
+      (file) => file.name == sheetPath,
+      orElse: () => throw Exception('Worksheet not found'),
+    );
+    final sheetXml = Utf8Decoder().convert(sheetFile.content as List<int>);
+    final document = XmlDocument.parse(sheetXml);
+    final rows = <List<String>>[];
+
+    for (final rowNode in document.findAllElements('row')) {
+      final cells = <int, String>{};
+      var maxColumnIndex = -1;
+      for (final cellNode in rowNode.findElements('c')) {
+        final ref = cellNode.getAttribute('r') ?? '';
+        final columnIndex = _columnIndexFromCellRef(ref);
+        if (columnIndex < 0) continue;
+        if (columnIndex > maxColumnIndex) maxColumnIndex = columnIndex;
+        cells[columnIndex] = _readCellValue(cellNode, sharedStrings);
+      }
+
+      if (maxColumnIndex < 0) {
+        rows.add(<String>[]);
+        continue;
+      }
+
+      final row = List<String>.filled(maxColumnIndex + 1, '');
+      cells.forEach((index, value) => row[index] = value);
+      rows.add(row);
+    }
+
+    return rows;
+  }
+
+  List<String> _readSharedStrings(Archive archive) {
+    final sharedFile = archive.files
+        .where((file) => file.name == 'xl/sharedStrings.xml')
+        .cast<ArchiveFile?>()
+        .firstWhere((file) => file != null, orElse: () => null);
+    if (sharedFile == null) return const [];
+
+    final xml = Utf8Decoder().convert(sharedFile.content as List<int>);
+    final document = XmlDocument.parse(xml);
+    return document
+        .findAllElements('si')
+        .map((si) => si.findAllElements('t').map((t) => t.innerText).join())
+        .toList();
+  }
+
+  String _findFirstWorksheetPath(Archive archive) {
+    final workbookFile = archive.files.firstWhere(
+      (file) => file.name == 'xl/workbook.xml',
+      orElse: () => throw Exception('Workbook not found'),
+    );
+    final relsFile = archive.files.firstWhere(
+      (file) => file.name == 'xl/_rels/workbook.xml.rels',
+      orElse: () => throw Exception('Workbook relationships not found'),
+    );
+
+    final workbookXml =
+        Utf8Decoder().convert(workbookFile.content as List<int>);
+    final relsXml = Utf8Decoder().convert(relsFile.content as List<int>);
+    final workbookDoc = XmlDocument.parse(workbookXml);
+    final relsDoc = XmlDocument.parse(relsXml);
+
+    final firstSheet = workbookDoc.findAllElements('sheet').first;
+    final relId = firstSheet.getAttribute('id',
+        namespace:
+            'http://schemas.openxmlformats.org/officeDocument/2006/relationships');
+    if (relId == null) {
+      throw Exception('Worksheet relationship id not found');
+    }
+
+    final relNode = relsDoc.findAllElements('Relationship').firstWhere(
+          (node) => node.getAttribute('Id') == relId,
+        );
+    final target = relNode.getAttribute('Target');
+    if (target == null || target.isEmpty) {
+      throw Exception('Worksheet target not found');
+    }
+    return target.startsWith('xl/') ? target : 'xl/$target';
+  }
+
+  int _columnIndexFromCellRef(String ref) {
+    final match = RegExp(r'([A-Z]+)').firstMatch(ref.toUpperCase());
+    if (match == null) return -1;
+    final letters = match.group(1)!;
+    var result = 0;
+    for (final codeUnit in letters.codeUnits) {
+      result = result * 26 + (codeUnit - 64);
+    }
+    return result - 1;
+  }
+
+  String _readCellValue(XmlElement cellNode, List<String> sharedStrings) {
+    final type = cellNode.getAttribute('t');
+    if (type == 'inlineStr') {
+      return cellNode.findAllElements('t').map((node) => node.innerText).join();
+    }
+
+    final valueText = cellNode.getElement('v')?.innerText ?? '';
+    if (type == 's') {
+      final index = int.tryParse(valueText);
+      if (index == null || index < 0 || index >= sharedStrings.length) {
+        return '';
+      }
+      return sharedStrings[index];
+    }
+    return valueText;
+  }
+
+  _ParsedInitialStock _parseRows(List<List<String>> rows) {
+    final items = <Map<String, dynamic>>[];
+    final errors = <Map<String, dynamic>>[];
+    if (rows.isEmpty) return _ParsedInitialStock(items: items, errors: errors);
+
+    var partIndex = 0;
+    var qtyIndex = 1;
+    var startRow = 0;
+    final first = rows.first.map(_normalizeHeader).toList();
+    final headerPartIndex = _findHeaderIndex(first, {
+      'nopartepcb',
+      'pcbpartnumber',
+      'numeroparte',
+      'noparte',
+      'partno',
+      'partnumber',
+      'pcbpartno',
+    });
+    final headerQtyIndex = _findHeaderIndex(first, {
+      'cantidad',
+      'cant',
+      'qty',
+      'quantity',
+    });
+    if (headerPartIndex >= 0 && headerQtyIndex >= 0) {
+      partIndex = headerPartIndex;
+      qtyIndex = headerQtyIndex;
+      startRow = 1;
+    }
+
+    for (var i = startRow; i < rows.length; i++) {
+      final row = rows[i];
+      final rowNumber = i + 1;
+      final partNo =
+          row.length > partIndex ? row[partIndex].trim().toUpperCase() : '';
+      final qtyText = row.length > qtyIndex ? row[qtyIndex].trim() : '';
+      if (partNo.isEmpty && qtyText.isEmpty) continue;
+
+      final qty = int.tryParse(qtyText.replaceAll(RegExp(r'\.0$'), ''));
+      if (!RegExp(r'^EBR\d{8}$').hasMatch(partNo)) {
+        errors.add({
+          'row': rowNumber,
+          'pcb_part_no': partNo,
+          'message': tr('pcb_invalid_part_no'),
+        });
+        continue;
+      }
+      if (qty == null || qty <= 0) {
+        errors.add({
+          'row': rowNumber,
+          'pcb_part_no': partNo,
+          'message': tr('pcb_invalid_qty'),
+        });
+        continue;
+      }
+
+      items.add({
+        'row_number': rowNumber,
+        'pcb_part_no': partNo,
+        'qty': qty,
+      });
+    }
+
+    return _ParsedInitialStock(items: items, errors: errors);
+  }
+
+  int _findHeaderIndex(List<String> headers, Set<String> aliases) {
+    for (var i = 0; i < headers.length; i++) {
+      if (aliases.contains(headers[i])) return i;
+    }
+    return -1;
+  }
+
+  String _normalizeHeader(String value) {
+    return value.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '').trim();
+  }
+
+  List<Map<String, dynamic>> get _groupedItems {
+    final grouped = <String, int>{};
+    for (final item in _items) {
+      final partNo = item['pcb_part_no'].toString();
+      final qty = item['qty'] as int;
+      grouped[partNo] = (grouped[partNo] ?? 0) + qty;
+    }
+    return grouped.entries
+        .map((entry) => {'pcb_part_no': entry.key, 'qty': entry.value})
+        .toList()
+      ..sort((a, b) =>
+          a['pcb_part_no'].toString().compareTo(b['pcb_part_no'].toString()));
+  }
+
+  int get _totalQty => _items.fold<int>(
+        0,
+        (sum, item) => sum + (item['qty'] as int),
+      );
+
+  Future<void> _import() async {
+    if (_items.isEmpty || _isSubmitting) return;
+    final groupedItems = _groupedItems;
+    const batchSize = 200;
+    final totalBatches = (groupedItems.length / batchSize).ceil();
+    setState(() {
+      _isSubmitting = true;
+      _submittedBatches = 0;
+      _totalBatches = totalBatches;
+    });
+
+    var inserted = 0;
+    var totalQty = 0;
+    Map<String, dynamic>? lastError;
+
+    for (var offset = 0; offset < groupedItems.length; offset += batchSize) {
+      final batch = groupedItems.skip(offset).take(batchSize).toList();
+      final response = await ApiService.bulkAddPcbInitialStock(
+        inventoryDate: _fmt(_inventoryDate),
+        area: _selectedArea,
+        proceso: _selectedProceso,
+        items: batch,
+        comentarios: _commentController.text.trim().isNotEmpty
+            ? _commentController.text.trim()
+            : null,
+        scannedBy: AuthService.currentUser?.nombreCompleto,
+      );
+
+      if (response['success'] != true) {
+        lastError = response;
+        break;
+      }
+
+      inserted += (response['inserted'] as num?)?.toInt() ?? 0;
+      totalQty += (response['total_qty'] as num?)?.toInt() ?? 0;
+      if (!mounted) return;
+      setState(() => _submittedBatches += 1);
+    }
+
+    if (!mounted) return;
+    setState(() => _isSubmitting = false);
+
+    if (lastError == null) {
+      final successMessage =
+          '${tr('pcb_initial_stock_imported')}: $inserted ${tr('pcb_grouped_parts')} / $totalQty ${tr('pcb_total_qty')}';
+      Navigator.pop(context, successMessage);
+    } else {
+      final partialPrefix = inserted > 0
+          ? '${tr('pcb_initial_stock_partial')}: $inserted ${tr('pcb_grouped_parts')} / $totalQty ${tr('pcb_total_qty')}. '
+          : '';
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            '$partialPrefix${lastError['message']?.toString() ?? tr('pcb_scan_error')}',
+          ),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final grouped = _groupedItems;
+    return AlertDialog(
+      backgroundColor: AppColors.panelBackground,
+      title: Text(tr('pcb_initial_stock_upload'),
+          style: const TextStyle(color: Colors.white, fontSize: 16)),
+      content: SizedBox(
+        width: 720,
+        height: 520,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                SizedBox(
+                  width: 150,
+                  child: TextFormField(
+                    controller: _dateController,
+                    readOnly: true,
+                    onTap: _pickDate,
+                    decoration: fieldDecoration().copyWith(
+                      labelText: tr('pcb_date'),
+                      labelStyle:
+                          const TextStyle(color: Colors.white70, fontSize: 12),
+                      suffixIcon: const Icon(Icons.calendar_today,
+                          color: Colors.white70, size: 16),
+                    ),
+                    style: const TextStyle(color: Colors.white, fontSize: 13),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                SizedBox(
+                  width: 160,
+                  child: DropdownButtonFormField2<String>(
+                    decoration: fieldDecoration(),
+                    value: _selectedArea,
+                    isExpanded: true,
+                    items: _areas
+                        .map((area) => DropdownMenuItem(
+                              value: area,
+                              child: Text(area,
+                                  style: const TextStyle(fontSize: 13)),
+                            ))
+                        .toList(),
+                    onChanged: (value) {
+                      if (value != null) setState(() => _selectedArea = value);
+                    },
+                    dropdownStyleData: DropdownStyleData(
+                      width: 160,
+                      maxHeight: 160,
+                      decoration: BoxDecoration(
+                        color: AppColors.fieldBackground,
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      padding: EdgeInsets.zero,
+                    ),
+                    menuItemStyleData: const MenuItemStyleData(
+                      height: 32,
+                      padding: EdgeInsets.symmetric(horizontal: 10),
+                    ),
+                    style: const TextStyle(color: Colors.white, fontSize: 13),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                SizedBox(
+                  width: 130,
+                  child: DropdownButtonFormField2<String>(
+                    decoration: fieldDecoration(),
+                    value: _selectedProceso,
+                    isExpanded: true,
+                    items: _procesos
+                        .map((proceso) => DropdownMenuItem(
+                              value: proceso,
+                              child: Text(proceso,
+                                  style: const TextStyle(fontSize: 13)),
+                            ))
+                        .toList(),
+                    onChanged: (value) {
+                      if (value != null) {
+                        setState(() => _selectedProceso = value);
+                      }
+                    },
+                    dropdownStyleData: DropdownStyleData(
+                      width: 130,
+                      maxHeight: 140,
+                      decoration: BoxDecoration(
+                        color: AppColors.fieldBackground,
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      padding: EdgeInsets.zero,
+                    ),
+                    menuItemStyleData: const MenuItemStyleData(
+                      height: 32,
+                      padding: EdgeInsets.symmetric(horizontal: 10),
+                    ),
+                    style: const TextStyle(color: Colors.white, fontSize: 13),
+                  ),
+                ),
+                const Spacer(),
+                SizedBox(
+                  height: 34,
+                  child: ElevatedButton.icon(
+                    onPressed: _selectFile,
+                    icon: const Icon(Icons.upload_file, size: 16),
+                    label: Text(tr('pcb_select_file'),
+                        style: const TextStyle(fontSize: 12)),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppColors.buttonExcel,
+                      foregroundColor: Colors.white,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            TextFormField(
+              controller: _commentController,
+              decoration: fieldDecoration().copyWith(
+                labelText: tr('pcb_comentarios'),
+                labelStyle:
+                    const TextStyle(color: Colors.white70, fontSize: 12),
+              ),
+              style: const TextStyle(color: Colors.white, fontSize: 13),
+            ),
+            const SizedBox(height: 10),
+            Text(
+              _fileName == null
+                  ? tr('pcb_initial_stock_template_hint')
+                  : '${tr('pcb_selected_file')}: $_fileName',
+              style: const TextStyle(color: Colors.white54, fontSize: 12),
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                _buildMetric(
+                    tr('pcb_rows_valid'), '${_items.length}', Colors.green),
+                const SizedBox(width: 8),
+                _buildMetric(
+                    tr('pcb_grouped_parts'), '${grouped.length}', Colors.cyan),
+                const SizedBox(width: 8),
+                _buildMetric(tr('pcb_total_qty'), '$_totalQty', Colors.orange),
+                const SizedBox(width: 8),
+                _buildMetric(tr('pcb_errors'), '${_parseErrors.length}',
+                    _parseErrors.isEmpty ? Colors.white54 : Colors.red),
+                if (_isSubmitting) ...[
+                  const SizedBox(width: 8),
+                  _buildMetric(
+                    tr('pcb_import_progress'),
+                    '$_submittedBatches/$_totalBatches',
+                    Colors.blue,
+                  ),
+                ],
+              ],
+            ),
+            const SizedBox(height: 10),
+            Expanded(
+              child: Row(
+                children: [
+                  Expanded(
+                    child: _buildPreviewList(
+                      title: tr('pcb_preview_grouped'),
+                      rows: grouped
+                          .take(200)
+                          .map((item) =>
+                              '${item['pcb_part_no']}  |  ${item['qty']}')
+                          .toList(),
+                      emptyText: tr('pcb_no_data'),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: _buildPreviewList(
+                      title: tr('pcb_errors'),
+                      rows: _parseErrors
+                          .take(200)
+                          .map((error) =>
+                              '${tr('row')} ${error['row']}: ${error['message']}')
+                          .toList(),
+                      emptyText: tr('pcb_no_errors'),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: _isSubmitting ? null : () => Navigator.pop(context),
+          child:
+              Text(tr('cancel'), style: const TextStyle(color: Colors.white70)),
+        ),
+        ElevatedButton(
+          onPressed: _items.isEmpty || _isSubmitting ? null : _import,
+          style: ElevatedButton.styleFrom(
+            backgroundColor: AppColors.buttonSave,
+            disabledBackgroundColor: Colors.grey.shade700,
+          ),
+          child: _isSubmitting
+              ? const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : Text(tr('import'), style: const TextStyle(color: Colors.white)),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildMetric(String label, String value, Color color) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(4),
+        border: Border.all(color: color.withValues(alpha: 0.35)),
+      ),
+      child: Text(
+        '$label: $value',
+        style: TextStyle(
+          color: color,
+          fontSize: 12,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPreviewList({
+    required String title,
+    required List<String> rows,
+    required String emptyText,
+  }) {
+    return Container(
+      decoration: BoxDecoration(
+        color: AppColors.gridBackground,
+        border: Border.all(color: AppColors.border.withValues(alpha: 0.5)),
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            height: 30,
+            alignment: Alignment.centerLeft,
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            color: AppColors.gridHeader,
+            child: Text(title,
+                style: const TextStyle(color: Colors.white, fontSize: 12)),
+          ),
+          Expanded(
+            child: rows.isEmpty
+                ? Center(
+                    child: Text(emptyText,
+                        style: const TextStyle(
+                            color: Colors.white38, fontSize: 12)),
+                  )
+                : ListView.builder(
+                    itemCount: rows.length,
+                    itemBuilder: (context, index) {
+                      return Container(
+                        height: 26,
+                        alignment: Alignment.centerLeft,
+                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                        color: index.isEven
+                            ? AppColors.gridRowEven
+                            : AppColors.gridRowOdd,
+                        child: Text(
+                          rows[index],
+                          style: const TextStyle(
+                              color: Colors.white70, fontSize: 12),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      );
+                    },
+                  ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ParsedInitialStock {
+  final List<Map<String, dynamic>> items;
+  final List<Map<String, dynamic>> errors;
+
+  const _ParsedInitialStock({
+    required this.items,
+    required this.errors,
+  });
 }

@@ -38,6 +38,8 @@ class PcbEntradaGridPanelState extends State<PcbEntradaGridPanel>
   static const _fields = [
     'scanned_original',
     'area',
+    'defect_type',
+    'component_location',
     'qty',
     'array_count',
     'pcb_part_no',
@@ -54,6 +56,8 @@ class PcbEntradaGridPanelState extends State<PcbEntradaGridPanel>
   List<String> get _headers => [
         tr('pcb_scanned_code'),
         tr('pcb_area'),
+        tr('pcb_defect_type'),
+        tr('pcb_component_location'),
         tr('pcb_qty'),
         tr('pcb_array_count'),
         tr('pcb_part_no'),
@@ -71,9 +75,11 @@ class PcbEntradaGridPanelState extends State<PcbEntradaGridPanel>
   @override
   void initState() {
     super.initState();
-    initColumnFlex(11, 'pcb_entrada_grid', defaultFlexValues: [
+    initColumnFlex(13, 'pcb_entrada_grid', defaultFlexValues: [
       2.5,
       1.0,
+      1.4,
+      1.3,
       0.8,
       1.0,
       1.5,

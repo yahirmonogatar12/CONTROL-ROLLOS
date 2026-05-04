@@ -23,6 +23,7 @@ require('dotenv').config({ path: getEnvPath() });
 
 const { pool } = require('./config/database');
 const {
+  createPcbDefectCatalogTable,
   migratePcbInventorySchema,
   addPcbInventoryTipoMovimiento,
 } = require('./utils/dbMigrations');
@@ -30,6 +31,7 @@ const {
 async function main() {
   try {
     console.log('Migrando esquema PCB...');
+    await createPcbDefectCatalogTable();
     await migratePcbInventorySchema();
     await addPcbInventoryTipoMovimiento();
     console.log('Migracion PCB completa');

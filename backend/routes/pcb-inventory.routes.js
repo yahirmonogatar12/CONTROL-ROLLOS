@@ -8,6 +8,9 @@ const ctrl = require('../controllers/pcb-inventory.controller');
 // POST /api/pcb-inventory/scan - Registrar escaneo
 router.post('/scan', ctrl.scan);
 
+// POST /api/pcb-inventory/initial-stock/bulk - Cargar inventario inicial desde Excel
+router.post('/initial-stock/bulk', ctrl.bulkInitialStock);
+
 // GET /api/pcb-inventory/summary - Resumen agrupado
 router.get('/summary', ctrl.getSummary);
 

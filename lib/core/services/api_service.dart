@@ -4139,6 +4139,9 @@ class ApiService {
     int qty = 1,
     String? arrayGroupCode,
     String? arrayRole,
+    String? defectType,
+    String? componentLocation,
+    bool manualQtyConfirmed = false,
     String? comentarios,
     String? scannedBy,
   }) async {
@@ -4156,6 +4159,9 @@ class ApiService {
           'qty': qty,
           'array_group_code': arrayGroupCode,
           'array_role': arrayRole,
+          'defect_type': defectType,
+          'component_location': componentLocation,
+          'manual_qty_confirmed': manualQtyConfirmed,
           'comentarios': comentarios,
           'scanned_by': scannedBy,
         }),
@@ -4170,8 +4176,147 @@ class ApiService {
           'message': body['message'] ?? 'Error desconocido',
           'code': body['code'] ?? 'UNKNOWN',
           'statusCode': response.statusCode,
+          ...body,
         };
       }
+    } catch (e) {
+      return {
+        'success': false,
+        'message': 'Error de conexion: $e',
+        'code': 'CONNECTION_ERROR',
+      };
+    }
+  }
+
+  // POST - Cargar inventario inicial PCB desde Excel
+  static Future<Map<String, dynamic>> bulkAddPcbInitialStock({
+    required String inventoryDate,
+    required String area,
+    required String proceso,
+    required List<Map<String, dynamic>> items,
+    String? comentarios,
+    String? scannedBy,
+  }) async {
+    try {
+      final response = await http.post(
+        Uri.parse('$baseUrl/pcb-inventory/initial-stock/bulk'),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode({
+          'inventory_date': inventoryDate,
+          'area': area,
+          'proceso': proceso,
+          'items': items,
+          'comentarios': comentarios,
+          'scanned_by': scannedBy,
+        }),
+      );
+      final body = json.decode(response.body);
+      return {
+        'success': response.statusCode == 200 && body['success'] == true,
+        'statusCode': response.statusCode,
+        ...body,
+      };
+    } catch (e) {
+      return {
+        'success': false,
+        'message': 'Error de conexion: $e',
+        'code': 'CONNECTION_ERROR',
+      };
+    }
+  }
+
+  // GET - Catalogo de defectos PCB
+  static Future<List<Map<String, dynamic>>> getPcbDefects({
+    bool includeInactive = false,
+  }) async {
+    try {
+      final response = await http.get(Uri.parse(
+          '$baseUrl/pcb-defects?include_inactive=${includeInactive ? 'true' : 'false'}'));
+      if (response.statusCode == 200) {
+        final body = json.decode(response.body);
+        final List<dynamic> data = body['data'] ?? [];
+        return data.cast<Map<String, dynamic>>();
+      }
+      return [];
+    } catch (e) {
+      print('Error en getPcbDefects: $e');
+      return [];
+    }
+  }
+
+  // POST - Agregar defecto PCB al catalogo
+  static Future<Map<String, dynamic>> createPcbDefect({
+    required String defectName,
+    String? description,
+    String? createdBy,
+  }) async {
+    try {
+      final response = await http.post(
+        Uri.parse('$baseUrl/pcb-defects'),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode({
+          'defect_name': defectName,
+          'description': description,
+          'created_by': createdBy,
+        }),
+      );
+      final body = json.decode(response.body);
+      return {
+        'success': response.statusCode == 200 || response.statusCode == 201,
+        ...body,
+        'statusCode': response.statusCode,
+      };
+    } catch (e) {
+      return {
+        'success': false,
+        'message': 'Error de conexion: $e',
+        'code': 'CONNECTION_ERROR',
+      };
+    }
+  }
+
+  // PUT - Actualizar defecto PCB
+  static Future<Map<String, dynamic>> updatePcbDefect({
+    required int id,
+    required String defectName,
+    String? description,
+    int isActive = 1,
+  }) async {
+    try {
+      final response = await http.put(
+        Uri.parse('$baseUrl/pcb-defects/$id'),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode({
+          'defect_name': defectName,
+          'description': description,
+          'is_active': isActive,
+        }),
+      );
+      final body = json.decode(response.body);
+      return {
+        'success': response.statusCode == 200,
+        ...body,
+        'statusCode': response.statusCode,
+      };
+    } catch (e) {
+      return {
+        'success': false,
+        'message': 'Error de conexion: $e',
+        'code': 'CONNECTION_ERROR',
+      };
+    }
+  }
+
+  // DELETE - Desactivar defecto PCB
+  static Future<Map<String, dynamic>> deletePcbDefect(int id) async {
+    try {
+      final response = await http.delete(Uri.parse('$baseUrl/pcb-defects/$id'));
+      final body = json.decode(response.body);
+      return {
+        'success': response.statusCode == 200,
+        ...body,
+        'statusCode': response.statusCode,
+      };
     } catch (e) {
       return {
         'success': false,

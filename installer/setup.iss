@@ -1,15 +1,15 @@
 ﻿; ============================================
 ; Inno Setup Script - Control inventario SMD
-; VersiÃ³n: 1.1.8
+; VersiÃ³n: 1.1.9
 ; Generado automÃ¡ticamente por build.ps1
 ; ============================================
 
 #define MyAppName "Control inventario SMD"
-#define MyAppVersion "1.1.8"
+#define MyAppVersion "1.1.9"
 #define MyAppPublisher "MES"
 #define MyAppExeName "control_inventario_smd.exe"
 #define MyAppIcon "C:\Users\yahir\OneDrive\Escritorio\MES\Control_inventario_SMD\logoLogIn.ico"
-#define SourceDir "C:\Users\yahir\OneDrive\Escritorio\MES\Control_inventario_SMD\dist\Control_inventario_SMD-v1.1.8"
+#define SourceDir "C:\Users\yahir\OneDrive\Escritorio\MES\Control_inventario_SMD\dist\Control_inventario_SMD-v1.1.9"
 #define OutputDir "C:\Users\yahir\OneDrive\Escritorio\MES\Control_inventario_SMD\dist"
 
 [Setup]
@@ -21,7 +21,7 @@ DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 AllowNoIcons=yes
 OutputDir={#OutputDir}
-OutputBaseFilename=Control_inventario_SMD_Setup_v1.1.8
+OutputBaseFilename=Control_inventario_SMD_Setup_v1.1.9
 SetupIconFile={#MyAppIcon}
 Compression=lzma2/ultra64
 SolidCompression=yes

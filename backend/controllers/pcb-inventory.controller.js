@@ -18,12 +18,18 @@ function normalizeCode(code) {
 
 function parseScannedCode(code) {
   const parts = code.split(';').map(s => s.trim()).filter(Boolean);
+  const normalizedParts = parts.map(part => part.toUpperCase());
   return {
-    token0: parts[0] || null,
-    assy_type: parts[1] || null,
-    pcb_part_no: parts[2] || null,
-    token3: parts[3] || null,
+    token0: normalizedParts[0] || null,
+    assy_type: normalizedParts[1] || null,
+    pcb_part_no: normalizedParts[2] || null,
+    token3: normalizedParts[3] || null,
   };
+}
+
+function parsePcbPartNo(value) {
+  const partNo = (value || '').toString().trim().toUpperCase();
+  return /^EBR\d{8}$/.test(partNo) ? partNo : null;
 }
 
 async function lookupModelo(pcbPartNo) {
@@ -41,6 +47,38 @@ async function lookupModelo(pcbPartNo) {
   }
 }
 
+async function lookupModelosBatch(connection, pcbPartNos) {
+  const uniquePartNos = [...new Set((pcbPartNos || []).filter(Boolean))];
+  const defaultMap = new Map(uniquePartNos.map(partNo => [partNo, 'N/A']));
+  if (uniquePartNos.length === 0) return defaultMap;
+
+  const placeholders = uniquePartNos.map(() => '?').join(', ');
+  const [rows] = await connection.query(
+    `SELECT numero_parte, modelo
+     FROM bom
+     WHERE numero_parte IN (${placeholders})
+        OR modelo IN (${placeholders})`,
+    [...uniquePartNos, ...uniquePartNos]
+  );
+
+  for (const row of rows) {
+    const numeroParte = (row.numero_parte || '').toString().trim().toUpperCase();
+    const modelo = (row.modelo || '').toString().trim();
+    if (!modelo) continue;
+
+    if (defaultMap.has(numeroParte) && defaultMap.get(numeroParte) === 'N/A') {
+      defaultMap.set(numeroParte, modelo);
+    }
+
+    const modeloUpper = modelo.toUpperCase();
+    if (defaultMap.has(modeloUpper) && defaultMap.get(modeloUpper) === 'N/A') {
+      defaultMap.set(modeloUpper, modelo);
+    }
+  }
+
+  return defaultMap;
+}
+
 const VALID_PROCESOS = ['SMD', 'IMD', 'ASSY'];
 const VALID_AREAS = ['INVENTARIO', 'REPARACION'];
 const VALID_TIPOS = ['ENTRADA', 'SALIDA', 'SCRAP'];
@@ -53,6 +91,55 @@ function parseArrayCount(value) {
 function parseQty(value) {
   const parsed = parseInt(value, 10);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : 1;
+}
+
+function parseStrictQty(value) {
+  const parsed = parseInt(value, 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+async function getPartStock(connection, pcbPartNo, area, proceso) {
+  const [rows] = await connection.query(
+    `SELECT
+       SUM(CASE WHEN tipo_movimiento = 'ENTRADA' THEN qty ELSE 0 END)
+       - SUM(CASE WHEN tipo_movimiento IN ('SALIDA', 'SCRAP') THEN qty ELSE 0 END) AS stock_actual
+     FROM pcb_inventory_scan_smd
+     WHERE pcb_part_no = ?
+     AND area = ?
+     AND proceso = ?`,
+    [pcbPartNo, area, proceso]
+  );
+  return Number(rows[0]?.stock_actual || 0);
+}
+
+async function getInitialStockOption(connection, pcbPartNo) {
+  const [rows] = await connection.query(
+    `SELECT
+       pcb_part_no,
+       MAX(modelo) AS modelo,
+       area,
+       proceso,
+       SUM(CASE WHEN tipo_movimiento = 'ENTRADA'
+             AND scanned_original_norm LIKE 'INITIAL:%' THEN qty ELSE 0 END) AS initial_qty,
+       SUM(CASE WHEN tipo_movimiento = 'ENTRADA' THEN qty ELSE 0 END)
+       - SUM(CASE WHEN tipo_movimiento IN ('SALIDA', 'SCRAP') THEN qty ELSE 0 END) AS stock_actual
+     FROM pcb_inventory_scan_smd
+     WHERE pcb_part_no = ?
+     GROUP BY pcb_part_no, area, proceso
+     HAVING initial_qty > 0 AND stock_actual > 0
+     ORDER BY stock_actual DESC, initial_qty DESC
+     LIMIT 1`,
+    [pcbPartNo]
+  );
+
+  if (rows.length === 0) return null;
+  return {
+    pcb_part_no: rows[0].pcb_part_no,
+    modelo: rows[0].modelo || 'N/A',
+    area: rows[0].area,
+    proceso: rows[0].proceso,
+    available_stock: Number(rows[0].stock_actual || 0),
+  };
 }
 
 const VALID_ARRAY_ROLES = ['SINGLE', 'DEFECT', 'ARRAY_ITEM'];
@@ -77,7 +164,10 @@ exports.scan = async (req, res, next) => {
       array_count,
       qty,
       array_group_code,
-      array_role
+      array_role,
+      defect_type,
+      component_location,
+      manual_qty_confirmed
     } = req.body;
 
     if (!scanned_code || !scanned_code.trim()) {
@@ -124,7 +214,7 @@ exports.scan = async (req, res, next) => {
     }
 
     const qtyVal = parseQty(qty);
-    if (qtyVal > 99) {
+    if (tipo === 'ENTRADA' && qtyVal > 99) {
       return res.status(400).json({
         success: false,
         message: 'qty no puede ser mayor a 99',
@@ -134,8 +224,8 @@ exports.scan = async (req, res, next) => {
 
     const parsed = parseScannedCode(scanned_code.trim());
 
-    const ebrRegex = /^EBR\d{8}$/;
-    if (!parsed.pcb_part_no || !ebrRegex.test(parsed.pcb_part_no)) {
+    const parsedPartNo = parsePcbPartNo(parsed.pcb_part_no);
+    if (!parsedPartNo) {
       return res.status(400).json({
         success: false,
         message: `El 3er token debe ser un EBR valido (formato EBR########). Recibido: "${parsed.pcb_part_no || ''}"`,
@@ -148,6 +238,12 @@ exports.scan = async (req, res, next) => {
     const scannedOriginalNorm = normalizeCode(scanned_code);
     const arrayGroupCode = normalizeCode(array_group_code || scannedOriginal);
     const roleVal = array_role || (arrayCount > 1 ? (areaVal === 'REPARACION' ? 'DEFECT' : 'ARRAY_ITEM') : 'SINGLE');
+    const defectTypeVal = areaVal === 'REPARACION' && defect_type
+      ? defect_type.toString().trim().toUpperCase()
+      : null;
+    const componentLocationVal = areaVal === 'REPARACION' && component_location
+      ? component_location.toString().trim().toUpperCase()
+      : null;
     if (!VALID_ARRAY_ROLES.includes(roleVal)) {
       return res.status(400).json({
         success: false,
@@ -159,18 +255,58 @@ exports.scan = async (req, res, next) => {
     connection = await pool.getConnection();
     await connection.beginTransaction();
 
+    if (tipo === 'ENTRADA' && areaVal === 'REPARACION') {
+      if (!defectTypeVal) {
+        await connection.rollback();
+        return res.status(400).json({
+          success: false,
+          message: 'defect_type es requerido para entradas de reparacion',
+          code: 'MISSING_DEFECT_TYPE'
+        });
+      }
+
+      const [defectRows] = await connection.query(
+        `SELECT id
+         FROM pcb_defect_catalog
+         WHERE defect_name = ?
+         AND is_active = 1
+         LIMIT 1`,
+        [defectTypeVal]
+      );
+
+      if (defectRows.length === 0) {
+        await connection.rollback();
+        return res.status(400).json({
+          success: false,
+          message: 'El defecto no existe en el catalogo activo',
+          code: 'INVALID_DEFECT_TYPE'
+        });
+      }
+    }
+
+    let sourceForExit = null;
+    let manualInitialStockOption = null;
     if (tipo !== 'ENTRADA') {
       const [sourceRows] = await connection.query(
-        `SELECT *
-         FROM pcb_inventory_scan_smd
-         WHERE tipo_movimiento = 'ENTRADA'
-         AND scanned_original_norm = ?
-         ORDER BY created_at DESC, id DESC
+        `SELECT entrada.*,
+          entrada.qty - COALESCE((
+            SELECT SUM(salida.qty)
+            FROM pcb_inventory_scan_smd salida
+            WHERE salida.scanned_original_norm = entrada.scanned_original_norm
+            AND salida.area = entrada.area
+            AND salida.proceso = entrada.proceso
+            AND salida.tipo_movimiento IN ('SALIDA', 'SCRAP')
+          ), 0) AS remaining_qty
+         FROM pcb_inventory_scan_smd entrada
+         WHERE entrada.tipo_movimiento = 'ENTRADA'
+         AND entrada.scanned_original_norm = ?
+         ORDER BY entrada.created_at DESC, entrada.id DESC
          LIMIT 1`,
         [scannedOriginalNorm]
       );
 
       const source = sourceRows[0];
+      sourceForExit = source || null;
       if (source && source.array_group_code && Number(source.array_count || 1) > 1) {
         const [arrayEntries] = await connection.query(
           `SELECT *
@@ -230,8 +366,8 @@ exports.scan = async (req, res, next) => {
         for (const row of pendingRows) {
           const [result] = await connection.query(
             `INSERT INTO pcb_inventory_scan_smd
-              (inventory_date, scanned_original, scanned_original_norm, assy_type, pcb_part_no, modelo, proceso, area, tipo_movimiento, qty, array_count, array_group_code, array_role, comentarios, scanned_by)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              (inventory_date, scanned_original, scanned_original_norm, assy_type, pcb_part_no, modelo, proceso, area, tipo_movimiento, qty, array_count, array_group_code, array_role, defect_type, component_location, comentarios, scanned_by)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
               invDate,
               row.scanned_original,
@@ -246,6 +382,8 @@ exports.scan = async (req, res, next) => {
               row.array_count,
               row.array_group_code,
               row.array_role,
+              row.defect_type,
+              row.component_location,
               arrayComment,
               scanned_by || null,
             ]
@@ -273,13 +411,81 @@ exports.scan = async (req, res, next) => {
           array_count: expectedQty,
         });
       }
+
+      if (source) {
+        const remainingQty = Number(source.remaining_qty || 0);
+        if (remainingQty < qtyVal) {
+          await connection.rollback();
+          return res.status(409).json({
+            success: false,
+            message: `Este QR no tiene stock suficiente. Disponible: ${remainingQty}`,
+            code: 'INSUFFICIENT_QR_STOCK',
+            available_stock: remainingQty,
+            pcb_part_no: source.pcb_part_no,
+            area: source.area,
+            proceso: source.proceso,
+          });
+        }
+      } else if (manual_qty_confirmed === true) {
+        const initialStockOption = await getInitialStockOption(connection, parsedPartNo);
+        if (!initialStockOption || initialStockOption.available_stock < qtyVal) {
+          await connection.rollback();
+          return res.status(409).json({
+            success: false,
+            message: `Stock inicial insuficiente para ${parsedPartNo}. Disponible: ${initialStockOption?.available_stock || 0}`,
+            code: 'INSUFFICIENT_STOCK',
+            available_stock: initialStockOption?.available_stock || 0,
+            requested_qty: qtyVal,
+            pcb_part_no: parsedPartNo,
+            area: initialStockOption?.area || null,
+            proceso: initialStockOption?.proceso || null,
+          });
+        }
+        manualInitialStockOption = initialStockOption;
+      } else {
+        const initialStockOption = await getInitialStockOption(connection, parsedPartNo);
+        await connection.rollback();
+        if (!initialStockOption) {
+          return res.status(409).json({
+            success: false,
+            message: `El QR no existe y no hay inventario inicial disponible para ${parsedPartNo}.`,
+            code: 'PCB_QR_NOT_IN_INVENTORY',
+            pcb_part_no: parsedPartNo,
+            modelo: await lookupModelo(parsedPartNo),
+            available_stock: 0,
+            manual_allowed: false,
+          });
+        }
+        return res.status(409).json({
+          success: false,
+          message: `El QR no existe en inventario. Capture cantidad para dar salida por No. Parte ${parsedPartNo}.`,
+          code: 'PCB_QR_NOT_IN_INVENTORY',
+          pcb_part_no: parsedPartNo,
+          modelo: initialStockOption.modelo,
+          available_stock: initialStockOption.available_stock,
+          area: initialStockOption.area,
+          proceso: initialStockOption.proceso,
+          manual_allowed: true,
+          initial_stock_exit: true,
+        });
+      }
     }
+
+    const movementArea = sourceForExit
+      ? sourceForExit.area
+      : (manualInitialStockOption ? manualInitialStockOption.area : areaVal);
+    const movementProceso = sourceForExit
+      ? sourceForExit.proceso
+      : (manualInitialStockOption ? manualInitialStockOption.proceso : proceso);
+    const movementModelo = sourceForExit
+      ? sourceForExit.modelo
+      : (manualInitialStockOption ? manualInitialStockOption.modelo : await lookupModelo(parsedPartNo));
 
     // Verificar duplicado por dia + codigo + tipo_movimiento + area
     const [existing] = await connection.query(
       `SELECT id, area FROM pcb_inventory_scan_smd
        WHERE inventory_date = ? AND scanned_original_norm = ? AND tipo_movimiento = ? AND area = ?`,
-      [invDate, scannedOriginalNorm, tipo, areaVal]
+      [invDate, scannedOriginalNorm, tipo, movementArea]
     );
 
     if (existing.length > 0) {
@@ -292,26 +498,26 @@ exports.scan = async (req, res, next) => {
       });
     }
 
-    const modelo = await lookupModelo(parsed.pcb_part_no);
-
     const [result] = await connection.query(
       `INSERT INTO pcb_inventory_scan_smd
-        (inventory_date, scanned_original, scanned_original_norm, assy_type, pcb_part_no, modelo, proceso, area, tipo_movimiento, qty, array_count, array_group_code, array_role, comentarios, scanned_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        (inventory_date, scanned_original, scanned_original_norm, assy_type, pcb_part_no, modelo, proceso, area, tipo_movimiento, qty, array_count, array_group_code, array_role, defect_type, component_location, comentarios, scanned_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         invDate,
         scannedOriginal,
         scannedOriginalNorm,
         parsed.assy_type,
-        parsed.pcb_part_no,
-        modelo,
-        proceso,
-        areaVal,
+        parsedPartNo,
+        movementModelo,
+        movementProceso,
+        movementArea,
         tipo,
         qtyVal,
         arrayCount,
         arrayGroupCode,
         roleVal,
+        defectTypeVal,
+        componentLocationVal,
         comentarios || null,
         scanned_by || null,
       ]
@@ -335,6 +541,175 @@ exports.scan = async (req, res, next) => {
       total_qty: qtyVal,
     });
 
+  } catch (err) {
+    if (connection) {
+      try {
+        await connection.rollback();
+      } catch (_) {}
+    }
+    next(err);
+  } finally {
+    if (connection) connection.release();
+  }
+};
+
+// ============================================
+// POST /api/pcb-inventory/initial-stock/bulk
+// Carga inventario inicial por No. Parte + Cantidad, sin escaneo QR.
+// ============================================
+exports.bulkInitialStock = async (req, res, next) => {
+  let connection;
+  try {
+    const {
+      inventory_date,
+      area,
+      proceso,
+      comentarios,
+      scanned_by,
+      items,
+    } = req.body;
+
+    const invDate = inventory_date || new Date().toISOString().slice(0, 10);
+    const areaVal = area || 'INVENTARIO';
+    if (!VALID_AREAS.includes(areaVal)) {
+      return res.status(400).json({
+        success: false,
+        message: `area debe ser uno de: ${VALID_AREAS.join(', ')}`,
+        code: 'INVALID_AREA',
+      });
+    }
+
+    if (!proceso || !VALID_PROCESOS.includes(proceso)) {
+      return res.status(400).json({
+        success: false,
+        message: `proceso es requerido y debe ser uno de: ${VALID_PROCESOS.join(', ')}`,
+        code: 'INVALID_PROCESO',
+      });
+    }
+
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'items es requerido',
+        code: 'MISSING_ITEMS',
+      });
+    }
+
+    const errors = [];
+    const grouped = new Map();
+    items.forEach((item, index) => {
+      const rowNumber = Number(item?.row_number || index + 2);
+      const partNo = parsePcbPartNo(item?.pcb_part_no);
+      const qtyVal = parseStrictQty(item?.qty);
+
+      if (!partNo) {
+        errors.push({
+          row: rowNumber,
+          pcb_part_no: item?.pcb_part_no || '',
+          message: 'No. Parte PCB invalido (esperado EBR########)',
+          code: 'INVALID_PCB_PART_NO',
+        });
+        return;
+      }
+
+      if (!qtyVal) {
+        errors.push({
+          row: rowNumber,
+          pcb_part_no: partNo,
+          message: 'Cantidad invalida',
+          code: 'INVALID_QTY',
+        });
+        return;
+      }
+
+      grouped.set(partNo, (grouped.get(partNo) || 0) + qtyVal);
+    });
+
+    if (grouped.size === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'No hay filas validas para importar',
+        code: 'NO_VALID_ROWS',
+        rows_received: items.length,
+        valid_rows: 0,
+        inserted: 0,
+        total_qty: 0,
+        errors,
+      });
+    }
+
+    connection = await pool.getConnection();
+    await connection.beginTransaction();
+
+    const insertedIds = [];
+    const nowToken = Date.now();
+    const initialComment = comentarios && comentarios.toString().trim()
+      ? `Inventario inicial | ${comentarios.toString().trim()}`
+      : 'Inventario inicial';
+    const groupedEntries = Array.from(grouped.entries());
+    const modeloMap = await lookupModelosBatch(
+      connection,
+      groupedEntries.map(([partNo]) => partNo)
+    );
+
+    const chunkSize = 250;
+    for (let offset = 0; offset < groupedEntries.length; offset += chunkSize) {
+      const chunk = groupedEntries.slice(offset, offset + chunkSize);
+      const values = [];
+      const placeholders = [];
+
+      chunk.forEach(([partNo, qtyVal], index) => {
+        const insertIndex = offset + index + 1;
+        const scannedOriginal = `INITIAL:${partNo}:${nowToken}:${insertIndex}`;
+        placeholders.push('(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+        values.push(
+          invDate,
+          scannedOriginal,
+          normalizeCode(scannedOriginal),
+          null,
+          partNo,
+          modeloMap.get(partNo) || 'N/A',
+          proceso,
+          areaVal,
+          'ENTRADA',
+          qtyVal,
+          1,
+          normalizeCode(scannedOriginal),
+          'SINGLE',
+          null,
+          null,
+          initialComment,
+          scanned_by || null,
+        );
+      });
+
+      const [result] = await connection.query(
+        `INSERT INTO pcb_inventory_scan_smd
+          (inventory_date, scanned_original, scanned_original_norm, assy_type, pcb_part_no, modelo, proceso, area, tipo_movimiento, qty, array_count, array_group_code, array_role, defect_type, component_location, comentarios, scanned_by)
+         VALUES ${placeholders.join(', ')}`,
+        values
+      );
+
+      const firstInsertId = Number(result.insertId || 0);
+      const affectedRows = Number(result.affectedRows || 0);
+      for (let i = 0; i < affectedRows; i += 1) {
+        insertedIds.push(firstInsertId + i);
+      }
+    }
+
+    await connection.commit();
+
+    return res.json({
+      success: true,
+      message: 'Inventario inicial importado',
+      rows_received: items.length,
+      valid_rows: items.length - errors.length,
+      grouped_rows: grouped.size,
+      inserted: insertedIds.length,
+      inserted_ids: insertedIds,
+      total_qty: Array.from(grouped.values()).reduce((sum, qtyVal) => sum + qtyVal, 0),
+      errors,
+    });
   } catch (err) {
     if (connection) {
       try {
@@ -433,6 +808,8 @@ exports.getScans = async (req, res, next) => {
         array_count,
         array_group_code,
         array_role,
+        defect_type,
+        component_location,
         comentarios,
         scanned_by,
         created_at,
@@ -587,6 +964,8 @@ exports.getStockDetail = async (req, res, next) => {
         array_count,
         array_group_code,
         array_role,
+        defect_type,
+        component_location,
         comentarios,
         scanned_by,
         created_at,

@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:dropdown_button2/dropdown_button2.dart';
+import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:material_warehousing_flutter/core/localization/app_translations.dart';
 import 'package:material_warehousing_flutter/core/theme/app_colors.dart';
@@ -123,12 +123,22 @@ class PcbSalidaFormPanelState extends State<PcbSalidaFormPanel> {
       _statusMessage = null;
     });
 
+    await _submitScan(code: code);
+  }
+
+  Future<void> _submitScan({
+    required String code,
+    int qty = 1,
+    bool manualQtyConfirmed = false,
+  }) async {
     final result = await ApiService.scanPcbInventory(
       scannedCode: code,
       inventoryDate: _formattedDate,
       proceso: _selectedProceso,
       area: _selectedArea,
       tipoMovimiento: _tipoMovimiento,
+      qty: qty,
+      manualQtyConfirmed: manualQtyConfirmed,
       comentarios:
           _commentController.text.isNotEmpty ? _commentController.text : null,
       scannedBy: AuthService.currentUser?.nombreCompleto,
@@ -157,6 +167,29 @@ class PcbSalidaFormPanelState extends State<PcbSalidaFormPanel> {
         widget.onDataSaved();
       } else {
         final errorCode = result['code'] ?? '';
+        if (errorCode == 'PCB_QR_NOT_IN_INVENTORY' &&
+            !manualQtyConfirmed &&
+            _tipoMovimiento == 'SALIDA' &&
+            result['manual_allowed'] == true) {
+          setState(() => _isLoading = false);
+          final manualQty = await _showManualQtyDialog(result);
+          if (manualQty != null && mounted) {
+            setState(() {
+              _isLoading = true;
+              _statusMessage = null;
+            });
+            await _submitScan(
+              code: code,
+              qty: manualQty,
+              manualQtyConfirmed: true,
+            );
+            return;
+          }
+          _scanController.clear();
+          requestScanFocus();
+          return;
+        }
+
         String msg = result['message'] ?? tr('pcb_scan_error');
         if (errorCode == 'DUPLICATE_SCAN')
           msg = tr('pcb_duplicate_scan');
@@ -168,6 +201,10 @@ class PcbSalidaFormPanelState extends State<PcbSalidaFormPanel> {
           msg = tr('pcb_array_incomplete');
         else if (errorCode == 'ARRAY_ALREADY_OUT')
           msg = tr('pcb_array_already_out');
+        else if (errorCode == 'INSUFFICIENT_STOCK' ||
+            errorCode == 'INSUFFICIENT_QR_STOCK') {
+          msg = tr('pcb_insufficient_stock');
+        }
         setState(() {
           _statusMessage = msg;
           _statusIsError = true;
@@ -177,6 +214,92 @@ class PcbSalidaFormPanelState extends State<PcbSalidaFormPanel> {
       setState(() => _isLoading = false);
       requestScanFocus();
     }
+  }
+
+  Future<int?> _showManualQtyDialog(Map<String, dynamic> scanResult) async {
+    final qtyController = TextEditingController(text: '1');
+    final partNo = scanResult['pcb_part_no']?.toString() ?? _extractPcbPartNo();
+    final availableStock = scanResult['available_stock']?.toString() ?? '0';
+    final autoArea = scanResult['area']?.toString() ?? '';
+    final autoProceso = scanResult['proceso']?.toString() ?? '';
+    final result = await showDialog<int>(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          backgroundColor: AppColors.panelBackground,
+          title: Text(tr('pcb_manual_exit_title'),
+              style: const TextStyle(color: Colors.white, fontSize: 16)),
+          content: SizedBox(
+            width: 360,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '${tr('pcb_part_no')}: $partNo',
+                  style: const TextStyle(color: Colors.white70, fontSize: 13),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  '${tr('pcb_available_stock')}: $availableStock',
+                  style: const TextStyle(color: Colors.green, fontSize: 13),
+                ),
+                if (autoArea.isNotEmpty || autoProceso.isNotEmpty) ...[
+                  const SizedBox(height: 6),
+                  Text(
+                    '${tr('pcb_auto_area_process')}: $autoArea / $autoProceso',
+                    style: const TextStyle(color: Colors.cyan, fontSize: 13),
+                  ),
+                ],
+                const SizedBox(height: 14),
+                TextField(
+                  controller: qtyController,
+                  autofocus: true,
+                  decoration: fieldDecoration().copyWith(
+                    labelText: tr('pcb_qty_to_exit'),
+                    labelStyle:
+                        const TextStyle(color: Colors.white70, fontSize: 12),
+                  ),
+                  style: const TextStyle(color: Colors.white, fontSize: 14),
+                  keyboardType: TextInputType.number,
+                  inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                  onSubmitted: (_) {
+                    final qty = int.tryParse(qtyController.text.trim()) ?? 0;
+                    if (qty > 0) Navigator.pop(ctx, qty);
+                  },
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: Text(tr('cancel'),
+                  style: const TextStyle(color: Colors.white70)),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(backgroundColor: _accentColor),
+              onPressed: () {
+                final qty = int.tryParse(qtyController.text.trim()) ?? 0;
+                if (qty > 0) Navigator.pop(ctx, qty);
+              },
+              child: Text(tr('confirm'),
+                  style: const TextStyle(color: Colors.white)),
+            ),
+          ],
+        );
+      },
+    );
+    qtyController.dispose();
+    return result;
+  }
+
+  String _extractPcbPartNo() {
+    final parts = _scanController.text
+        .split(';')
+        .map((part) => part.trim().toUpperCase())
+        .toList();
+    return parts.length > 2 ? parts[2] : '';
   }
 
   Future<void> _pickDate() async {
@@ -224,8 +347,9 @@ class PcbSalidaFormPanelState extends State<PcbSalidaFormPanel> {
         padding: const EdgeInsets.symmetric(horizontal: 18),
         alignment: Alignment.center,
         decoration: BoxDecoration(
-          color:
-              isSelected ? color.withOpacity(0.25) : AppColors.fieldBackground,
+          color: isSelected
+              ? color.withValues(alpha: 0.25)
+              : AppColors.fieldBackground,
           borderRadius: BorderRadius.circular(4),
           border: Border.all(
               color: isSelected ? color : AppColors.border,
@@ -246,12 +370,12 @@ class PcbSalidaFormPanelState extends State<PcbSalidaFormPanel> {
   @override
   Widget build(BuildContext context) {
     return Container(
-      color: AppColors.panelBackground,
+      color: AppColors.subPanelBackground,
       padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Fila 1: Tipo selector + Area + Proceso
+          // Fila 1: Tipo selector + Fecha
           Row(
             children: [
               SizedBox(
@@ -263,94 +387,6 @@ class PcbSalidaFormPanelState extends State<PcbSalidaFormPanel> {
               _buildTipoButton('SALIDA', tr('pcb_tab_salida'), Colors.orange),
               const SizedBox(width: 6),
               _buildTipoButton('SCRAP', tr('pcb_tab_scrap'), Colors.red),
-              const SizedBox(width: 24),
-              SizedBox(
-                width: 60,
-                child: Text(tr('pcb_area'),
-                    style: const TextStyle(fontSize: 14, color: Colors.white)),
-              ),
-              SizedBox(
-                width: 170,
-                child: DropdownButtonFormField2<String>(
-                  decoration: fieldDecoration(),
-                  value: _selectedArea,
-                  isExpanded: true,
-                  style: const TextStyle(fontSize: 14, color: Colors.white),
-                  items: _areas
-                      .map((a) => DropdownMenuItem(
-                            value: a,
-                            child:
-                                Text(a, style: const TextStyle(fontSize: 14)),
-                          ))
-                      .toList(),
-                  onChanged: (val) {
-                    if (val != null) {
-                      setState(() => _selectedArea = val);
-                      _saveLocalPrefs();
-                    }
-                  },
-                  iconStyleData: const IconStyleData(
-                    icon: Icon(Icons.arrow_drop_down,
-                        color: Colors.white70, size: 20),
-                  ),
-                  dropdownStyleData: DropdownStyleData(
-                    maxHeight: 200,
-                    decoration: BoxDecoration(
-                      color: AppColors.fieldBackground,
-                      borderRadius: BorderRadius.circular(4),
-                    ),
-                    padding: EdgeInsets.zero,
-                  ),
-                  menuItemStyleData: const MenuItemStyleData(
-                    height: 32,
-                    padding: EdgeInsets.symmetric(horizontal: 10),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 24),
-              SizedBox(
-                width: 70,
-                child: Text(tr('pcb_proceso'),
-                    style: const TextStyle(fontSize: 14, color: Colors.white)),
-              ),
-              SizedBox(
-                width: 150,
-                child: DropdownButtonFormField2<String>(
-                  decoration: fieldDecoration(),
-                  value: _selectedProceso,
-                  isExpanded: true,
-                  style: const TextStyle(fontSize: 14, color: Colors.white),
-                  items: _procesos
-                      .map((p) => DropdownMenuItem(
-                            value: p,
-                            child:
-                                Text(p, style: const TextStyle(fontSize: 14)),
-                          ))
-                      .toList(),
-                  onChanged: (val) {
-                    if (val != null) {
-                      setState(() => _selectedProceso = val);
-                      _saveLocalPrefs();
-                    }
-                  },
-                  iconStyleData: const IconStyleData(
-                    icon: Icon(Icons.arrow_drop_down,
-                        color: Colors.white70, size: 20),
-                  ),
-                  dropdownStyleData: DropdownStyleData(
-                    maxHeight: 200,
-                    decoration: BoxDecoration(
-                      color: AppColors.fieldBackground,
-                      borderRadius: BorderRadius.circular(4),
-                    ),
-                    padding: EdgeInsets.zero,
-                  ),
-                  menuItemStyleData: const MenuItemStyleData(
-                    height: 32,
-                    padding: EdgeInsets.symmetric(horizontal: 10),
-                  ),
-                ),
-              ),
               const SizedBox(width: 24),
               SizedBox(
                 width: 60,
@@ -459,13 +495,13 @@ class PcbSalidaFormPanelState extends State<PcbSalidaFormPanel> {
                         padding: const EdgeInsets.symmetric(horizontal: 10),
                         decoration: BoxDecoration(
                           color: _statusIsError
-                              ? Colors.red.withOpacity(0.15)
-                              : _accentColor.withOpacity(0.15),
+                              ? Colors.red.withValues(alpha: 0.15)
+                              : _accentColor.withValues(alpha: 0.15),
                           borderRadius: BorderRadius.circular(4),
                           border: Border.all(
                               color: _statusIsError
-                                  ? Colors.red.withOpacity(0.3)
-                                  : _accentColor.withOpacity(0.3)),
+                                  ? Colors.red.withValues(alpha: 0.3)
+                                  : _accentColor.withValues(alpha: 0.3)),
                         ),
                         child: Text(
                           _statusMessage!,

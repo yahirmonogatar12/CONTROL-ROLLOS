@@ -581,6 +581,8 @@ async function createPcbInventoryScanTable() {
         array_count INT NOT NULL DEFAULT 1,
         array_group_code VARCHAR(180) NULL,
         array_role VARCHAR(20) NOT NULL DEFAULT 'SINGLE',
+        defect_type VARCHAR(120) NULL,
+        component_location VARCHAR(120) NULL,
         comentarios TEXT NULL,
         scanned_by VARCHAR(100) NULL,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -628,6 +630,16 @@ async function migratePcbInventorySchema() {
     'pcb_inventory_scan_smd',
     'array_role',
     "VARCHAR(20) NOT NULL DEFAULT 'SINGLE' AFTER array_group_code"
+  );
+  await addColumnIfNotExists(
+    'pcb_inventory_scan_smd',
+    'defect_type',
+    'VARCHAR(120) NULL AFTER array_role'
+  );
+  await addColumnIfNotExists(
+    'pcb_inventory_scan_smd',
+    'component_location',
+    'VARCHAR(120) NULL AFTER defect_type'
   );
 
   try {
@@ -750,6 +762,28 @@ async function addPcbInventoryTipoMovimiento() {
   }
 }
 
+// Catalogo de defectos PCB usados durante reparacion
+async function createPcbDefectCatalogTable() {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS pcb_defect_catalog (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        defect_name VARCHAR(120) NOT NULL,
+        description TEXT NULL,
+        is_active TINYINT NOT NULL DEFAULT 1,
+        created_by VARCHAR(100) NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY uk_pcb_defect_name (defect_name),
+        INDEX idx_pcb_defect_active (is_active)
+      )
+    `);
+    console.log('✓ Tabla pcb_defect_catalog verificada/creada');
+  } catch (err) {
+    console.log('Nota: La tabla pcb_defect_catalog puede ya existir:', err.message);
+  }
+}
+
 // Ejecutar todas las migraciones
 async function runMigrations() {
   console.log('🔄 Ejecutando migraciones de base de datos...');
@@ -770,6 +804,7 @@ async function runMigrations() {
   await createLotDivisionTable();
   await createRequirementsTables();
   await addReentryColumns();
+  await createPcbDefectCatalogTable();
   await createPcbInventoryScanTable();
   await migratePcbInventorySchema();
   await addPcbInventoryTipoMovimiento();
@@ -914,6 +949,7 @@ async function createLotDivisionTable() {
 
 module.exports = {
   runMigrations,
+  createPcbDefectCatalogTable,
   migratePcbInventorySchema,
   addPcbInventoryTipoMovimiento,
   addColumnIfNotExists
