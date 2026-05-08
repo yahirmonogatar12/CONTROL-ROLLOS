@@ -419,6 +419,7 @@ exports.getAvailablePermissions = async (req, res, next) => {
       { key: 'view_pcb_entrada', name: 'Ver PCB Entrada', category: 'Inventario PCB', description: 'Puede ver el módulo de entrada de PCBs' },
       { key: 'view_pcb_salida', name: 'Ver PCB Salida', category: 'Inventario PCB', description: 'Puede ver el módulo de salida de PCBs' },
       { key: 'view_pcb_inventario', name: 'Ver PCB Inventario', category: 'Inventario PCB', description: 'Puede ver el inventario actual de PCBs' },
+      { key: 'view_pcb_bom', name: 'Ver BOM PCB', category: 'Inventario PCB', description: 'Puede consultar specs de componentes en el BOM PCB' },
       { key: 'view_smt_requests', name: 'Ver Solicitudes SMT', category: 'SMT', description: 'Puede ver y surtir solicitudes de material de las líneas SMT' },
     ];
     res.json(permissions);

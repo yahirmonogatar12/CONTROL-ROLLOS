@@ -617,6 +617,52 @@ class ApiService {
     }
   }
 
+  // GET - Buscar componentes/specs en BOM por PCB, componente, ubicacion o texto
+  static Future<Map<String, dynamic>> searchBomComponents({
+    String? query,
+    String? modelo,
+    String? side,
+    String? tipoMaterial,
+    String? classification,
+    int limit = 500,
+  }) async {
+    try {
+      final params = <String, String>{
+        'limit': limit.toString(),
+      };
+      if (query != null && query.trim().isNotEmpty) {
+        params['q'] = query.trim();
+      }
+      if (modelo != null && modelo.trim().isNotEmpty) {
+        params['modelo'] = modelo.trim();
+      }
+      if (side != null && side.isNotEmpty && side != 'ALL') {
+        params['side'] = side;
+      }
+      if (tipoMaterial != null &&
+          tipoMaterial.isNotEmpty &&
+          tipoMaterial != 'ALL') {
+        params['tipo_material'] = tipoMaterial;
+      }
+      if (classification != null &&
+          classification.isNotEmpty &&
+          classification != 'ALL') {
+        params['classification'] = classification;
+      }
+
+      final uri =
+          Uri.parse('$baseUrl/bom/search').replace(queryParameters: params);
+      final response = await http.get(uri);
+      if (response.statusCode == 200) {
+        return json.decode(response.body);
+      }
+      return {'success': false, 'data': [], 'count': 0};
+    } catch (e) {
+      print('Error en searchBomComponents: $e');
+      return {'success': false, 'data': [], 'count': 0};
+    }
+  }
+
   // ============================================
   // PLAN MAIN (Plan de producción)
   // ============================================
@@ -4142,6 +4188,8 @@ class ApiService {
     String? defectType,
     String? componentLocation,
     bool manualQtyConfirmed = false,
+    String? initialStockArea,
+    String? initialStockProceso,
     String? comentarios,
     String? scannedBy,
   }) async {
@@ -4162,6 +4210,8 @@ class ApiService {
           'defect_type': defectType,
           'component_location': componentLocation,
           'manual_qty_confirmed': manualQtyConfirmed,
+          'initial_stock_area': initialStockArea,
+          'initial_stock_proceso': initialStockProceso,
           'comentarios': comentarios,
           'scanned_by': scannedBy,
         }),

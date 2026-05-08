@@ -19,6 +19,7 @@ module.exports = router;
 // Exportar BOM router separado
 const bomRouter = express.Router();
 bomRouter.get('/models', planController.getBomModels);
+bomRouter.get('/search', planController.searchBom);
 bomRouter.get('/:modelo', planController.getBomByModelo);
 
 module.exports.bomRouter = bomRouter;

@@ -1,11 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:dropdown_button2/dropdown_button2.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:material_warehousing_flutter/core/localization/app_translations.dart';
-import 'package:material_warehousing_flutter/core/theme/app_colors.dart';
-import 'package:material_warehousing_flutter/core/widgets/field_decoration.dart';
 import 'package:material_warehousing_flutter/core/services/api_service.dart';
 import 'package:material_warehousing_flutter/core/services/auth_service.dart';
+import 'package:material_warehousing_flutter/core/theme/app_colors.dart';
+import 'package:material_warehousing_flutter/core/widgets/field_decoration.dart';
 
 class _PcbManualExitSelection {
   final int qty;
@@ -19,21 +20,21 @@ class _PcbManualExitSelection {
   });
 }
 
-class PcbSalidaFormPanel extends StatefulWidget {
+/// Pantalla móvil de SALIDA / SCRAP de PCBs.
+/// Adaptación compacta de [pcb_salida_form_panel.dart] para PDA/handheld.
+class MobilePcbExitScreen extends StatefulWidget {
   final LanguageProvider languageProvider;
-  final VoidCallback onDataSaved;
 
-  const PcbSalidaFormPanel({
+  const MobilePcbExitScreen({
     super.key,
     required this.languageProvider,
-    required this.onDataSaved,
   });
 
   @override
-  State<PcbSalidaFormPanel> createState() => PcbSalidaFormPanelState();
+  State<MobilePcbExitScreen> createState() => _MobilePcbExitScreenState();
 }
 
-class PcbSalidaFormPanelState extends State<PcbSalidaFormPanel> {
+class _MobilePcbExitScreenState extends State<MobilePcbExitScreen> {
   final TextEditingController _scanController = TextEditingController();
   final TextEditingController _commentController = TextEditingController();
   final TextEditingController _dateController = TextEditingController();
@@ -41,12 +42,11 @@ class PcbSalidaFormPanelState extends State<PcbSalidaFormPanel> {
 
   String _selectedProceso = 'SMD';
   String _selectedArea = 'INVENTARIO';
-  String _tipoMovimiento = 'SALIDA'; // SALIDA or SCRAP
+  String _tipoMovimiento = 'SALIDA';
   DateTime _inventoryDate = DateTime.now();
   bool _isLoading = false;
   String? _statusMessage;
   bool _statusIsError = false;
-  List<int> _lastInsertedIds = [];
 
   static const List<String> _procesos = ['SMD', 'IMD', 'ASSY'];
   static const List<String> _areas = ['INVENTARIO', 'REPARACION'];
@@ -54,7 +54,7 @@ class PcbSalidaFormPanelState extends State<PcbSalidaFormPanel> {
   String tr(String key) => widget.languageProvider.tr(key);
 
   Color get _accentColor =>
-      _tipoMovimiento == 'SCRAP' ? Colors.red : Colors.orange;
+      _tipoMovimiento == 'SCRAP' ? Colors.redAccent : Colors.orangeAccent;
 
   String get _formattedDate =>
       '${_inventoryDate.year}-${_inventoryDate.month.toString().padLeft(2, '0')}-${_inventoryDate.day.toString().padLeft(2, '0')}';
@@ -64,6 +64,9 @@ class PcbSalidaFormPanelState extends State<PcbSalidaFormPanel> {
     super.initState();
     _dateController.text = _formattedDate;
     _loadLocalPrefs();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _scanFocusNode.requestFocus();
+    });
   }
 
   @override
@@ -75,7 +78,7 @@ class PcbSalidaFormPanelState extends State<PcbSalidaFormPanel> {
     super.dispose();
   }
 
-  void requestScanFocus() {
+  void _requestScanFocus() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) _scanFocusNode.requestFocus();
     });
@@ -84,10 +87,10 @@ class PcbSalidaFormPanelState extends State<PcbSalidaFormPanel> {
   Future<void> _loadLocalPrefs() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final savedProcess = prefs.getString('pcb_salida_last_process');
-      final savedArea = prefs.getString('pcb_salida_last_area');
-      final savedComment = prefs.getString('pcb_salida_last_comment');
-      final savedTipo = prefs.getString('pcb_salida_last_tipo');
+      final savedProcess = prefs.getString('mobile_pcb_exit_last_process');
+      final savedArea = prefs.getString('mobile_pcb_exit_last_area');
+      final savedComment = prefs.getString('mobile_pcb_exit_last_comment');
+      final savedTipo = prefs.getString('mobile_pcb_exit_last_tipo');
       if (mounted) {
         setState(() {
           if (savedProcess != null && _procesos.contains(savedProcess)) {
@@ -109,10 +112,11 @@ class PcbSalidaFormPanelState extends State<PcbSalidaFormPanel> {
   Future<void> _saveLocalPrefs() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('pcb_salida_last_process', _selectedProceso);
-      await prefs.setString('pcb_salida_last_area', _selectedArea);
-      await prefs.setString('pcb_salida_last_comment', _commentController.text);
-      await prefs.setString('pcb_salida_last_tipo', _tipoMovimiento);
+      await prefs.setString('mobile_pcb_exit_last_process', _selectedProceso);
+      await prefs.setString('mobile_pcb_exit_last_area', _selectedArea);
+      await prefs.setString(
+          'mobile_pcb_exit_last_comment', _commentController.text);
+      await prefs.setString('mobile_pcb_exit_last_tipo', _tipoMovimiento);
     } catch (_) {}
   }
 
@@ -126,7 +130,7 @@ class PcbSalidaFormPanelState extends State<PcbSalidaFormPanel> {
         _statusIsError = true;
       });
       _scanController.clear();
-      requestScanFocus();
+      _requestScanFocus();
       return;
     }
 
@@ -160,78 +164,72 @@ class PcbSalidaFormPanelState extends State<PcbSalidaFormPanel> {
       scannedBy: AuthService.currentUser?.nombreCompleto,
     );
 
-    if (mounted) {
-      if (result['success'] == true) {
-        final data = result['data'];
-        final ids = (result['inserted_ids'] as List?)
-            ?.map((id) => (id as num).toInt())
-            .toList();
-        final fallbackId = data?['id'] is num ? (data['id'] as num).toInt() : 0;
-        _lastInsertedIds = ids?.isNotEmpty == true
-            ? ids!
-            : (fallbackId > 0 ? [fallbackId] : []);
-        final isArrayExit = result['array_exit'] == true;
-        final totalQty = result['total_qty'] ?? _lastInsertedIds.length;
-        setState(() {
-          _statusMessage = isArrayExit
-              ? '$_tipoMovimiento ${tr('pcb_array_complete')}: $totalQty PCBs'
-              : '$_tipoMovimiento: ${data?['pcb_part_no'] ?? ''} - ${data?['modelo'] ?? 'N/A'} (${data?['proceso'] ?? ''})';
-          _statusIsError = false;
-        });
-        _scanController.clear();
-        _saveLocalPrefs();
-        widget.onDataSaved();
-      } else {
-        final errorCode = result['code'] ?? '';
-        if (errorCode == 'PCB_QR_NOT_IN_INVENTORY' &&
-            !manualQtyConfirmed &&
-            _tipoMovimiento == 'SALIDA' &&
-            result['manual_allowed'] == true) {
-          setState(() => _isLoading = false);
-          final manualSelection = await _showManualQtyDialog(result);
-          if (manualSelection != null && mounted) {
-            setState(() {
-              _isLoading = true;
-              _statusMessage = null;
-            });
-            await _submitScan(
-              code: code,
-              qty: manualSelection.qty,
-              manualQtyConfirmed: true,
-              initialStockArea: manualSelection.area,
-              initialStockProceso: manualSelection.proceso,
-            );
-            return;
-          }
-          _scanController.clear();
-          requestScanFocus();
+    if (!mounted) return;
+
+    if (result['success'] == true) {
+      final data = result['data'];
+      final isArrayExit = result['array_exit'] == true;
+      final totalQty = result['total_qty'] ??
+          ((result['inserted_ids'] as List?)?.length ?? 1);
+      setState(() {
+        _statusMessage = isArrayExit
+            ? '$_tipoMovimiento ${tr('pcb_array_complete')}: $totalQty PCBs'
+            : '$_tipoMovimiento: ${data?['pcb_part_no'] ?? ''} - ${data?['modelo'] ?? 'N/A'} (${data?['proceso'] ?? ''})';
+        _statusIsError = false;
+      });
+      _scanController.clear();
+      _saveLocalPrefs();
+    } else {
+      final errorCode = result['code'] ?? '';
+      if (errorCode == 'PCB_QR_NOT_IN_INVENTORY' &&
+          !manualQtyConfirmed &&
+          _tipoMovimiento == 'SALIDA' &&
+          result['manual_allowed'] == true) {
+        setState(() => _isLoading = false);
+        final manualSelection = await _showManualQtyDialog(result);
+        if (manualSelection != null && mounted) {
+          setState(() {
+            _isLoading = true;
+            _statusMessage = null;
+          });
+          await _submitScan(
+            code: code,
+            qty: manualSelection.qty,
+            manualQtyConfirmed: true,
+            initialStockArea: manualSelection.area,
+            initialStockProceso: manualSelection.proceso,
+          );
           return;
         }
-
-        String msg = result['message'] ?? tr('pcb_scan_error');
-        if (errorCode == 'DUPLICATE_SCAN')
-          msg = tr('pcb_duplicate_scan');
-        else if (errorCode == 'INVALID_PCB_PART_NO')
-          msg = tr('pcb_invalid_part_no');
-        else if (errorCode == 'INVALID_PROCESO')
-          msg = tr('pcb_invalid_proceso');
-        else if (errorCode == 'ARRAY_INCOMPLETE')
-          msg = tr('pcb_array_incomplete');
-        else if (errorCode == 'ARRAY_ALREADY_OUT')
-          msg = tr('pcb_array_already_out');
-        else if (errorCode == 'INSUFFICIENT_STOCK' ||
-            errorCode == 'INSUFFICIENT_QR_STOCK') {
-          msg = tr('pcb_insufficient_stock');
-        }
-        setState(() {
-          _statusMessage = msg;
-          _statusIsError = true;
-        });
         _scanController.clear();
+        _requestScanFocus();
+        return;
       }
-      setState(() => _isLoading = false);
-      requestScanFocus();
+
+      String msg = result['message'] ?? tr('pcb_scan_error');
+      if (errorCode == 'DUPLICATE_SCAN') {
+        msg = tr('pcb_duplicate_scan');
+      } else if (errorCode == 'INVALID_PCB_PART_NO') {
+        msg = tr('pcb_invalid_part_no');
+      } else if (errorCode == 'INVALID_PROCESO') {
+        msg = tr('pcb_invalid_proceso');
+      } else if (errorCode == 'ARRAY_INCOMPLETE') {
+        msg = tr('pcb_array_incomplete');
+      } else if (errorCode == 'ARRAY_ALREADY_OUT') {
+        msg = tr('pcb_array_already_out');
+      } else if (errorCode == 'INSUFFICIENT_STOCK' ||
+          errorCode == 'INSUFFICIENT_QR_STOCK') {
+        msg = tr('pcb_insufficient_stock');
+      }
+      setState(() {
+        _statusMessage = msg;
+        _statusIsError = true;
+      });
+      _scanController.clear();
     }
+
+    setState(() => _isLoading = false);
+    _requestScanFocus();
   }
 
   Future<_PcbManualExitSelection?> _showManualQtyDialog(
@@ -279,8 +277,7 @@ class PcbSalidaFormPanelState extends State<PcbSalidaFormPanel> {
               backgroundColor: AppColors.panelBackground,
               title: Text(tr('pcb_manual_exit_title'),
                   style: const TextStyle(color: Colors.white, fontSize: 16)),
-              content: SizedBox(
-                width: 420,
+              content: SingleChildScrollView(
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -323,14 +320,15 @@ class PcbSalidaFormPanelState extends State<PcbSalidaFormPanel> {
                     const SizedBox(height: 6),
                     Text(
                       '${tr('pcb_available_stock')}: $availableStock',
-                      style: const TextStyle(color: Colors.green, fontSize: 13),
+                      style: const TextStyle(
+                          color: Colors.greenAccent, fontSize: 13),
                     ),
                     if (autoArea.isNotEmpty || autoProceso.isNotEmpty) ...[
                       const SizedBox(height: 6),
                       Text(
                         '${tr('pcb_auto_area_process')}: $autoArea / $autoProceso',
-                        style:
-                            const TextStyle(color: Colors.cyan, fontSize: 13),
+                        style: const TextStyle(
+                            color: Colors.cyanAccent, fontSize: 13),
                       ),
                     ],
                     const SizedBox(height: 14),
@@ -402,21 +400,65 @@ class PcbSalidaFormPanelState extends State<PcbSalidaFormPanel> {
     }
   }
 
-  Future<void> _undoLastScan() async {
-    if (_lastInsertedIds.isEmpty) return;
-    var ok = true;
-    for (final id in _lastInsertedIds.reversed) {
-      final result = await ApiService.deletePcbInventoryScan(id);
-      ok = ok && result['success'] == true;
-    }
-    if (ok) {
-      setState(() {
-        _statusMessage = tr('pcb_scan_deleted');
-        _statusIsError = false;
-        _lastInsertedIds = [];
-      });
-      widget.onDataSaved();
-    }
+  // ============================================================
+  // BUILD
+  // ============================================================
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      color: const Color(0xFF1A1E2C),
+      child: SafeArea(
+        top: false,
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(12, 12, 12, 16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _buildTipoSelector(),
+              const SizedBox(height: 12),
+              _buildScanField(),
+              const SizedBox(height: 12),
+              if (_statusMessage != null) ...[
+                _buildStatusBanner(),
+                const SizedBox(height: 12),
+              ],
+              _buildProcesoAreaRow(),
+              const SizedBox(height: 10),
+              _buildDateField(),
+              const SizedBox(height: 10),
+              _buildCommentField(),
+              if (_isLoading) ...[
+                const SizedBox(height: 14),
+                const Center(child: CircularProgressIndicator()),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTipoSelector() {
+    return Row(
+      children: [
+        Expanded(
+          child: _buildTipoButton(
+            'SALIDA',
+            tr('pcb_tab_salida'),
+            Colors.orangeAccent,
+          ),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: _buildTipoButton(
+            'SCRAP',
+            tr('pcb_tab_scrap'),
+            Colors.redAccent,
+          ),
+        ),
+      ],
+    );
   }
 
   Widget _buildTipoButton(String tipo, String label, Color color) {
@@ -425,186 +467,218 @@ class PcbSalidaFormPanelState extends State<PcbSalidaFormPanel> {
       onTap: () {
         setState(() => _tipoMovimiento = tipo);
         _saveLocalPrefs();
+        _requestScanFocus();
       },
-      borderRadius: BorderRadius.circular(4),
+      borderRadius: BorderRadius.circular(8),
       child: Container(
-        height: 36,
-        padding: const EdgeInsets.symmetric(horizontal: 18),
+        height: 48,
         alignment: Alignment.center,
         decoration: BoxDecoration(
           color: isSelected
-              ? color.withValues(alpha: 0.25)
-              : AppColors.fieldBackground,
-          borderRadius: BorderRadius.circular(4),
+              ? color.withValues(alpha: 0.22)
+              : const Color(0xFF252A3C),
+          borderRadius: BorderRadius.circular(8),
           border: Border.all(
-              color: isSelected ? color : AppColors.border,
-              width: isSelected ? 2 : 1),
+            color: isSelected ? color : AppColors.border,
+            width: isSelected ? 2 : 1,
+          ),
         ),
         child: Text(
           label,
           style: TextStyle(
             color: isSelected ? color : Colors.white70,
-            fontSize: 13,
-            fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
+            fontSize: 16,
+            fontWeight: isSelected ? FontWeight.w800 : FontWeight.w500,
           ),
         ),
       ),
     );
   }
 
-  @override
-  Widget build(BuildContext context) {
+  Widget _buildScanField() {
     return Container(
-      color: AppColors.subPanelBackground,
-      padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: const Color(0xFF252A3C),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: _accentColor, width: 2),
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Fila 1: Tipo selector + Fecha
           Row(
             children: [
-              SizedBox(
-                width: 60,
-                child: Text(tr('pcb_tipo_movimiento'),
-                    style: const TextStyle(fontSize: 14, color: Colors.white)),
-              ),
+              Icon(Icons.qr_code_scanner, color: _accentColor, size: 22),
               const SizedBox(width: 8),
-              _buildTipoButton('SALIDA', tr('pcb_tab_salida'), Colors.orange),
-              const SizedBox(width: 6),
-              _buildTipoButton('SCRAP', tr('pcb_tab_scrap'), Colors.red),
-              const SizedBox(width: 24),
-              SizedBox(
-                width: 60,
-                child: Text(tr('pcb_date'),
-                    style: const TextStyle(fontSize: 14, color: Colors.white)),
-              ),
-              Expanded(
-                child: TextFormField(
-                  controller: _dateController,
-                  decoration: fieldDecoration().copyWith(
-                    suffixIcon: IconButton(
-                      icon: const Icon(Icons.calendar_today,
-                          color: Colors.white70, size: 18),
-                      onPressed: _pickDate,
-                      padding: EdgeInsets.zero,
-                      constraints: const BoxConstraints(),
-                    ),
-                    suffixIconConstraints:
-                        const BoxConstraints(minWidth: 30, minHeight: 20),
-                  ),
-                  style: const TextStyle(fontSize: 14),
-                  readOnly: true,
+              Text(
+                tr('pcb_scan_field'),
+                style: TextStyle(
+                  color: _accentColor,
+                  fontWeight: FontWeight.w700,
+                  fontSize: 14,
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 12),
-          // Fila 2: Comentarios
-          Row(
-            children: [
-              SizedBox(
-                width: 100,
-                child: Text(tr('pcb_comentarios'),
-                    style: const TextStyle(fontSize: 14, color: Colors.white)),
+          const SizedBox(height: 10),
+          TextField(
+            controller: _scanController,
+            focusNode: _scanFocusNode,
+            autofocus: true,
+            enabled: !_isLoading,
+            textInputAction: TextInputAction.done,
+            onSubmitted: (_) => _onScan(),
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 18,
+              letterSpacing: 1.0,
+            ),
+            decoration: fieldDecoration(hintText: 'EBR########').copyWith(
+              suffixIcon: IconButton(
+                icon: const Icon(Icons.send, color: Colors.white70),
+                onPressed: _isLoading ? null : _onScan,
               ),
-              Expanded(
-                child: TextFormField(
-                  controller: _commentController,
-                  decoration: fieldDecoration(),
-                  style: const TextStyle(fontSize: 14),
-                  onChanged: (_) => _saveLocalPrefs(),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          // Fila 3: Scan field principal + Undo + Status
-          Row(
-            children: [
-              SizedBox(
-                width: 100,
-                child: Text(tr('pcb_scan_field'),
-                    style: const TextStyle(fontSize: 14, color: Colors.white)),
-              ),
-              Expanded(
-                flex: 3,
-                child: TextField(
-                  controller: _scanController,
-                  focusNode: _scanFocusNode,
-                  style: TextStyle(
-                      fontSize: 14,
-                      color: _accentColor,
-                      fontWeight: FontWeight.w600),
-                  decoration: fieldDecoration().copyWith(
-                    hintText: '${tr('pcb_scan_field')} ($_tipoMovimiento)',
-                    hintStyle:
-                        const TextStyle(fontSize: 12, color: Colors.white38),
-                    prefixIcon: Icon(Icons.qr_code_scanner,
-                        color: _accentColor, size: 18),
-                    prefixIconConstraints:
-                        const BoxConstraints(minWidth: 32, minHeight: 20),
-                    suffixIcon: _isLoading
-                        ? const Padding(
-                            padding: EdgeInsets.all(8),
-                            child: SizedBox(
-                                width: 16,
-                                height: 16,
-                                child:
-                                    CircularProgressIndicator(strokeWidth: 2)),
-                          )
-                        : null,
-                  ),
-                  onSubmitted: (_) => _onScan(),
-                ),
-              ),
-              if (_lastInsertedIds.isNotEmpty) ...[
-                const SizedBox(width: 8),
-                SizedBox(
-                  height: 36,
-                  width: 36,
-                  child: IconButton(
-                    onPressed: _undoLastScan,
-                    icon: Icon(Icons.undo, color: _accentColor, size: 20),
-                    tooltip: tr('pcb_undo_last'),
-                    padding: EdgeInsets.zero,
-                  ),
-                ),
-              ],
-              const SizedBox(width: 12),
-              Expanded(
-                flex: 2,
-                child: _statusMessage != null
-                    ? Container(
-                        height: 36,
-                        alignment: Alignment.centerLeft,
-                        padding: const EdgeInsets.symmetric(horizontal: 10),
-                        decoration: BoxDecoration(
-                          color: _statusIsError
-                              ? Colors.red.withValues(alpha: 0.15)
-                              : _accentColor.withValues(alpha: 0.15),
-                          borderRadius: BorderRadius.circular(4),
-                          border: Border.all(
-                              color: _statusIsError
-                                  ? Colors.red.withValues(alpha: 0.3)
-                                  : _accentColor.withValues(alpha: 0.3)),
-                        ),
-                        child: Text(
-                          _statusMessage!,
-                          style: TextStyle(
-                              color: _statusIsError
-                                  ? Colors.redAccent
-                                  : _accentColor,
-                              fontSize: 13),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      )
-                    : const SizedBox(),
-              ),
-            ],
+            ),
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildStatusBanner() {
+    final color = _statusIsError ? Colors.redAccent : Colors.greenAccent;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.15),
+        border: Border.all(color: color, width: 1),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Text(
+        _statusMessage ?? '',
+        style:
+            TextStyle(color: color, fontSize: 13, fontWeight: FontWeight.w600),
+      ),
+    );
+  }
+
+  Widget _buildProcesoAreaRow() {
+    return Row(
+      children: [
+        Expanded(
+          child: _buildLabeledDropdown(
+            label: tr('pcb_proceso'),
+            value: _selectedProceso,
+            items: _procesos,
+            onChanged: (val) {
+              if (val != null) {
+                setState(() => _selectedProceso = val);
+                _saveLocalPrefs();
+              }
+            },
+          ),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: _buildLabeledDropdown(
+            label: tr('pcb_area'),
+            value: _selectedArea,
+            items: _areas,
+            onChanged: (val) {
+              if (val != null) {
+                setState(() => _selectedArea = val);
+                _saveLocalPrefs();
+              }
+            },
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildDateField() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(tr('pcb_date'),
+            style: const TextStyle(color: Colors.white70, fontSize: 12)),
+        const SizedBox(height: 4),
+        TextField(
+          controller: _dateController,
+          readOnly: true,
+          onTap: _pickDate,
+          style: const TextStyle(color: Colors.white, fontSize: 14),
+          decoration: fieldDecoration().copyWith(
+            suffixIcon: IconButton(
+              icon: const Icon(Icons.calendar_today,
+                  color: Colors.white70, size: 18),
+              onPressed: _pickDate,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildCommentField() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(tr('pcb_comentarios'),
+            style: const TextStyle(color: Colors.white70, fontSize: 12)),
+        const SizedBox(height: 4),
+        TextField(
+          controller: _commentController,
+          maxLines: 2,
+          onChanged: (_) => _saveLocalPrefs(),
+          style: const TextStyle(color: Colors.white, fontSize: 14),
+          decoration: fieldDecoration(),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildLabeledDropdown({
+    required String label,
+    required String? value,
+    required List<String> items,
+    required ValueChanged<String?> onChanged,
+  }) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(label,
+            style: const TextStyle(color: Colors.white70, fontSize: 12)),
+        const SizedBox(height: 4),
+        DropdownButtonFormField2<String>(
+          decoration: fieldDecoration(),
+          value: value,
+          isExpanded: true,
+          style: const TextStyle(fontSize: 14, color: Colors.white),
+          items: items
+              .map((v) => DropdownMenuItem(
+                    value: v,
+                    child: Text(v, style: const TextStyle(fontSize: 14)),
+                  ))
+              .toList(),
+          onChanged: onChanged,
+          iconStyleData: const IconStyleData(
+            icon: Icon(Icons.arrow_drop_down, color: Colors.white70, size: 22),
+          ),
+          dropdownStyleData: DropdownStyleData(
+            maxHeight: 280,
+            decoration: BoxDecoration(
+              color: AppColors.fieldBackground,
+              borderRadius: BorderRadius.circular(4),
+            ),
+          ),
+          menuItemStyleData: const MenuItemStyleData(
+            height: 36,
+            padding: EdgeInsets.symmetric(horizontal: 10),
+          ),
+        ),
+      ],
     );
   }
 }

@@ -61,109 +61,114 @@ class AuthService {
   /// Dynamic base URL from ServerConfig
   /// Falls back to localhost if ServerConfig not initialized
   static String get baseUrl => ServerConfig.baseUrl;
-  
+
   static UserSession? _currentUser;
-  
+
   // Permisos del usuario actual cargados desde la BD
   static Set<String> _userPermissions = {};
-  
+
   // Departamentos con acceso total (siempre tienen todos los permisos)
-  static const List<String> _fullAccessDepartments = ['Sistemas', 'Gerencia', 'Administración'];
-  
+  static const List<String> _fullAccessDepartments = [
+    'Sistemas',
+    'Gerencia',
+    'Administración'
+  ];
+
   // Getter para el usuario actual
   static UserSession? get currentUser => _currentUser;
-  
+
   // Verificar si hay sesión activa
   static bool get isLoggedIn => _currentUser != null;
-  
+
   // Getter para el departamento actual
   static String get currentDepartment => _currentUser?.departamento ?? '';
-  
+
   // ============================================
   // VERIFICACIÓN DE PERMISOS
   // ============================================
-  
+
   /// Verifica si el usuario tiene un permiso específico
   static bool hasPermission(String permissionKey) {
     if (_currentUser == null) return false;
     // Los departamentos con acceso total tienen todos los permisos
-    if (_fullAccessDepartments.contains(_currentUser!.departamento)) return true;
+    if (_fullAccessDepartments.contains(_currentUser!.departamento))
+      return true;
     return _userPermissions.contains(permissionKey);
   }
-  
+
   /// Verifica si el usuario tiene acceso completo a todo
   static bool get hasFullAccess {
     if (_currentUser == null) return false;
     return _fullAccessDepartments.contains(_currentUser!.departamento);
   }
-  
+
   // ============================================
   // PERMISOS POR MÓDULO (usando BD)
   // ============================================
-  
+
   /// Verifica si el usuario puede ver Warehousing
   static bool get canViewWarehousing {
     if (_currentUser == null) return false;
     if (hasFullAccess) return true;
     return hasPermission('view_warehousing');
   }
-  
+
   /// Verifica si el usuario puede escribir en Warehousing (Entradas)
   static bool get canWriteWarehousing {
     if (_currentUser == null) return false;
     if (hasFullAccess) return true;
     return hasPermission('write_warehousing');
   }
-  
+
   /// Verifica si el usuario puede editar múltiples entradas a la vez
   static bool get canMultiEditWarehousing {
     if (_currentUser == null) return false;
     if (hasFullAccess) return true;
     return hasPermission('multi_edit_warehousing');
   }
-  
+
   /// Verifica si el usuario puede ver Outgoing
   static bool get canViewOutgoing {
     if (_currentUser == null) return false;
     if (hasFullAccess) return true;
     return hasPermission('view_outgoing');
   }
-  
+
   /// Verifica si el usuario puede escribir en Outgoing (Salidas)
   static bool get canWriteOutgoing {
     if (_currentUser == null) return false;
     if (hasFullAccess) return true;
     return hasPermission('write_outgoing');
   }
-  
+
   /// Verifica si el usuario puede ver Inventario
   static bool get canViewInventory {
     if (_currentUser == null) return false;
     if (hasFullAccess) return true;
     return hasPermission('view_inventory');
   }
-  
+
   /// Verifica si el usuario puede ver IQC
   static bool get canViewIqc {
     if (_currentUser == null) return false;
     if (hasFullAccess) return true;
     return hasPermission('view_iqc');
   }
-  
+
   /// Verifica si el usuario puede escribir en IQC (Inspección de Calidad)
   static bool get canWriteIqc {
     if (_currentUser == null) return false;
     if (hasFullAccess) return true;
     return hasPermission('write_iqc');
   }
-  
+
   /// Verifica si el usuario puede ver Cuarentena
   static bool get canViewQuarantine {
     if (_currentUser == null) return false;
     if (hasFullAccess) return true;
     return hasPermission('view_quarantine');
   }
-  
+
   /// Verifica si el usuario puede enviar a Cuarentena
   static bool get canSendToQuarantine {
     if (_currentUser == null) return false;
@@ -198,21 +203,21 @@ class AuthService {
     if (hasFullAccess) return true;
     return hasPermission('manage_users');
   }
-  
+
   /// Verifica si el usuario puede ver reportes
   static bool get canViewReports {
     if (_currentUser == null) return false;
     if (hasFullAccess) return true;
     return hasPermission('view_reports');
   }
-  
+
   /// Verifica si el usuario puede exportar datos
   static bool get canExportData {
     if (_currentUser == null) return false;
     if (hasFullAccess) return true;
     return hasPermission('export_data');
   }
-  
+
   /// Verifica si el usuario puede aprobar cancelaciones de entradas
   static bool get canApproveCancellation {
     if (_currentUser == null) return false;
@@ -303,6 +308,7 @@ class AuthService {
     if (_currentUser!.departamento.contains('Almacén')) return true;
     return hasPermission('view_location_search');
   }
+
   /// Verifica si el usuario puede registrar escaneos PCB Inventory
   static bool get canWritePcbInventory {
     if (_currentUser == null) return false;
@@ -331,6 +337,13 @@ class AuthService {
     return hasPermission('view_pcb_inventario');
   }
 
+  /// Verifica si el usuario puede ver BOM PCB
+  static bool get canViewPcbBom {
+    if (_currentUser == null) return false;
+    if (hasFullAccess) return true;
+    return hasPermission('view_pcb_bom');
+  }
+
   /// Verifica si el usuario puede ver solicitudes de material SMT
   static bool get canViewSMTRequests {
     if (_currentUser == null) return false;
@@ -341,28 +354,28 @@ class AuthService {
   // ============================================
   // CARGA DE PERMISOS
   // ============================================
-  
+
   /// Carga los permisos del usuario desde la BD
   static Future<void> _loadUserPermissions(int userId) async {
     try {
       print('========================================');
       print('CARGANDO PERMISOS PARA USUARIO ID: $userId');
       print('URL: $baseUrl/users/$userId/permissions');
-      
+
       final response = await http.get(
         Uri.parse('$baseUrl/users/$userId/permissions'),
       );
-      
+
       print('Response status: ${response.statusCode}');
       print('Response body: ${response.body}');
-      
+
       if (response.statusCode == 200) {
         final List<dynamic> data = json.decode(response.body);
         _userPermissions = data
             .where((p) => p['enabled'] == 1)
             .map((p) => p['permission_key'].toString())
             .toSet();
-        
+
         print('PERMISOS ACTIVOS: $_userPermissions');
         print('========================================');
       } else {
@@ -391,13 +404,13 @@ class AuthService {
 
       if (response.statusCode == 200 && data['success'] == true) {
         _currentUser = UserSession.fromJson(data['user']);
-        
+
         // Cargar permisos del usuario desde la BD
         await _loadUserPermissions(_currentUser!.id);
-        
+
         // Guardar sesión en SharedPreferences
         await _saveSession(_currentUser!);
-        
+
         return AuthResult(
           success: true,
           message: data['message'] ?? 'Login exitoso',
@@ -446,31 +459,31 @@ class AuthService {
         await _clearSession();
         return false;
       }
-      
+
       final prefs = await SharedPreferences.getInstance();
       final userJson = prefs.getString('user_session');
-      
+
       if (userJson != null) {
         final userData = json.decode(userJson);
         final userId = userData['id'];
-        
+
         // Verificar que el usuario siga activo en el servidor
         final response = await http.get(
           Uri.parse('$baseUrl/auth/verify/$userId'),
         );
-        
+
         if (response.statusCode == 200) {
           final data = json.decode(response.body);
           if (data['valid'] == true) {
             _currentUser = UserSession.fromJson(userData);
-            
+
             // Cargar permisos del usuario desde la BD
             await _loadUserPermissions(_currentUser!.id);
-            
+
             return true;
           }
         }
-        
+
         // Si no es válido, limpiar sesión
         await _clearSession();
       }
@@ -479,7 +492,7 @@ class AuthService {
     }
     return false;
   }
-  
+
   /// Recargar permisos del usuario actual (útil después de modificar permisos)
   static Future<void> reloadPermissions() async {
     if (_currentUser != null) {
@@ -489,13 +502,14 @@ class AuthService {
 
   // Duración de la sesión: 24 horas
   static const int sessionDurationHours = 24;
-  
+
   // Guardar sesión con timestamp de inicio
   static Future<void> _saveSession(UserSession user) async {
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('user_session', json.encode(user.toJson()));
-      await prefs.setInt('session_start_time', DateTime.now().millisecondsSinceEpoch);
+      await prefs.setInt(
+          'session_start_time', DateTime.now().millisecondsSinceEpoch);
     } catch (e) {
       print('Error guardando sesión: $e');
     }
@@ -511,19 +525,19 @@ class AuthService {
       print('Error limpiando sesión: $e');
     }
   }
-  
+
   /// Verificar si la sesión ha expirado (24 horas desde login)
   static Future<bool> isSessionExpired() async {
     try {
       final prefs = await SharedPreferences.getInstance();
       final sessionStartTime = prefs.getInt('session_start_time');
-      
+
       if (sessionStartTime == null) return true;
-      
+
       final loginTime = DateTime.fromMillisecondsSinceEpoch(sessionStartTime);
       final now = DateTime.now();
       final difference = now.difference(loginTime);
-      
+
       return difference.inHours >= sessionDurationHours;
     } catch (e) {
       return true;

@@ -11,3 +11,5 @@ dist/
 *.iml
 .gradle/
 .idea/
+./history/
+.history/

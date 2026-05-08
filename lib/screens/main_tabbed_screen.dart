@@ -20,6 +20,7 @@ import 'package:material_warehousing_flutter/screens/material_shortage/material_
 import 'package:material_warehousing_flutter/screens/pcb_entrada/pcb_entrada_screen.dart';
 import 'package:material_warehousing_flutter/screens/pcb_salida/pcb_salida_screen.dart';
 import 'package:material_warehousing_flutter/screens/pcb_inventario/pcb_inventario_screen.dart';
+import 'package:material_warehousing_flutter/screens/pcb_bom/pcb_bom_screen.dart';
 import 'package:material_warehousing_flutter/screens/pcb_defects/pcb_defects_screen.dart';
 import 'package:material_warehousing_flutter/screens/smt_requests/smt_requests_screen.dart';
 import 'package:material_warehousing_flutter/core/widgets/smt_notification_overlay.dart';
@@ -240,6 +241,14 @@ class _MainTabbedScreenState extends State<MainTabbedScreen> {
       _visibleTabs.add(_TabInfo(
         key: 'pcb_inventario',
         titleKey: 'pcb_inventario_title',
+      ));
+    }
+
+    // PCB BOM - requiere view_pcb_bom
+    if (AuthService.canViewPcbBom) {
+      _visibleTabs.add(_TabInfo(
+        key: 'pcb_bom',
+        titleKey: 'pcb_bom_title',
       ));
     }
 
@@ -499,6 +508,11 @@ class _MainTabbedScreenState extends State<MainTabbedScreen> {
           key: ValueKey('pcb_inventario_$currentLocale'),
           languageProvider: widget.languageProvider,
         );
+      case 'pcb_bom':
+        return PcbBomScreen(
+          key: ValueKey('pcb_bom_$currentLocale'),
+          languageProvider: widget.languageProvider,
+        );
       case 'pcb_defects':
         return PcbDefectsScreen(
           key: ValueKey('pcb_defects_$currentLocale'),
@@ -639,9 +653,9 @@ class _TopTabBarSimple extends StatelessWidget {
               child: Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                 decoration: BoxDecoration(
-                  color: Colors.red.withOpacity(0.15),
+                  color: Colors.red.withValues(alpha: 0.15),
                   borderRadius: BorderRadius.circular(4),
-                  border: Border.all(color: Colors.red.withOpacity(0.3)),
+                  border: Border.all(color: Colors.red.withValues(alpha: 0.3)),
                 ),
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
@@ -867,7 +881,7 @@ class _TopTabBarDynamicState extends State<_TopTabBarDynamic> {
               child: Container(
                 padding: const EdgeInsets.all(4),
                 decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.05),
+                  color: Colors.white.withValues(alpha: 0.05),
                   borderRadius: BorderRadius.circular(4),
                 ),
                 child:
@@ -946,7 +960,7 @@ class _TopTabBarDynamicState extends State<_TopTabBarDynamic> {
               child: Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                 decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.05),
+                  color: Colors.white.withValues(alpha: 0.05),
                   borderRadius: BorderRadius.circular(4),
                 ),
                 child: Row(

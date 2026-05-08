@@ -12,6 +12,30 @@ const { pool } = require('../config/database');
 // HELPERS
 // ============================================
 
+const MONTERREY_TIME_ZONE = 'America/Monterrey';
+
+function getMonterreyDateTime() {
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: MONTERREY_TIME_ZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  });
+  const parts = Object.fromEntries(
+    formatter.formatToParts(new Date()).map(part => [part.type, part.value])
+  );
+  const hour = parts.hour === '24' ? '00' : parts.hour;
+  return `${parts.year}-${parts.month}-${parts.day} ${hour}:${parts.minute}:${parts.second}`;
+}
+
+function getMonterreyDate() {
+  return getMonterreyDateTime().slice(0, 10);
+}
+
 function normalizeCode(code) {
   return (code || '').trim().toUpperCase().replace(/\s+/g, '');
 }
@@ -112,7 +136,7 @@ async function getPartStock(connection, pcbPartNo, area, proceso) {
   return Number(rows[0]?.stock_actual || 0);
 }
 
-async function getInitialStockOption(connection, pcbPartNo) {
+async function getInitialStockOptions(connection, pcbPartNo) {
   const [rows] = await connection.query(
     `SELECT
        pcb_part_no,
@@ -127,19 +151,29 @@ async function getInitialStockOption(connection, pcbPartNo) {
      WHERE pcb_part_no = ?
      GROUP BY pcb_part_no, area, proceso
      HAVING initial_qty > 0 AND stock_actual > 0
-     ORDER BY stock_actual DESC, initial_qty DESC
-     LIMIT 1`,
+     ORDER BY proceso, area, stock_actual DESC, initial_qty DESC`,
     [pcbPartNo]
   );
 
-  if (rows.length === 0) return null;
-  return {
-    pcb_part_no: rows[0].pcb_part_no,
-    modelo: rows[0].modelo || 'N/A',
-    area: rows[0].area,
-    proceso: rows[0].proceso,
-    available_stock: Number(rows[0].stock_actual || 0),
-  };
+  return rows.map(row => ({
+    pcb_part_no: row.pcb_part_no,
+    modelo: row.modelo || 'N/A',
+    area: row.area,
+    proceso: row.proceso,
+    initial_qty: Number(row.initial_qty || 0),
+    available_stock: Number(row.stock_actual || 0),
+  }));
+}
+
+async function getInitialStockOption(connection, pcbPartNo, preferredArea, preferredProceso) {
+  const options = await getInitialStockOptions(connection, pcbPartNo);
+  if (options.length === 0) return null;
+  if (preferredArea && preferredProceso) {
+    return options.find(option =>
+      option.area === preferredArea && option.proceso === preferredProceso
+    ) || null;
+  }
+  return options[0];
 }
 
 const VALID_ARRAY_ROLES = ['SINGLE', 'DEFECT', 'ARRAY_ITEM'];
@@ -167,7 +201,9 @@ exports.scan = async (req, res, next) => {
       array_role,
       defect_type,
       component_location,
-      manual_qty_confirmed
+      manual_qty_confirmed,
+      initial_stock_area,
+      initial_stock_proceso
     } = req.body;
 
     if (!scanned_code || !scanned_code.trim()) {
@@ -194,6 +230,16 @@ exports.scan = async (req, res, next) => {
         code: 'INVALID_AREA'
       });
     }
+    const initialStockAreaVal = initial_stock_area
+      ? initial_stock_area.toString().trim().toUpperCase()
+      : null;
+    if (initialStockAreaVal && !VALID_AREAS.includes(initialStockAreaVal)) {
+      return res.status(400).json({
+        success: false,
+        message: `initial_stock_area debe ser uno de: ${VALID_AREAS.join(', ')}`,
+        code: 'INVALID_AREA'
+      });
+    }
 
     const tipo = tipo_movimiento || 'ENTRADA';
     if (!VALID_TIPOS.includes(tipo)) {
@@ -201,6 +247,16 @@ exports.scan = async (req, res, next) => {
         success: false,
         message: `tipo_movimiento debe ser uno de: ${VALID_TIPOS.join(', ')}`,
         code: 'INVALID_TIPO_MOVIMIENTO'
+      });
+    }
+    const initialStockProcesoVal = initial_stock_proceso
+      ? initial_stock_proceso.toString().trim().toUpperCase()
+      : null;
+    if (initialStockProcesoVal && !VALID_PROCESOS.includes(initialStockProcesoVal)) {
+      return res.status(400).json({
+        success: false,
+        message: `initial_stock_proceso debe ser uno de: ${VALID_PROCESOS.join(', ')}`,
+        code: 'INVALID_PROCESO'
       });
     }
 
@@ -233,7 +289,8 @@ exports.scan = async (req, res, next) => {
       });
     }
 
-    const invDate = inventory_date || new Date().toISOString().slice(0, 10);
+    const invDate = inventory_date || getMonterreyDate();
+    const createdAtMonterrey = getMonterreyDateTime();
     const scannedOriginal = scanned_code.trim();
     const scannedOriginalNorm = normalizeCode(scanned_code);
     const arrayGroupCode = normalizeCode(array_group_code || scannedOriginal);
@@ -366,8 +423,8 @@ exports.scan = async (req, res, next) => {
         for (const row of pendingRows) {
           const [result] = await connection.query(
             `INSERT INTO pcb_inventory_scan_smd
-              (inventory_date, scanned_original, scanned_original_norm, assy_type, pcb_part_no, modelo, proceso, area, tipo_movimiento, qty, array_count, array_group_code, array_role, defect_type, component_location, comentarios, scanned_by)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              (inventory_date, scanned_original, scanned_original_norm, assy_type, pcb_part_no, modelo, proceso, area, tipo_movimiento, qty, array_count, array_group_code, array_role, defect_type, component_location, comentarios, scanned_by, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
               invDate,
               row.scanned_original,
@@ -386,6 +443,7 @@ exports.scan = async (req, res, next) => {
               row.component_location,
               arrayComment,
               scanned_by || null,
+              createdAtMonterrey,
             ]
           );
           insertedIds.push(result.insertId);
@@ -427,8 +485,14 @@ exports.scan = async (req, res, next) => {
           });
         }
       } else if (manual_qty_confirmed === true) {
-        const initialStockOption = await getInitialStockOption(connection, parsedPartNo);
+        const initialStockOption = await getInitialStockOption(
+          connection,
+          parsedPartNo,
+          initialStockAreaVal,
+          initialStockProcesoVal
+        );
         if (!initialStockOption || initialStockOption.available_stock < qtyVal) {
+          const stockOptions = await getInitialStockOptions(connection, parsedPartNo);
           await connection.rollback();
           return res.status(409).json({
             success: false,
@@ -437,13 +501,15 @@ exports.scan = async (req, res, next) => {
             available_stock: initialStockOption?.available_stock || 0,
             requested_qty: qtyVal,
             pcb_part_no: parsedPartNo,
-            area: initialStockOption?.area || null,
-            proceso: initialStockOption?.proceso || null,
+            area: initialStockOption?.area || initialStockAreaVal || null,
+            proceso: initialStockOption?.proceso || initialStockProcesoVal || null,
+            stock_options: stockOptions,
           });
         }
         manualInitialStockOption = initialStockOption;
       } else {
-        const initialStockOption = await getInitialStockOption(connection, parsedPartNo);
+        const stockOptions = await getInitialStockOptions(connection, parsedPartNo);
+        const initialStockOption = stockOptions[0] || null;
         await connection.rollback();
         if (!initialStockOption) {
           return res.status(409).json({
@@ -453,6 +519,7 @@ exports.scan = async (req, res, next) => {
             pcb_part_no: parsedPartNo,
             modelo: await lookupModelo(parsedPartNo),
             available_stock: 0,
+            stock_options: [],
             manual_allowed: false,
           });
         }
@@ -465,6 +532,7 @@ exports.scan = async (req, res, next) => {
           available_stock: initialStockOption.available_stock,
           area: initialStockOption.area,
           proceso: initialStockOption.proceso,
+          stock_options: stockOptions,
           manual_allowed: true,
           initial_stock_exit: true,
         });
@@ -500,8 +568,8 @@ exports.scan = async (req, res, next) => {
 
     const [result] = await connection.query(
       `INSERT INTO pcb_inventory_scan_smd
-        (inventory_date, scanned_original, scanned_original_norm, assy_type, pcb_part_no, modelo, proceso, area, tipo_movimiento, qty, array_count, array_group_code, array_role, defect_type, component_location, comentarios, scanned_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        (inventory_date, scanned_original, scanned_original_norm, assy_type, pcb_part_no, modelo, proceso, area, tipo_movimiento, qty, array_count, array_group_code, array_role, defect_type, component_location, comentarios, scanned_by, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         invDate,
         scannedOriginal,
@@ -520,6 +588,7 @@ exports.scan = async (req, res, next) => {
         componentLocationVal,
         comentarios || null,
         scanned_by || null,
+        createdAtMonterrey,
       ]
     );
     const insertedIds = [result.insertId];
@@ -569,7 +638,7 @@ exports.bulkInitialStock = async (req, res, next) => {
       items,
     } = req.body;
 
-    const invDate = inventory_date || new Date().toISOString().slice(0, 10);
+    const invDate = inventory_date || getMonterreyDate();
     const areaVal = area || 'INVENTARIO';
     if (!VALID_AREAS.includes(areaVal)) {
       return res.status(400).json({
@@ -643,6 +712,7 @@ exports.bulkInitialStock = async (req, res, next) => {
 
     const insertedIds = [];
     const nowToken = Date.now();
+    const createdAtMonterrey = getMonterreyDateTime();
     const initialComment = comentarios && comentarios.toString().trim()
       ? `Inventario inicial | ${comentarios.toString().trim()}`
       : 'Inventario inicial';
@@ -661,7 +731,7 @@ exports.bulkInitialStock = async (req, res, next) => {
       chunk.forEach(([partNo, qtyVal], index) => {
         const insertIndex = offset + index + 1;
         const scannedOriginal = `INITIAL:${partNo}:${nowToken}:${insertIndex}`;
-        placeholders.push('(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+        placeholders.push('(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
         values.push(
           invDate,
           scannedOriginal,
@@ -680,12 +750,13 @@ exports.bulkInitialStock = async (req, res, next) => {
           null,
           initialComment,
           scanned_by || null,
+          createdAtMonterrey,
         );
       });
 
       const [result] = await connection.query(
         `INSERT INTO pcb_inventory_scan_smd
-          (inventory_date, scanned_original, scanned_original_norm, assy_type, pcb_part_no, modelo, proceso, area, tipo_movimiento, qty, array_count, array_group_code, array_role, defect_type, component_location, comentarios, scanned_by)
+          (inventory_date, scanned_original, scanned_original_norm, assy_type, pcb_part_no, modelo, proceso, area, tipo_movimiento, qty, array_count, array_group_code, array_role, defect_type, component_location, comentarios, scanned_by, created_at)
          VALUES ${placeholders.join(', ')}`,
         values
       );

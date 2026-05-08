@@ -119,3 +119,100 @@ exports.getBomByModelo = async (req, res, next) => {
     next(err);
   }
 };
+
+// GET /api/bom/search - Consulta BOM por PCB/modelo, componente, spec o ubicacion
+exports.searchBom = async (req, res, next) => {
+  try {
+    const {
+      q,
+      modelo,
+      side,
+      tipo_material,
+      classification,
+      limit,
+    } = req.query;
+
+    const maxLimit = Math.min(parseInt(limit, 10) || 500, 2000);
+    const filters = [];
+    const params = [];
+
+    const rawQuery = (q || '').toString().trim();
+    const pcbMatch = rawQuery.toUpperCase().match(/EBR\d{8}/);
+    const rawModelo = (modelo || '').toString().trim();
+    const modeloMatch = rawModelo.toUpperCase().match(/EBR\d{8}/);
+
+    if (rawModelo) {
+      filters.push('b.modelo LIKE ?');
+      params.push(`%${modeloMatch ? modeloMatch[0] : rawModelo}%`);
+    }
+
+    if (rawQuery) {
+      const like = `%${rawQuery}%`;
+      filters.push(`(
+        b.modelo LIKE ?
+        OR b.codigo_material LIKE ?
+        OR b.numero_parte LIKE ?
+        OR b.especificacion_material LIKE ?
+        OR b.ubicacion LIKE ?
+        OR b.classification LIKE ?
+        OR b.tipo_material LIKE ?
+        ${pcbMatch ? 'OR b.modelo = ?' : ''}
+      )`);
+      params.push(like, like, like, like, like, like, like);
+      if (pcbMatch) params.push(pcbMatch[0]);
+    }
+
+    if (side && side !== 'ALL') {
+      filters.push('b.side = ?');
+      params.push(side);
+    }
+
+    if (tipo_material && tipo_material !== 'ALL') {
+      filters.push('b.tipo_material = ?');
+      params.push(tipo_material);
+    }
+
+    if (classification && classification !== 'ALL') {
+      filters.push('b.classification = ?');
+      params.push(classification);
+    }
+
+    const whereClause = filters.length > 0 ? `WHERE ${filters.join(' AND ')}` : '';
+
+    params.push(maxLimit);
+
+    const [rows] = await pool.query(
+      `
+      SELECT
+        b.id,
+        b.modelo,
+        b.codigo_material,
+        b.numero_parte,
+        b.side,
+        b.tipo_material,
+        b.classification,
+        b.especificacion_material,
+        b.vender,
+        b.cantidad_total,
+        b.cantidad_original,
+        b.ubicacion,
+        b.material_sustituto,
+        b.material_original
+      FROM bom b
+      ${whereClause}
+      ORDER BY b.modelo, b.side, b.ubicacion, b.numero_parte
+      LIMIT ?
+      `,
+      params
+    );
+
+    res.json({
+      success: true,
+      data: rows,
+      count: rows.length,
+      limit: maxLimit,
+    });
+  } catch (err) {
+    next(err);
+  }
+};

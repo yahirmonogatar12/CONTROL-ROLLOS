@@ -131,7 +131,7 @@ app.use('/api/outgoing', outgoingRoutes);
 
 // Fase 2: Plan, Auth, Materials, IQC, Quality Specs, Quarantine
 app.use('/api/plan', planRoutes);
-app.use('/api/bom', planRoutes);
+app.use('/api/bom', planRoutes.bomRouter);
 app.use('/api/auth', authRouter);
 app.use('/api/users', usersRouter);
 app.use('/api/departments', departmentsRouter);
