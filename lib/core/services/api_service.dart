@@ -4172,6 +4172,25 @@ class ApiService {
   // PCB INVENTORY
   // ============================================
 
+  // GET - Lookup en defect_data por codigo (multiples filas posibles)
+  static Future<List<Map<String, dynamic>>> lookupDefectData(
+      String codigo) async {
+    try {
+      final code = codigo.trim();
+      if (code.isEmpty) return [];
+      final response = await http.get(
+        Uri.parse(
+            '$baseUrl/defect-data/lookup?codigo=${Uri.encodeQueryComponent(code)}'),
+      );
+      if (response.statusCode != 200) return [];
+      final body = json.decode(response.body);
+      if (body['success'] != true) return [];
+      return (body['data'] as List?)?.cast<Map<String, dynamic>>() ?? [];
+    } catch (_) {
+      return [];
+    }
+  }
+
   // POST - Registrar escaneo de PCB (ENTRADA, SALIDA o SCRAP)
   // area: INVENTARIO | REPARACION
   // proceso: SMD | IMD | ASSY
@@ -4187,6 +4206,9 @@ class ApiService {
     String? arrayRole,
     String? defectType,
     String? componentLocation,
+    String? etapaDeteccion,
+    String? defectSourceArea,
+    String? defectDataId,
     bool manualQtyConfirmed = false,
     String? initialStockArea,
     String? initialStockProceso,
@@ -4209,6 +4231,9 @@ class ApiService {
           'array_role': arrayRole,
           'defect_type': defectType,
           'component_location': componentLocation,
+          'etapa_deteccion': etapaDeteccion,
+          'defect_source_area': defectSourceArea,
+          'defect_data_id': defectDataId,
           'manual_qty_confirmed': manualQtyConfirmed,
           'initial_stock_area': initialStockArea,
           'initial_stock_proceso': initialStockProceso,

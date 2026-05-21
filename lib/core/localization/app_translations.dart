@@ -1200,6 +1200,11 @@ class AppTranslations {
       'pcb_component_location': 'Component Ref.',
       'pcb_component_location_hint': 'Example: R12, C45, U3',
       'pcb_defect_required': 'Select a repair defect',
+      'pcb_etapa_deteccion': 'Detection Stage',
+      'pcb_source_area': 'Source Area',
+      'pcb_verify_defect_title': 'Verify defect',
+      'pcb_multiple_defects_hint':
+          'This PCB has several registered defects - pick the correct one',
       'pcb_defect_saved': 'Defect saved',
       'pcb_defect_deleted': 'Defect deleted',
       // SMT Requests
@@ -2470,6 +2475,11 @@ class AppTranslations {
       'pcb_component_location': 'Ubicacion/Ref.',
       'pcb_component_location_hint': 'Ej: R12, C45, U3',
       'pcb_defect_required': 'Selecciona el defecto de reparacion',
+      'pcb_etapa_deteccion': 'Etapa Deteccion',
+      'pcb_source_area': 'Area Origen',
+      'pcb_verify_defect_title': 'Verificar defecto',
+      'pcb_multiple_defects_hint':
+          'Esta PCB tiene varios defectos registrados - selecciona el correcto',
       'pcb_defect_saved': 'Defecto guardado',
       'pcb_defect_deleted': 'Defecto eliminado',
       // Solicitudes SMT
@@ -3667,6 +3677,10 @@ class AppTranslations {
       'pcb_inventario_title': 'PCB 재고 현황',
       'pcb_bom_title': 'PCB BOM',
       'pcb_defects_title': 'PCB Defects',
+      'pcb_etapa_deteccion': '검출 단계',
+      'pcb_source_area': '발생 영역',
+      'pcb_verify_defect_title': '결함 확인',
+      'pcb_multiple_defects_hint': '이 PCB에는 여러 결함이 등록되어 있습니다 - 올바른 항목을 선택하세요',
       // SMT 요청
       'nav_smt_requests': 'SMT 요청',
       'pcb_stock_actual': '현재 재고',

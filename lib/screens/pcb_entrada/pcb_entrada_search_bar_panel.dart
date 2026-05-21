@@ -92,6 +92,8 @@ class _PcbEntradaSearchBarPanelState extends State<PcbEntradaSearchBarPanel> {
       tr('pcb_scanned_code'),
       tr('pcb_area'),
       tr('pcb_defect_type'),
+      tr('pcb_etapa_deteccion'),
+      tr('pcb_source_area'),
       tr('pcb_component_location'),
       tr('pcb_qty'),
       tr('pcb_array_count'),
@@ -107,6 +109,8 @@ class _PcbEntradaSearchBarPanelState extends State<PcbEntradaSearchBarPanel> {
       'scanned_original',
       'area',
       'defect_type',
+      'etapa_deteccion',
+      'defect_source_area',
       'component_location',
       'qty',
       'array_count',
@@ -174,8 +178,8 @@ class _PcbEntradaSearchBarPanelState extends State<PcbEntradaSearchBarPanel> {
                     borderSide: BorderSide(color: AppColors.border)),
                 disabledBorder: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(4),
-                    borderSide:
-                        BorderSide(color: AppColors.border.withOpacity(0.3))),
+                    borderSide: BorderSide(
+                        color: AppColors.border.withValues(alpha: 0.3))),
               ),
             ),
           ),
@@ -204,8 +208,8 @@ class _PcbEntradaSearchBarPanelState extends State<PcbEntradaSearchBarPanel> {
                     borderSide: BorderSide(color: AppColors.border)),
                 disabledBorder: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(4),
-                    borderSide:
-                        BorderSide(color: AppColors.border.withOpacity(0.3))),
+                    borderSide: BorderSide(
+                        color: AppColors.border.withValues(alpha: 0.3))),
               ),
             ),
           ),

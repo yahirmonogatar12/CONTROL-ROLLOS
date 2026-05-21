@@ -201,6 +201,9 @@ exports.scan = async (req, res, next) => {
       array_role,
       defect_type,
       component_location,
+      etapa_deteccion,
+      defect_source_area,
+      defect_data_id,
       manual_qty_confirmed,
       initial_stock_area,
       initial_stock_proceso
@@ -301,6 +304,25 @@ exports.scan = async (req, res, next) => {
     const componentLocationVal = areaVal === 'REPARACION' && component_location
       ? component_location.toString().trim().toUpperCase()
       : null;
+    const VALID_ETAPAS = ['LQC', 'OQC', 'AIS'];
+    let etapaDeteccionVal = null;
+    if (areaVal === 'REPARACION' && etapa_deteccion) {
+      const etapaUpper = etapa_deteccion.toString().trim().toUpperCase();
+      if (!VALID_ETAPAS.includes(etapaUpper)) {
+        return res.status(400).json({
+          success: false,
+          message: `etapa_deteccion debe ser uno de: ${VALID_ETAPAS.join(', ')}`,
+          code: 'INVALID_ETAPA_DETECCION'
+        });
+      }
+      etapaDeteccionVal = etapaUpper;
+    }
+    const defectSourceAreaVal = areaVal === 'REPARACION' && defect_source_area
+      ? defect_source_area.toString().trim()
+      : null;
+    const defectDataIdVal = areaVal === 'REPARACION' && defect_data_id
+      ? defect_data_id.toString().trim()
+      : null;
     if (!VALID_ARRAY_ROLES.includes(roleVal)) {
       return res.status(400).json({
         success: false,
@@ -322,22 +344,24 @@ exports.scan = async (req, res, next) => {
         });
       }
 
-      const [defectRows] = await connection.query(
-        `SELECT id
-         FROM pcb_defect_catalog
-         WHERE defect_name = ?
-         AND is_active = 1
-         LIMIT 1`,
-        [defectTypeVal]
-      );
+      if (!defectDataIdVal) {
+        const [defectRows] = await connection.query(
+          `SELECT id
+           FROM pcb_defect_catalog
+           WHERE defect_name = ?
+           AND is_active = 1
+           LIMIT 1`,
+          [defectTypeVal]
+        );
 
-      if (defectRows.length === 0) {
-        await connection.rollback();
-        return res.status(400).json({
-          success: false,
-          message: 'El defecto no existe en el catalogo activo',
-          code: 'INVALID_DEFECT_TYPE'
-        });
+        if (defectRows.length === 0) {
+          await connection.rollback();
+          return res.status(400).json({
+            success: false,
+            message: 'El defecto no existe en el catalogo activo',
+            code: 'INVALID_DEFECT_TYPE'
+          });
+        }
       }
     }
 
@@ -568,8 +592,8 @@ exports.scan = async (req, res, next) => {
 
     const [result] = await connection.query(
       `INSERT INTO pcb_inventory_scan_smd
-        (inventory_date, scanned_original, scanned_original_norm, assy_type, pcb_part_no, modelo, proceso, area, tipo_movimiento, qty, array_count, array_group_code, array_role, defect_type, component_location, comentarios, scanned_by, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        (inventory_date, scanned_original, scanned_original_norm, assy_type, pcb_part_no, modelo, proceso, area, tipo_movimiento, qty, array_count, array_group_code, array_role, defect_type, component_location, etapa_deteccion, defect_source_area, defect_data_id, comentarios, scanned_by, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         invDate,
         scannedOriginal,
@@ -586,6 +610,9 @@ exports.scan = async (req, res, next) => {
         roleVal,
         defectTypeVal,
         componentLocationVal,
+        etapaDeteccionVal,
+        defectSourceAreaVal,
+        defectDataIdVal,
         comentarios || null,
         scanned_by || null,
         createdAtMonterrey,
@@ -881,6 +908,9 @@ exports.getScans = async (req, res, next) => {
         array_role,
         defect_type,
         component_location,
+        etapa_deteccion,
+        defect_source_area,
+        defect_data_id,
         comentarios,
         scanned_by,
         created_at,
@@ -1037,6 +1067,9 @@ exports.getStockDetail = async (req, res, next) => {
         array_role,
         defect_type,
         component_location,
+        etapa_deteccion,
+        defect_source_area,
+        defect_data_id,
         comentarios,
         scanned_by,
         created_at,

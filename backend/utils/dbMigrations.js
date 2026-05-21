@@ -583,6 +583,9 @@ async function createPcbInventoryScanTable() {
         array_role VARCHAR(20) NOT NULL DEFAULT 'SINGLE',
         defect_type VARCHAR(120) NULL,
         component_location VARCHAR(120) NULL,
+        etapa_deteccion ENUM('LQC','OQC','AIS') NULL,
+        defect_source_area VARCHAR(50) NULL,
+        defect_data_id VARCHAR(50) NULL,
         comentarios TEXT NULL,
         scanned_by VARCHAR(100) NULL,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -640,6 +643,21 @@ async function migratePcbInventorySchema() {
     'pcb_inventory_scan_smd',
     'component_location',
     'VARCHAR(120) NULL AFTER defect_type'
+  );
+  await addColumnIfNotExists(
+    'pcb_inventory_scan_smd',
+    'etapa_deteccion',
+    "ENUM('LQC','OQC','AIS') NULL AFTER component_location"
+  );
+  await addColumnIfNotExists(
+    'pcb_inventory_scan_smd',
+    'defect_source_area',
+    'VARCHAR(50) NULL AFTER etapa_deteccion'
+  );
+  await addColumnIfNotExists(
+    'pcb_inventory_scan_smd',
+    'defect_data_id',
+    'VARCHAR(50) NULL AFTER defect_source_area'
   );
 
   try {

@@ -39,6 +39,7 @@ class PcbEntradaGridPanelState extends State<PcbEntradaGridPanel>
     'scanned_original',
     'area',
     'defect_type',
+    'etapa_deteccion',
     'component_location',
     'qty',
     'array_count',
@@ -57,6 +58,7 @@ class PcbEntradaGridPanelState extends State<PcbEntradaGridPanel>
         tr('pcb_scanned_code'),
         tr('pcb_area'),
         tr('pcb_defect_type'),
+        tr('pcb_etapa_deteccion'),
         tr('pcb_component_location'),
         tr('pcb_qty'),
         tr('pcb_array_count'),
@@ -72,13 +74,29 @@ class PcbEntradaGridPanelState extends State<PcbEntradaGridPanel>
   @override
   bool get wantKeepAlive => true;
 
+  static const int _etapaColIdx = 3;
+
+  Color _etapaColor(String? etapa) {
+    switch (etapa) {
+      case 'LQC':
+        return Colors.orange;
+      case 'OQC':
+        return Colors.purpleAccent;
+      case 'AIS':
+        return Colors.cyan;
+      default:
+        return Colors.white38;
+    }
+  }
+
   @override
   void initState() {
     super.initState();
-    initColumnFlex(13, 'pcb_entrada_grid', defaultFlexValues: [
+    initColumnFlex(14, 'pcb_entrada_grid', defaultFlexValues: [
       2.5,
       1.0,
       1.4,
+      0.8,
       1.3,
       0.8,
       1.0,
@@ -298,17 +316,56 @@ class PcbEntradaGridPanelState extends State<PcbEntradaGridPanel>
                             height: 30,
                             decoration: BoxDecoration(
                               color: isSelected
-                                  ? Colors.green.withOpacity(0.20)
+                                  ? Colors.green.withValues(alpha: 0.20)
                                   : (index.isEven
                                       ? AppColors.gridRowEven
                                       : AppColors.gridRowOdd),
                               border: Border(
                                   bottom: BorderSide(
-                                      color:
-                                          AppColors.border.withOpacity(0.3))),
+                                      color: AppColors.border
+                                          .withValues(alpha: 0.3))),
                             ),
                             child: Row(
                               children: List.generate(_fields.length, (ci) {
+                                if (ci == _etapaColIdx) {
+                                  final etapa =
+                                      (row[_fields[ci]] ?? '').toString();
+                                  return Expanded(
+                                    flex: getColumnFlex(ci),
+                                    child: Padding(
+                                      padding: const EdgeInsets.symmetric(
+                                          horizontal: 6, vertical: 4),
+                                      child: etapa.isEmpty
+                                          ? const SizedBox()
+                                          : Container(
+                                              alignment: Alignment.center,
+                                              padding:
+                                                  const EdgeInsets.symmetric(
+                                                      horizontal: 6,
+                                                      vertical: 2),
+                                              decoration: BoxDecoration(
+                                                color: _etapaColor(etapa)
+                                                    .withValues(alpha: 0.18),
+                                                borderRadius:
+                                                    BorderRadius.circular(3),
+                                                border: Border.all(
+                                                    color: _etapaColor(etapa),
+                                                    width: 1),
+                                              ),
+                                              child: Text(
+                                                etapa,
+                                                style: TextStyle(
+                                                  color: _etapaColor(etapa),
+                                                  fontSize: 10,
+                                                  fontWeight: FontWeight.w700,
+                                                ),
+                                                maxLines: 1,
+                                                overflow: TextOverflow.ellipsis,
+                                              ),
+                                            ),
+                                    ),
+                                  );
+                                }
                                 return Expanded(
                                   flex: getColumnFlex(ci),
                                   child: Padding(
@@ -343,7 +400,7 @@ class PcbEntradaGridPanelState extends State<PcbEntradaGridPanel>
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                 decoration: BoxDecoration(
-                  color: Colors.green.withOpacity(0.15),
+                  color: Colors.green.withValues(alpha: 0.15),
                   borderRadius: BorderRadius.circular(4),
                 ),
                 child: Text(

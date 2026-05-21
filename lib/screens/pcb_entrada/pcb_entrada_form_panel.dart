@@ -38,7 +38,13 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel> {
   String _selectedProceso = 'SMD';
   String _selectedArea = 'INVENTARIO';
   String? _selectedDefectType;
+  String? _detectedEtapa; // 'LQC' | 'OQC' | 'AIS' | null
+  String? _detectedSourceArea;
+  String? _detectedDefectDataId;
   List<Map<String, dynamic>> _defects = [];
+  List<Map<String, dynamic>> _users = [];
+  int? _selectedUserId;
+  String? _selectedUserName;
   DateTime _inventoryDate = DateTime.now();
   bool _isLoading = false;
   String? _statusMessage;
@@ -66,8 +72,10 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel> {
   void initState() {
     super.initState();
     _dateController.text = _formattedDate;
+    _setDefaultUser();
     _loadLocalPrefs();
     _loadDefects();
+    _loadUsers();
   }
 
   @override
@@ -137,6 +145,69 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel> {
         _selectedDefectType = null;
       }
     });
+  }
+
+  void _setDefaultUser() {
+    final currentUser = AuthService.currentUser;
+    if (currentUser == null) return;
+    _selectedUserId = currentUser.id;
+    _selectedUserName = currentUser.nombreCompleto.isNotEmpty
+        ? currentUser.nombreCompleto
+        : currentUser.username;
+  }
+
+  int? _parseUserId(dynamic value) {
+    if (value is int) return value;
+    if (value is num) return value.toInt();
+    return int.tryParse(value?.toString() ?? '');
+  }
+
+  String _userName(Map<String, dynamic> user) {
+    final fullName = user['nombre_completo']?.toString().trim() ?? '';
+    if (fullName.isNotEmpty) return fullName;
+    return user['username']?.toString().trim() ?? '';
+  }
+
+  Future<void> _loadUsers() async {
+    final result = await ApiService.getUsers();
+    final users = result.where((user) {
+      final active = user['activo']?.toString().toLowerCase();
+      return active != '0' && active != 'false';
+    }).toList();
+    if (!mounted) return;
+    setState(() {
+      _users = users;
+      if (_selectedUserId != null &&
+          !_users.any((user) => _parseUserId(user['id']) == _selectedUserId)) {
+        _setDefaultUser();
+      }
+    });
+  }
+
+  List<List<String>> get _userRows {
+    return _users.map((user) {
+      return [
+        user['id']?.toString() ?? '',
+        _userName(user),
+      ];
+    }).toList();
+  }
+
+  String get _selectedUserDisplay {
+    if (_selectedUserId == null || (_selectedUserName ?? '').isEmpty) {
+      return '';
+    }
+    return '$_selectedUserId - $_selectedUserName';
+  }
+
+  String? get _selectedScannedBy {
+    final selected = _selectedUserName?.trim() ?? '';
+    if (selected.isNotEmpty) return selected;
+    final currentUser = AuthService.currentUser;
+    if (currentUser == null) return null;
+    return currentUser.nombreCompleto.isNotEmpty
+        ? currentUser.nombreCompleto
+        : currentUser.username;
   }
 
   Future<void> _saveLocalPrefs() async {
@@ -220,6 +291,44 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel> {
     final code = _scanController.text.trim();
     if (code.isEmpty) return;
     final isArrayItem = _hasPendingArrayScans;
+
+    // Detectar defectos LQC/OQC solo en el primer PCB del array.
+    if (!isArrayItem) {
+      final matches = await ApiService.lookupDefectData(code);
+      if (!mounted) return;
+
+      Map<String, dynamic>? selected;
+      if (matches.isEmpty) {
+        setState(() {
+          _detectedEtapa = 'AIS';
+          _detectedSourceArea = null;
+          _detectedDefectDataId = null;
+        });
+      } else if (matches.length == 1) {
+        selected = matches.first;
+      } else {
+        selected = await _showDefectVerificationDialog(matches);
+        if (!mounted) return;
+        if (selected == null) {
+          requestScanFocus();
+          return;
+        }
+      }
+
+      if (selected != null) {
+        final etapa = selected['etapa_deteccion']?.toString().toUpperCase();
+        setState(() {
+          _selectedArea = 'REPARACION';
+          _selectedDefectType = selected!['defecto']?.toString();
+          _componentLocationController.text =
+              selected['ubicacion']?.toString() ?? '';
+          _detectedEtapa = (etapa == 'LQC' || etapa == 'OQC') ? etapa : 'AIS';
+          _detectedSourceArea = selected['area']?.toString();
+          _detectedDefectDataId = selected['id']?.toString();
+        });
+      }
+    }
+
     final arrayCount = isArrayItem ? _pendingArrayCount : _getArrayCount();
     final repairCount = isArrayItem ? 0 : _getRepairCount();
     final effectiveArea = isArrayItem ? _pendingArrayTargetArea : _selectedArea;
@@ -290,8 +399,11 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel> {
           isRepairEntry && _componentLocationController.text.trim().isNotEmpty
               ? _componentLocationController.text.trim()
               : null,
+      etapaDeteccion: isRepairEntry ? _detectedEtapa : null,
+      defectSourceArea: isRepairEntry ? _detectedSourceArea : null,
+      defectDataId: isRepairEntry ? _detectedDefectDataId : null,
       comentarios: _buildComments(isArrayItem: isArrayItem),
-      scannedBy: AuthService.currentUser?.nombreCompleto,
+      scannedBy: _selectedScannedBy,
     );
 
     if (mounted) {
@@ -315,6 +427,7 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel> {
               _pendingRepairRemaining + _pendingInventoryRemaining;
           if (_pendingArrayRemaining <= 0) {
             _clearPendingArray();
+            _clearDetectedDefect();
             nextMessage =
                 '${tr('pcb_array_complete')}: ${data?['pcb_part_no'] ?? ''} - ${data?['modelo'] ?? 'N/A'}';
           } else {
@@ -339,6 +452,7 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel> {
           nextMessage =
               '${tr('pcb_scan_saved')}: ${data?['pcb_part_no'] ?? ''} | ${tr('pcb_array_remaining')}: $_pendingArrayRemaining ($_pendingArrayTargetArea)';
         } else {
+          _clearDetectedDefect();
           nextMessage =
               '${tr('pcb_scan_saved')}: ${data?['pcb_part_no'] ?? ''} - ${data?['modelo'] ?? 'N/A'} (${data?['proceso'] ?? ''})';
         }
@@ -401,9 +515,153 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel> {
         _statusIsError = false;
         _lastInsertedIds = [];
         if (_hasPendingArrayScans) _clearPendingArray();
+        _clearDetectedDefect();
       });
       widget.onDataSaved();
     }
+  }
+
+  void _clearDetectedDefect() {
+    _detectedEtapa = null;
+    _detectedSourceArea = null;
+    _detectedDefectDataId = null;
+  }
+
+  Color _etapaColor(String? etapa) {
+    switch (etapa) {
+      case 'LQC':
+        return Colors.orange;
+      case 'OQC':
+        return Colors.purpleAccent;
+      case 'AIS':
+        return Colors.cyan;
+      default:
+        return Colors.white38;
+    }
+  }
+
+  Future<Map<String, dynamic>?> _showDefectVerificationDialog(
+      List<Map<String, dynamic>> matches) async {
+    return showDialog<Map<String, dynamic>>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.panelBackground,
+        title: Row(
+          children: [
+            const Icon(Icons.warning_amber_rounded,
+                color: Colors.orange, size: 24),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                tr('pcb_verify_defect_title'),
+                style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 15,
+                    fontWeight: FontWeight.w600),
+              ),
+            ),
+          ],
+        ),
+        content: SizedBox(
+          width: 560,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                tr('pcb_multiple_defects_hint'),
+                style: const TextStyle(color: Colors.white60, fontSize: 12),
+              ),
+              const SizedBox(height: 10),
+              Flexible(
+                child: ListView.separated(
+                  shrinkWrap: true,
+                  itemCount: matches.length,
+                  separatorBuilder: (_, __) =>
+                      const Divider(color: Colors.white12, height: 1),
+                  itemBuilder: (_, i) {
+                    final match = matches[i];
+                    final etapa =
+                        match['etapa_deteccion']?.toString().toUpperCase() ??
+                            '';
+                    final defecto = match['defecto']?.toString() ?? '';
+                    final ubicacion = match['ubicacion']?.toString() ?? '';
+                    final area = match['area']?.toString() ?? '';
+                    final tipo = match['tipo_inspeccion']?.toString() ?? '';
+                    final linea = match['linea']?.toString() ?? '';
+                    final fecha = match['fecha']?.toString() ?? '';
+                    return InkWell(
+                      onTap: () => Navigator.pop(ctx, match),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 10),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 6, vertical: 2),
+                                  decoration: BoxDecoration(
+                                    color: _etapaColor(etapa)
+                                        .withValues(alpha: 0.2),
+                                    borderRadius: BorderRadius.circular(3),
+                                    border: Border.all(
+                                        color: _etapaColor(etapa), width: 1),
+                                  ),
+                                  child: Text(
+                                    etapa.isEmpty ? '?' : etapa,
+                                    style: TextStyle(
+                                      color: _etapaColor(etapa),
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    defecto,
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ),
+                                Text(
+                                  fecha,
+                                  style: const TextStyle(
+                                      color: Colors.white54, fontSize: 11),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              '${tr('pcb_component_location')}: $ubicacion | ${tr('pcb_source_area')}: $area | $tipo | $linea',
+                              style: const TextStyle(
+                                  color: Colors.white60, fontSize: 11),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, null),
+            child: Text(tr('cancel'),
+                style: const TextStyle(color: Colors.white70)),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -412,10 +670,9 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel> {
         ? _pendingArrayTargetArea == 'REPARACION'
         : _selectedArea == 'REPARACION';
     final defectRows = _defectRows;
-    final selectedDefectValue = defectRows
-            .any((row) => row.isNotEmpty && row.first == _selectedDefectType)
-        ? _selectedDefectType
-        : null;
+    final userRows = _userRows;
+    // defect_data can provide defect text not present in pcb_defect_catalog.
+    final selectedDefectValue = _selectedDefectType;
 
     return Container(
       color: AppColors.subPanelBackground,
@@ -423,6 +680,36 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // Persona que captura el escaneo
+          Row(
+            children: [
+              SizedBox(
+                width: 100,
+                child: Text(tr('pcb_scanned_by'),
+                    style: const TextStyle(fontSize: 14, color: Colors.white)),
+              ),
+              SizedBox(
+                width: 260,
+                child: TableDropdownField(
+                  value: _selectedUserDisplay,
+                  headers: ['ID', tr('full_name')],
+                  rows: userRows,
+                  tableWidth: 420,
+                  tableHeight: 320,
+                  onRowSelected: (index) {
+                    if (index < 0 || index >= _users.length) return;
+                    final user = _users[index];
+                    setState(() {
+                      _selectedUserId = _parseUserId(user['id']);
+                      _selectedUserName = _userName(user);
+                    });
+                    requestScanFocus();
+                  },
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
           // Fila 1: Area + Proceso + Fecha
           Row(
             children: [
@@ -667,7 +954,45 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel> {
                   padding: EdgeInsets.zero,
                 ),
               ),
-              const SizedBox(width: 18),
+              const SizedBox(width: 12),
+              Container(
+                height: 28,
+                padding: const EdgeInsets.symmetric(horizontal: 10),
+                decoration: BoxDecoration(
+                  color: _etapaColor(_detectedEtapa).withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(4),
+                  border:
+                      Border.all(color: _etapaColor(_detectedEtapa), width: 1),
+                ),
+                alignment: Alignment.center,
+                child: Text(
+                  _detectedEtapa ?? '-',
+                  style: TextStyle(
+                    color: _etapaColor(_detectedEtapa),
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+              if (_detectedSourceArea != null &&
+                  _detectedSourceArea!.isNotEmpty) ...[
+                const SizedBox(width: 6),
+                Container(
+                  height: 28,
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  decoration: BoxDecoration(
+                    color: AppColors.gridBackground,
+                    borderRadius: BorderRadius.circular(4),
+                    border: Border.all(color: Colors.white24, width: 1),
+                  ),
+                  alignment: Alignment.center,
+                  child: Text(
+                    '${tr('pcb_source_area')}: ${_detectedSourceArea!}',
+                    style: const TextStyle(color: Colors.white70, fontSize: 11),
+                  ),
+                ),
+              ],
+              const SizedBox(width: 12),
               SizedBox(
                 width: 150,
                 child: Text(tr('pcb_component_location'),
