@@ -8,6 +8,7 @@ import 'package:material_warehousing_flutter/core/widgets/field_decoration.dart'
 import 'package:material_warehousing_flutter/core/widgets/table_dropdown_field.dart';
 import 'package:material_warehousing_flutter/core/services/api_service.dart';
 import 'package:material_warehousing_flutter/core/services/auth_service.dart';
+import 'package:material_warehousing_flutter/screens/pcb_common/pcb_user_selection_mixin.dart';
 
 class PcbEntradaFormPanel extends StatefulWidget {
   final LanguageProvider languageProvider;
@@ -23,7 +24,8 @@ class PcbEntradaFormPanel extends StatefulWidget {
   State<PcbEntradaFormPanel> createState() => PcbEntradaFormPanelState();
 }
 
-class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel> {
+class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel>
+    with PcbUserSelectionMixin<PcbEntradaFormPanel> {
   final TextEditingController _scanController = TextEditingController();
   final TextEditingController _commentController = TextEditingController();
   final TextEditingController _dateController = TextEditingController();
@@ -42,9 +44,6 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel> {
   String? _detectedSourceArea;
   String? _detectedDefectDataId;
   List<Map<String, dynamic>> _defects = [];
-  List<Map<String, dynamic>> _users = [];
-  int? _selectedUserId;
-  String? _selectedUserName;
   DateTime _inventoryDate = DateTime.now();
   bool _isLoading = false;
   String? _statusMessage;
@@ -72,10 +71,10 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel> {
   void initState() {
     super.initState();
     _dateController.text = _formattedDate;
-    _setDefaultUser();
+    setDefaultPcbUser();
     _loadLocalPrefs();
     _loadDefects();
-    _loadUsers();
+    loadPcbUsers();
   }
 
   @override
@@ -145,69 +144,6 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel> {
         _selectedDefectType = null;
       }
     });
-  }
-
-  void _setDefaultUser() {
-    final currentUser = AuthService.currentUser;
-    if (currentUser == null) return;
-    _selectedUserId = currentUser.id;
-    _selectedUserName = currentUser.nombreCompleto.isNotEmpty
-        ? currentUser.nombreCompleto
-        : currentUser.username;
-  }
-
-  int? _parseUserId(dynamic value) {
-    if (value is int) return value;
-    if (value is num) return value.toInt();
-    return int.tryParse(value?.toString() ?? '');
-  }
-
-  String _userName(Map<String, dynamic> user) {
-    final fullName = user['nombre_completo']?.toString().trim() ?? '';
-    if (fullName.isNotEmpty) return fullName;
-    return user['username']?.toString().trim() ?? '';
-  }
-
-  Future<void> _loadUsers() async {
-    final result = await ApiService.getUsers();
-    final users = result.where((user) {
-      final active = user['activo']?.toString().toLowerCase();
-      return active != '0' && active != 'false';
-    }).toList();
-    if (!mounted) return;
-    setState(() {
-      _users = users;
-      if (_selectedUserId != null &&
-          !_users.any((user) => _parseUserId(user['id']) == _selectedUserId)) {
-        _setDefaultUser();
-      }
-    });
-  }
-
-  List<List<String>> get _userRows {
-    return _users.map((user) {
-      return [
-        user['id']?.toString() ?? '',
-        _userName(user),
-      ];
-    }).toList();
-  }
-
-  String get _selectedUserDisplay {
-    if (_selectedUserId == null || (_selectedUserName ?? '').isEmpty) {
-      return '';
-    }
-    return '$_selectedUserId - $_selectedUserName';
-  }
-
-  String? get _selectedScannedBy {
-    final selected = _selectedUserName?.trim() ?? '';
-    if (selected.isNotEmpty) return selected;
-    final currentUser = AuthService.currentUser;
-    if (currentUser == null) return null;
-    return currentUser.nombreCompleto.isNotEmpty
-        ? currentUser.nombreCompleto
-        : currentUser.username;
   }
 
   Future<void> _saveLocalPrefs() async {
@@ -403,7 +339,7 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel> {
       defectSourceArea: isRepairEntry ? _detectedSourceArea : null,
       defectDataId: isRepairEntry ? _detectedDefectDataId : null,
       comentarios: _buildComments(isArrayItem: isArrayItem),
-      scannedBy: _selectedScannedBy,
+      scannedBy: selectedPcbScannedBy,
     );
 
     if (mounted) {
@@ -670,7 +606,7 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel> {
         ? _pendingArrayTargetArea == 'REPARACION'
         : _selectedArea == 'REPARACION';
     final defectRows = _defectRows;
-    final userRows = _userRows;
+    final userRows = pcbUserRows;
     // defect_data can provide defect text not present in pcb_defect_catalog.
     final selectedDefectValue = _selectedDefectType;
 
@@ -691,19 +627,13 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel> {
               SizedBox(
                 width: 260,
                 child: TableDropdownField(
-                  value: _selectedUserDisplay,
+                  value: selectedPcbUserDisplay,
                   headers: ['ID', tr('full_name')],
                   rows: userRows,
                   tableWidth: 420,
                   tableHeight: 320,
                   onRowSelected: (index) {
-                    if (index < 0 || index >= _users.length) return;
-                    final user = _users[index];
-                    setState(() {
-                      _selectedUserId = _parseUserId(user['id']);
-                      _selectedUserName = _userName(user);
-                    });
-                    requestScanFocus();
+                    if (selectPcbUserByIndex(index)) requestScanFocus();
                   },
                 ),
               ),

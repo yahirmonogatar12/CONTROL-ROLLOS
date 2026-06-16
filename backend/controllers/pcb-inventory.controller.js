@@ -12,28 +12,49 @@ const { pool } = require('../config/database');
 // HELPERS
 // ============================================
 
-const MONTERREY_TIME_ZONE = 'America/Monterrey';
-
-function getMonterreyDateTime() {
-  const formatter = new Intl.DateTimeFormat('en-US', {
-    timeZone: MONTERREY_TIME_ZONE,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hourCycle: 'h23',
-  });
-  const parts = Object.fromEntries(
-    formatter.formatToParts(new Date()).map(part => [part.type, part.value])
-  );
-  const hour = parts.hour === '24' ? '00' : parts.hour;
-  return `${parts.year}-${parts.month}-${parts.day} ${hour}:${parts.minute}:${parts.second}`;
+function pad2(value) {
+  return value.toString().padStart(2, '0');
 }
 
-function getMonterreyDate() {
-  return getMonterreyDateTime().slice(0, 10);
+function formatLocalDateTime(date = new Date()) {
+  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())} `
+    + `${pad2(date.getHours())}:${pad2(date.getMinutes())}:${pad2(date.getSeconds())}`;
+}
+
+function getLocalDate() {
+  return formatLocalDateTime().slice(0, 10);
+}
+
+function normalizeClientDateTime(value) {
+  if (!value) return null;
+  const text = value.toString().trim();
+  const match = text.match(
+    /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?$/
+  );
+  if (!match) return null;
+
+  const [, year, month, day, hour, minute, second] = match;
+  const candidate = new Date(
+    Number(year),
+    Number(month) - 1,
+    Number(day),
+    Number(hour),
+    Number(minute),
+    Number(second)
+  );
+
+  if (
+    candidate.getFullYear() !== Number(year)
+    || candidate.getMonth() + 1 !== Number(month)
+    || candidate.getDate() !== Number(day)
+    || candidate.getHours() !== Number(hour)
+    || candidate.getMinutes() !== Number(minute)
+    || candidate.getSeconds() !== Number(second)
+  ) {
+    return null;
+  }
+
+  return `${year}-${month}-${day} ${hour}:${minute}:${second}`;
 }
 
 function normalizeCode(code) {
@@ -206,7 +227,8 @@ exports.scan = async (req, res, next) => {
       defect_data_id,
       manual_qty_confirmed,
       initial_stock_area,
-      initial_stock_proceso
+      initial_stock_proceso,
+      created_at
     } = req.body;
 
     if (!scanned_code || !scanned_code.trim()) {
@@ -292,8 +314,8 @@ exports.scan = async (req, res, next) => {
       });
     }
 
-    const invDate = inventory_date || getMonterreyDate();
-    const createdAtMonterrey = getMonterreyDateTime();
+    const invDate = inventory_date || getLocalDate();
+    const createdAt = normalizeClientDateTime(created_at) || formatLocalDateTime();
     const scannedOriginal = scanned_code.trim();
     const scannedOriginalNorm = normalizeCode(scanned_code);
     const arrayGroupCode = normalizeCode(array_group_code || scannedOriginal);
@@ -467,7 +489,7 @@ exports.scan = async (req, res, next) => {
               row.component_location,
               arrayComment,
               scanned_by || null,
-              createdAtMonterrey,
+              createdAt,
             ]
           );
           insertedIds.push(result.insertId);
@@ -615,7 +637,7 @@ exports.scan = async (req, res, next) => {
         defectDataIdVal,
         comentarios || null,
         scanned_by || null,
-        createdAtMonterrey,
+        createdAt,
       ]
     );
     const insertedIds = [result.insertId];
@@ -665,7 +687,7 @@ exports.bulkInitialStock = async (req, res, next) => {
       items,
     } = req.body;
 
-    const invDate = inventory_date || getMonterreyDate();
+    const invDate = inventory_date || getLocalDate();
     const areaVal = area || 'INVENTARIO';
     if (!VALID_AREAS.includes(areaVal)) {
       return res.status(400).json({
@@ -739,7 +761,7 @@ exports.bulkInitialStock = async (req, res, next) => {
 
     const insertedIds = [];
     const nowToken = Date.now();
-    const createdAtMonterrey = getMonterreyDateTime();
+    const createdAt = formatLocalDateTime();
     const initialComment = comentarios && comentarios.toString().trim()
       ? `Inventario inicial | ${comentarios.toString().trim()}`
       : 'Inventario inicial';
@@ -777,7 +799,7 @@ exports.bulkInitialStock = async (req, res, next) => {
           null,
           initialComment,
           scanned_by || null,
-          createdAtMonterrey,
+          createdAt,
         );
       });
 

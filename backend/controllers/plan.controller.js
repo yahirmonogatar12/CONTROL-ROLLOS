@@ -120,7 +120,7 @@ exports.getBomByModelo = async (req, res, next) => {
   }
 };
 
-// GET /api/bom/search - Consulta BOM por PCB/modelo, componente, spec o ubicacion
+// GET /api/bom/search - Consulta BOM vigente por PCB/modelo, componente, spec o ubicacion
 exports.searchBom = async (req, res, next) => {
   try {
     const {
@@ -142,65 +142,101 @@ exports.searchBom = async (req, res, next) => {
     const modeloMatch = rawModelo.toUpperCase().match(/EBR\d{8}/);
 
     if (rawModelo) {
-      filters.push('b.modelo LIKE ?');
-      params.push(`%${modeloMatch ? modeloMatch[0] : rawModelo}%`);
+      const likeModelo = `%${modeloMatch ? modeloMatch[0] : rawModelo}%`;
+      filters.push(`(
+        b.root_part_no LIKE ?
+        OR b.bom_part_no LIKE ?
+      )`);
+      params.push(likeModelo, likeModelo);
     }
 
     if (rawQuery) {
       const like = `%${rawQuery}%`;
       filters.push(`(
-        b.modelo LIKE ?
-        OR b.codigo_material LIKE ?
-        OR b.numero_parte LIKE ?
-        OR b.especificacion_material LIKE ?
-        OR b.ubicacion LIKE ?
-        OR b.classification LIKE ?
-        OR b.tipo_material LIKE ?
-        ${pcbMatch ? 'OR b.modelo = ?' : ''}
+        b.root_part_no LIKE ?
+        OR b.bom_part_no LIKE ?
+        OR b.item_no LIKE ?
+        OR b.alt_item_no LIKE ?
+        OR b.item_name LIKE ?
+        OR b.item_name_en LIKE ?
+        OR b.spec LIKE ?
+        OR b.alt_spec LIKE ?
+        OR b.location_text LIKE ?
+        OR b.item_class LIKE ?
+        OR b.process_name LIKE ?
+        OR b.item_process LIKE ?
+        OR b.maker LIKE ?
+        ${pcbMatch ? 'OR b.root_part_no = ? OR b.bom_part_no LIKE ?' : ''}
       )`);
-      params.push(like, like, like, like, like, like, like);
-      if (pcbMatch) params.push(pcbMatch[0]);
+      params.push(
+        like,
+        like,
+        like,
+        like,
+        like,
+        like,
+        like,
+        like,
+        like,
+        like,
+        like,
+        like,
+        like
+      );
+      if (pcbMatch) params.push(pcbMatch[0], `${pcbMatch[0]}%`);
     }
 
     if (side && side !== 'ALL') {
-      filters.push('b.side = ?');
+      filters.push('(b.bom_suffix = ? OR b.bom_kind = ?)');
+      params.push(side);
       params.push(side);
     }
 
     if (tipo_material && tipo_material !== 'ALL') {
-      filters.push('b.tipo_material = ?');
+      filters.push('b.process_name = ?');
       params.push(tipo_material);
     }
 
     if (classification && classification !== 'ALL') {
-      filters.push('b.classification = ?');
+      filters.push('b.item_class = ?');
       params.push(classification);
     }
 
-    const whereClause = filters.length > 0 ? `WHERE ${filters.join(' AND ')}` : '';
+    const whereClause = filters.length > 0 ? `AND ${filters.join(' AND ')}` : '';
 
     params.push(maxLimit);
 
     const [rows] = await pool.query(
       `
       SELECT
-        b.id,
-        b.modelo,
-        b.codigo_material,
-        b.numero_parte,
-        b.side,
-        b.tipo_material,
-        b.classification,
-        b.especificacion_material,
-        b.vender,
-        b.cantidad_total,
-        b.cantidad_original,
-        b.ubicacion,
-        b.material_sustituto,
-        b.material_original
-      FROM bom b
+        b.item_seq AS id,
+        b.root_part_no AS modelo,
+        b.bom_part_no AS codigo_material,
+        b.item_no AS numero_parte,
+        b.bom_kind AS side,
+        b.process_name AS tipo_material,
+        b.item_class AS classification,
+        b.spec AS especificacion_material,
+        b.maker AS vender,
+        b.qty AS cantidad_total,
+        b.qty AS cantidad_original,
+        b.location_text AS ubicacion,
+        b.alt_item_no AS material_sustituto,
+        b.item_no AS material_original,
+        b.bom_part_no,
+        b.bom_kind,
+        b.bom_rev,
+        b.item_name,
+        b.item_name_en,
+        b.unit,
+        b.item_process,
+        b.alt_spec,
+        b.alt_item_name,
+        b.alt_maker
+      FROM v_ecos_bom_current b
+      WHERE 1=1
       ${whereClause}
-      ORDER BY b.modelo, b.side, b.ubicacion, b.numero_parte
+      ORDER BY b.root_part_no, b.bom_rev, b.location_text, b.item_no
       LIMIT ?
       `,
       params

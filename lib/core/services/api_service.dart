@@ -8,6 +8,14 @@ class ApiService {
   static String get baseUrl => ServerConfig.baseUrl;
   static bool get isSlowLinkAndroid => http.isSlowLinkAndroid;
 
+  static String _twoDigits(int value) => value.toString().padLeft(2, '0');
+
+  static String _formatLocalSqlDateTime(DateTime value) {
+    final local = value.toLocal();
+    return '${local.year}-${_twoDigits(local.month)}-${_twoDigits(local.day)} '
+        '${_twoDigits(local.hour)}:${_twoDigits(local.minute)}:${_twoDigits(local.second)}';
+  }
+
   // GET - Obtener todos los registros de warehousing
   static Future<List<Map<String, dynamic>>> getWarehousing() async {
     try {
@@ -4214,6 +4222,7 @@ class ApiService {
     String? initialStockProceso,
     String? comentarios,
     String? scannedBy,
+    DateTime? createdAt,
   }) async {
     try {
       final response = await http.post(
@@ -4239,6 +4248,7 @@ class ApiService {
           'initial_stock_proceso': initialStockProceso,
           'comentarios': comentarios,
           'scanned_by': scannedBy,
+          'created_at': _formatLocalSqlDateTime(createdAt ?? DateTime.now()),
         }),
       );
 

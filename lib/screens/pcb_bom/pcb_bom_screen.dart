@@ -349,7 +349,7 @@ class _PcbBomScreenState extends State<PcbBomScreen>
               label: tr('pcb_bom_side'),
               width: 110,
               value: _selectedSide,
-              items: const ['ALL', 'TOP', 'BOT', 'BOTTOM'],
+              items: const ['ALL', 'MASTER', 'SMD', 'IMD', 'OTHER'],
               onChanged: (value) => setState(() => _selectedSide = value),
             ),
             _dropdown(

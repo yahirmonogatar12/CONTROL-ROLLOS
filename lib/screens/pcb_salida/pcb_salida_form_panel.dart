@@ -4,8 +4,10 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:material_warehousing_flutter/core/localization/app_translations.dart';
 import 'package:material_warehousing_flutter/core/theme/app_colors.dart';
 import 'package:material_warehousing_flutter/core/widgets/field_decoration.dart';
+import 'package:material_warehousing_flutter/core/widgets/table_dropdown_field.dart';
 import 'package:material_warehousing_flutter/core/services/api_service.dart';
 import 'package:material_warehousing_flutter/core/services/auth_service.dart';
+import 'package:material_warehousing_flutter/screens/pcb_common/pcb_user_selection_mixin.dart';
 
 class _PcbManualExitSelection {
   final int qty;
@@ -33,7 +35,8 @@ class PcbSalidaFormPanel extends StatefulWidget {
   State<PcbSalidaFormPanel> createState() => PcbSalidaFormPanelState();
 }
 
-class PcbSalidaFormPanelState extends State<PcbSalidaFormPanel> {
+class PcbSalidaFormPanelState extends State<PcbSalidaFormPanel>
+    with PcbUserSelectionMixin<PcbSalidaFormPanel> {
   final TextEditingController _scanController = TextEditingController();
   final TextEditingController _commentController = TextEditingController();
   final TextEditingController _dateController = TextEditingController();
@@ -63,7 +66,9 @@ class PcbSalidaFormPanelState extends State<PcbSalidaFormPanel> {
   void initState() {
     super.initState();
     _dateController.text = _formattedDate;
+    setDefaultPcbUser();
     _loadLocalPrefs();
+    loadPcbUsers();
   }
 
   @override
@@ -157,7 +162,7 @@ class PcbSalidaFormPanelState extends State<PcbSalidaFormPanel> {
       initialStockProceso: initialStockProceso,
       comentarios:
           _commentController.text.isNotEmpty ? _commentController.text : null,
-      scannedBy: AuthService.currentUser?.nombreCompleto,
+      scannedBy: selectedPcbScannedBy,
     );
 
     if (mounted) {
@@ -454,12 +459,38 @@ class PcbSalidaFormPanelState extends State<PcbSalidaFormPanel> {
 
   @override
   Widget build(BuildContext context) {
+    final userRows = pcbUserRows;
+
     return Container(
       color: AppColors.subPanelBackground,
       padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // Persona que captura el escaneo
+          Row(
+            children: [
+              SizedBox(
+                width: 100,
+                child: Text(tr('pcb_scanned_by'),
+                    style: const TextStyle(fontSize: 14, color: Colors.white)),
+              ),
+              SizedBox(
+                width: 260,
+                child: TableDropdownField(
+                  value: selectedPcbUserDisplay,
+                  headers: ['ID', tr('full_name')],
+                  rows: userRows,
+                  tableWidth: 420,
+                  tableHeight: 320,
+                  onRowSelected: (index) {
+                    if (selectPcbUserByIndex(index)) requestScanFocus();
+                  },
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
           // Fila 1: Tipo selector + Fecha
           Row(
             children: [
