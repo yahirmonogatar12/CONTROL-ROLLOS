@@ -390,16 +390,20 @@ exports.scan = async (req, res, next) => {
     let sourceForExit = null;
     let manualInitialStockOption = null;
     if (tipo !== 'ENTRADA') {
+      // ponytail: remaining = balance agregado del area (todas las entradas - todas las salidas),
+      // no entrada.qty - salidas. Lo segundo restaba salidas viejas ya consumidas a una
+      // entrada nueva y daba "stock insuficiente" con stock real disponible.
       const [sourceRows] = await connection.query(
         `SELECT entrada.*,
-          entrada.qty - COALESCE((
-            SELECT SUM(salida.qty)
-            FROM pcb_inventory_scan_smd salida
-            WHERE salida.scanned_original_norm = entrada.scanned_original_norm
-            AND salida.area = entrada.area
-            AND salida.proceso = entrada.proceso
-            AND salida.tipo_movimiento IN ('SALIDA', 'SCRAP')
-          ), 0) AS remaining_qty
+          (
+            SELECT COALESCE(SUM(CASE WHEN mov.tipo_movimiento = 'ENTRADA' THEN mov.qty
+                                     WHEN mov.tipo_movimiento IN ('SALIDA', 'SCRAP') THEN -mov.qty
+                                     ELSE 0 END), 0)
+            FROM pcb_inventory_scan_smd mov
+            WHERE mov.scanned_original_norm = entrada.scanned_original_norm
+            AND mov.area = entrada.area
+            AND mov.proceso = entrada.proceso
+          ) AS remaining_qty
          FROM pcb_inventory_scan_smd entrada
          WHERE entrada.tipo_movimiento = 'ENTRADA'
          AND entrada.scanned_original_norm = ?

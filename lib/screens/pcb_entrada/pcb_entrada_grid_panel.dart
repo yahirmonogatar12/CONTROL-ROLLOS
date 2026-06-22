@@ -3,6 +3,7 @@ import 'package:material_warehousing_flutter/core/localization/app_translations.
 import 'package:material_warehousing_flutter/core/theme/app_colors.dart';
 import 'package:material_warehousing_flutter/core/services/api_service.dart';
 import 'package:material_warehousing_flutter/core/widgets/resizable_grid_header.dart';
+import 'package:material_warehousing_flutter/core/widgets/searchable_column_filter_dialog.dart';
 
 class PcbEntradaGridPanel extends StatefulWidget {
   final LanguageProvider languageProvider;
@@ -177,8 +178,7 @@ class PcbEntradaGridPanelState extends State<PcbEntradaGridPanel>
     for (final entry in _columnFilters.entries) {
       if (entry.value != null && entry.value!.isNotEmpty) {
         data = data.where((r) {
-          final val = (r[entry.key] ?? '').toString();
-          return val == entry.value;
+          return matchesColumnFilterValue(r[entry.key], entry.value!);
         }).toList();
       }
     }
@@ -203,81 +203,42 @@ class PcbEntradaGridPanelState extends State<PcbEntradaGridPanel>
     });
   }
 
+  String _headerForField(String field) {
+    final index = _fields.indexOf(field);
+    return index >= 0 && index < _headers.length ? _headers[index] : field;
+  }
+
   void _onFilter(String field) {
-    // Collect unique values for this field
     final values = _allData
         .map((r) => (r[field] ?? '').toString())
         .where((v) => v.isNotEmpty)
         .toSet()
         .toList()
-      ..sort();
+      ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
 
     final currentFilter = _columnFilters[field];
 
-    showDialog(
+    showSearchableColumnFilterDialog(
       context: context,
-      builder: (ctx) {
-        return AlertDialog(
-          backgroundColor: AppColors.panelBackground,
-          title: Text(
-            '${tr('pcb_filter')}: $field',
-            style: const TextStyle(color: Colors.white, fontSize: 14),
-          ),
-          content: SizedBox(
-            width: 250,
-            height: 300,
-            child: ListView(
-              children: [
-                // Clear filter option
-                ListTile(
-                  dense: true,
-                  title: Text(
-                    tr('pcb_all'),
-                    style: TextStyle(
-                      color:
-                          currentFilter == null ? Colors.blue : Colors.white70,
-                      fontSize: 13,
-                      fontWeight: currentFilter == null
-                          ? FontWeight.bold
-                          : FontWeight.normal,
-                    ),
-                  ),
-                  onTap: () {
-                    setState(() {
-                      _columnFilters.remove(field);
-                      _applyFiltersAndSort();
-                    });
-                    Navigator.pop(ctx);
-                  },
-                ),
-                const Divider(color: AppColors.border),
-                ...values.map((v) => ListTile(
-                      dense: true,
-                      title: Text(
-                        v,
-                        style: TextStyle(
-                          color:
-                              currentFilter == v ? Colors.blue : Colors.white70,
-                          fontSize: 13,
-                          fontWeight: currentFilter == v
-                              ? FontWeight.bold
-                              : FontWeight.normal,
-                        ),
-                      ),
-                      onTap: () {
-                        setState(() {
-                          _columnFilters[field] = v;
-                          _applyFiltersAndSort();
-                        });
-                        Navigator.pop(ctx);
-                      },
-                    )),
-              ],
-            ),
-          ),
-        );
-      },
-    );
+      title: '${tr('pcb_filter')}: ${_headerForField(field)}',
+      values: values,
+      allLabel: tr('pcb_all'),
+      searchLabel: tr('search'),
+      applyLabel: tr('apply'),
+      clearFilterLabel: tr('clear_filter'),
+      currentFilter: currentFilter,
+    ).then((result) {
+      if (!mounted || result == null) return;
+      setState(() {
+        final filterValue = result.filterValue;
+        if (filterValue == null || filterValue.isEmpty) {
+          _columnFilters.remove(field);
+        } else {
+          _columnFilters[field] = filterValue;
+        }
+        _applyFiltersAndSort();
+      });
+    });
   }
 
   @override

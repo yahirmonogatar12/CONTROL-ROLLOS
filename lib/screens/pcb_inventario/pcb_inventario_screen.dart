@@ -13,6 +13,7 @@ import 'package:material_warehousing_flutter/core/services/auth_service.dart';
 import 'package:material_warehousing_flutter/core/services/excel_export_service.dart';
 import 'package:material_warehousing_flutter/core/widgets/field_decoration.dart';
 import 'package:material_warehousing_flutter/core/widgets/resizable_grid_header.dart';
+import 'package:material_warehousing_flutter/core/widgets/searchable_column_filter_dialog.dart';
 import 'package:xml/xml.dart';
 
 class PcbInventarioScreen extends StatefulWidget {
@@ -252,7 +253,7 @@ class PcbInventarioScreenState extends State<PcbInventarioScreen>
     for (final entry in _columnFilters.entries) {
       if (entry.value != null && entry.value!.isNotEmpty) {
         data = data
-            .where((r) => (r[entry.key] ?? '').toString() == entry.value)
+            .where((r) => matchesColumnFilterValue(r[entry.key], entry.value!))
             .toList();
       }
     }
@@ -276,7 +277,7 @@ class PcbInventarioScreenState extends State<PcbInventarioScreen>
     for (final entry in _columnFilters.entries) {
       if (entry.value != null && entry.value!.isNotEmpty) {
         data = data
-            .where((r) => (r[entry.key] ?? '').toString() == entry.value)
+            .where((r) => matchesColumnFilterValue(r[entry.key], entry.value!))
             .toList();
       }
     }
@@ -302,6 +303,22 @@ class PcbInventarioScreenState extends State<PcbInventarioScreen>
     });
   }
 
+  void _applyCurrentTabFilters() {
+    if (_tabController.index == 0) {
+      _applyFiltersSummary();
+    } else {
+      _applyFiltersDetail();
+    }
+  }
+
+  String _headerForField(String field) {
+    final fields = _tabController.index == 0 ? _summaryFields : _detailFields;
+    final headers =
+        _tabController.index == 0 ? _summaryHeaders : _detailHeaders;
+    final index = fields.indexOf(field);
+    return index >= 0 && index < headers.length ? headers[index] : field;
+  }
+
   void _onFilter(String field) {
     final source = _tabController.index == 0 ? _summaryData : _detailData;
     final values = source
@@ -309,75 +326,31 @@ class PcbInventarioScreenState extends State<PcbInventarioScreen>
         .where((v) => v.isNotEmpty)
         .toSet()
         .toList()
-      ..sort();
+      ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
 
     final currentFilter = _columnFilters[field];
 
-    showDialog(
+    showSearchableColumnFilterDialog(
       context: context,
-      builder: (ctx) {
-        return AlertDialog(
-          backgroundColor: AppColors.panelBackground,
-          title: Text('${tr('pcb_filter')}: $field',
-              style: const TextStyle(color: Colors.white, fontSize: 14)),
-          content: SizedBox(
-            width: 250,
-            height: 300,
-            child: ListView(
-              children: [
-                ListTile(
-                  dense: true,
-                  title: Text(tr('pcb_all'),
-                      style: TextStyle(
-                        color: currentFilter == null
-                            ? Colors.blue
-                            : Colors.white70,
-                        fontSize: 13,
-                        fontWeight: currentFilter == null
-                            ? FontWeight.bold
-                            : FontWeight.normal,
-                      )),
-                  onTap: () {
-                    setState(() {
-                      _columnFilters.remove(field);
-                      if (_tabController.index == 0)
-                        _applyFiltersSummary();
-                      else
-                        _applyFiltersDetail();
-                    });
-                    Navigator.pop(ctx);
-                  },
-                ),
-                const Divider(color: AppColors.border),
-                ...values.map((v) => ListTile(
-                      dense: true,
-                      title: Text(v,
-                          style: TextStyle(
-                            color: currentFilter == v
-                                ? Colors.blue
-                                : Colors.white70,
-                            fontSize: 13,
-                            fontWeight: currentFilter == v
-                                ? FontWeight.bold
-                                : FontWeight.normal,
-                          )),
-                      onTap: () {
-                        setState(() {
-                          _columnFilters[field] = v;
-                          if (_tabController.index == 0)
-                            _applyFiltersSummary();
-                          else
-                            _applyFiltersDetail();
-                        });
-                        Navigator.pop(ctx);
-                      },
-                    )),
-              ],
-            ),
-          ),
-        );
-      },
-    );
+      title: '${tr('pcb_filter')}: ${_headerForField(field)}',
+      values: values,
+      allLabel: tr('pcb_all'),
+      searchLabel: tr('search'),
+      applyLabel: tr('apply'),
+      clearFilterLabel: tr('clear_filter'),
+      currentFilter: currentFilter,
+    ).then((result) {
+      if (!mounted || result == null) return;
+      setState(() {
+        final filterValue = result.filterValue;
+        if (filterValue == null || filterValue.isEmpty) {
+          _columnFilters.remove(field);
+        } else {
+          _columnFilters[field] = filterValue;
+        }
+        _applyCurrentTabFilters();
+      });
+    });
   }
 
   void _onSummaryDoubleClick(int index) {
