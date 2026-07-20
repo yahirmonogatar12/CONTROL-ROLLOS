@@ -120,9 +120,9 @@ BEGIN
 
     -- -----------------------------------------------------------
     -- NOTA: No se necesita actualizar inventario_lotes_smd aqui
-    -- porque el trigger existente trg_salida_ai_smd se dispara
+    -- porque el trigger existente trg_salida_bi_guard_smd se dispara
     -- automaticamente al insertar en control_material_salida_smd
-    -- y se encarga de incrementar total_salida.
+    -- y se encarga de incrementar total_salida sin permitir negativos.
     -- -----------------------------------------------------------
 
   END IF;

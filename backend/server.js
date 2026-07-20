@@ -91,6 +91,10 @@ const pcbInventoryRoutes = require('./routes/pcb-inventory.routes');
 const pcbDefectsRoutes = require('./routes/pcb-defects.routes');
 const defectDataRoutes = require('./routes/defect-data.routes');
 
+// Fase 14: Scrap (Control de scrap por escaneo QR)
+const scrapRoutes = require('./routes/scrap.routes');
+const scrapMotivosRoutes = require('./routes/scrap-motivos.routes');
+
 const app = express();
 const jsonParser = express.json({
   limit: '50mb',
@@ -182,6 +186,10 @@ app.use('/api/shortage', shortageRoutes);
 app.use('/api/pcb-inventory', pcbInventoryRoutes);
 app.use('/api/pcb-defects', pcbDefectsRoutes);
 app.use('/api/defect-data', defectDataRoutes);
+
+// Fase 14: Scrap (catálogo compartido en scrap_motivos)
+app.use('/api/scrap', scrapRoutes);
+app.use('/api/scrap-motivos', scrapMotivosRoutes);
 
 // ============================================
 // RUTA DE PRUEBA (Health Check)
@@ -309,21 +317,33 @@ function getLocalIP() {
   return 'localhost';
 }
 
-// Solo iniciar servidor si no es Vercel (serverless)
-if (process.env.VERCEL !== '1') {
-  // Iniciar servidor Express directamente
-  app.listen(PORT, HOST, async () => {
+async function startServer() {
+  const connected = await testConnection();
+  if (!connected) {
+    throw new Error('No fue posible conectar con MySQL');
+  }
+
+  // No aceptar escaneos mientras se reparan datos o se reemplazan triggers.
+  await runMigrations();
+
+  app.listen(PORT, HOST, () => {
     const localIP = getLocalIP();
     console.log(`API escuchando en:`);
     console.log(`   - Local:   http://localhost:${PORT}`);
     console.log(`   - Red:     http://${localIP}:${PORT}`);
     console.log(`Usa la dirección de Red para conectar desde dispositivos móviles`);
-    await testConnection();
-    await runMigrations();
 
     // Iniciar servicio de auto-descubrimiento UDP
     const discovery = startDiscoveryService(PORT);
     console.log(`📡 Auto-descubrimiento UDP activo en puerto ${discovery.getInfo().discoveryPort}`);
+  });
+}
+
+// Solo iniciar servidor si no es Vercel (serverless)
+if (process.env.VERCEL !== '1') {
+  startServer().catch((err) => {
+    console.error('❌ No se pudo iniciar el servidor:', err.message);
+    process.exitCode = 1;
   });
 }
 

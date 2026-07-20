@@ -1,21 +1,24 @@
 import 'package:flutter/material.dart';
-import 'package:material_warehousing_flutter/core/constants/pcb_areas.dart';
 import 'package:material_warehousing_flutter/core/localization/app_translations.dart';
 import 'package:material_warehousing_flutter/core/theme/app_colors.dart';
 import 'package:material_warehousing_flutter/core/services/api_service.dart';
 import 'package:material_warehousing_flutter/core/widgets/resizable_grid_header.dart';
-import 'package:material_warehousing_flutter/core/widgets/searchable_column_filter_dialog.dart';
 
-class PcbSalidaGridPanel extends StatefulWidget {
+class ScrapGridPanel extends StatefulWidget {
   final LanguageProvider languageProvider;
+  final Function(Map<String, dynamic>)? onRowDoubleClick;
 
-  const PcbSalidaGridPanel({super.key, required this.languageProvider});
+  const ScrapGridPanel({
+    super.key,
+    required this.languageProvider,
+    this.onRowDoubleClick,
+  });
 
   @override
-  State<PcbSalidaGridPanel> createState() => PcbSalidaGridPanelState();
+  State<ScrapGridPanel> createState() => ScrapGridPanelState();
 }
 
-class PcbSalidaGridPanelState extends State<PcbSalidaGridPanel>
+class ScrapGridPanelState extends State<ScrapGridPanel>
     with AutomaticKeepAliveClientMixin, ResizableColumnsMixin {
   List<Map<String, dynamic>> _allData = [];
   List<Map<String, dynamic>> _filteredData = [];
@@ -28,36 +31,38 @@ class PcbSalidaGridPanelState extends State<PcbSalidaGridPanel>
 
   DateTime? _searchStart;
   DateTime? _searchEnd;
-  String? _searchPartNumber;
-  String? _searchTipoFilter;
+  String? _searchArea;
 
-  // 10 columns: tipo_movimiento + the scan fields
   static const _fields = [
-    'tipo_movimiento',
     'scanned_original',
-    'area',
-    'pcb_part_no',
+    'raw_barcode',
+    'part_no',
     'modelo',
+    'area',
     'proceso',
-    'inventory_date',
-    'hora',
+    'motivo_scrap_texto',
     'comentarios',
-    'scanned_by',
+    'cantidad',
+    'usuario_registro',
+    'fecha',
+    'hora',
   ];
 
   String tr(String key) => widget.languageProvider.tr(key);
 
   List<String> get _headers => [
-        tr('pcb_tipo_movimiento'),
-        tr('pcb_scanned_code'),
-        tr('pcb_area'),
-        tr('pcb_part_no'),
-        tr('pcb_modelo'),
-        tr('pcb_proceso'),
-        tr('pcb_date'),
-        tr('pcb_hora'),
-        tr('pcb_comentarios'),
-        tr('pcb_scanned_by'),
+        tr('scrap_scanned_code'),
+        tr('scrap_raw_barcode'),
+        tr('scrap_part_no'),
+        tr('scrap_modelo'),
+        tr('scrap_area'),
+        tr('scrap_proceso'),
+        tr('scrap_motivo'),
+        tr('scrap_comentarios'),
+        'Cantidad',
+        tr('scrap_registered_by'),
+        tr('scrap_date'),
+        tr('scrap_time'),
       ];
 
   @override
@@ -66,8 +71,24 @@ class PcbSalidaGridPanelState extends State<PcbSalidaGridPanel>
   @override
   void initState() {
     super.initState();
-    initColumnFlex(10, 'pcb_salida_grid',
-        defaultFlexValues: [1.2, 2.5, 1.0, 1.5, 1.5, 1.2, 1.2, 1.0, 1.5, 1.2]);
+    initColumnFlex(
+      12,
+      'scrap_grid',
+      defaultFlexValues: [
+        2.5,
+        1.8,
+        1.5,
+        1.5,
+        1.2,
+        1.3,
+        2.0,
+        1.5,
+        0.8,
+        1.2,
+        1.2,
+        1.0,
+      ],
+    );
     _loadTodayData();
   }
 
@@ -77,58 +98,32 @@ class PcbSalidaGridPanelState extends State<PcbSalidaGridPanel>
   }
 
   Future<void> searchByDate(DateTime? start, DateTime? end,
-      {String? partNumber, String? tipoFilter}) async {
+      {String? area}) async {
     final s = start ?? DateTime.now();
     final e = end ?? DateTime.now();
     _searchStart = s;
     _searchEnd = e;
-    _searchPartNumber = partNumber;
-    _searchTipoFilter = tipoFilter;
+    _searchArea = area;
 
     setState(() => _isLoading = true);
 
     try {
-      List<Map<String, dynamic>> allRows = [];
-      // Load both SALIDA and SCRAP for each day
-      final tipos = (tipoFilter != null) ? [tipoFilter] : ['SALIDA', 'SCRAP'];
+      final fechaInicio =
+          '${s.year}-${s.month.toString().padLeft(2, '0')}-${s.day.toString().padLeft(2, '0')}';
+      final fechaFin =
+          '${e.year}-${e.month.toString().padLeft(2, '0')}-${e.day.toString().padLeft(2, '0')}';
 
-      DateTime current = s;
-      while (!current.isAfter(e)) {
-        final dateStr =
-            '${current.year}-${current.month.toString().padLeft(2, '0')}-${current.day.toString().padLeft(2, '0')}';
-        for (final tipo in tipos) {
-          final result = await ApiService.getPcbInventoryScans(
-            inventoryDate: dateStr,
-            tipoMovimiento: tipo,
-            limit: 5000,
-          );
-          if (result['success'] == true && result['data'] != null) {
-            allRows
-                .addAll((result['data'] as List).cast<Map<String, dynamic>>());
-          }
-        }
-        current = current.add(const Duration(days: 1));
-      }
-
-      // Sort by date desc
-      allRows.sort((a, b) {
-        final ca = a['created_at']?.toString() ?? '';
-        final cb = b['created_at']?.toString() ?? '';
-        return cb.compareTo(ca);
-      });
-
-      if (partNumber != null && partNumber.isNotEmpty) {
-        allRows = allRows.where((r) {
-          final pn = (r['pcb_part_no'] ?? '').toString().toUpperCase();
-          return pn.contains(partNumber.toUpperCase());
-        }).toList();
-      }
-
-      allRows = allRows.map(PcbAreas.withDisplayArea).toList();
+      final result = await ApiService.getScrapRecords(
+        fechaInicio: fechaInicio,
+        fechaFin: fechaFin,
+        area: area,
+        limit: 5000,
+      );
 
       if (mounted) {
         setState(() {
-          _allData = allRows;
+          _allData =
+              (result['data'] as List?)?.cast<Map<String, dynamic>>() ?? [];
           _applyFiltersAndSort();
           _selectedIndex = -1;
         });
@@ -139,8 +134,7 @@ class PcbSalidaGridPanelState extends State<PcbSalidaGridPanel>
   }
 
   void reloadData() {
-    searchByDate(_searchStart, _searchEnd,
-        partNumber: _searchPartNumber, tipoFilter: _searchTipoFilter);
+    searchByDate(_searchStart, _searchEnd, area: _searchArea);
   }
 
   List<Map<String, dynamic>> getDataForExport() => _filteredData;
@@ -151,7 +145,8 @@ class PcbSalidaGridPanelState extends State<PcbSalidaGridPanel>
     for (final entry in _columnFilters.entries) {
       if (entry.value != null && entry.value!.isNotEmpty) {
         data = data.where((r) {
-          return matchesColumnFilterValue(r[entry.key], entry.value!);
+          final val = (r[entry.key] ?? '').toString();
+          return val == entry.value;
         }).toList();
       }
     }
@@ -175,53 +170,79 @@ class PcbSalidaGridPanelState extends State<PcbSalidaGridPanel>
     });
   }
 
-  String _headerForField(String field) {
-    final index = _fields.indexOf(field);
-    return index >= 0 && index < _headers.length ? _headers[index] : field;
-  }
-
   void _onFilter(String field) {
     final values = _allData
         .map((r) => (r[field] ?? '').toString())
         .where((v) => v.isNotEmpty)
         .toSet()
         .toList()
-      ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+      ..sort();
 
     final currentFilter = _columnFilters[field];
 
-    showSearchableColumnFilterDialog(
+    showDialog(
       context: context,
-      title: '${tr('pcb_filter')}: ${_headerForField(field)}',
-      values: values,
-      allLabel: tr('pcb_all'),
-      searchLabel: tr('search'),
-      applyLabel: tr('apply'),
-      clearFilterLabel: tr('clear_filter'),
-      currentFilter: currentFilter,
-    ).then((result) {
-      if (!mounted || result == null) return;
-      setState(() {
-        final filterValue = result.filterValue;
-        if (filterValue == null || filterValue.isEmpty) {
-          _columnFilters.remove(field);
-        } else {
-          _columnFilters[field] = filterValue;
-        }
-        _applyFiltersAndSort();
-      });
-    });
-  }
-
-  Color _tipoColor(String tipo) {
-    switch (tipo) {
-      case 'SCRAP':
-        return Colors.red;
-      case 'SALIDA':
-        return Colors.orange;
-      default:
-        return Colors.white70;
-    }
+      builder: (ctx) {
+        return AlertDialog(
+          backgroundColor: AppColors.panelBackground,
+          title: Text(
+            '${tr('scrap_filter')}: $field',
+            style: const TextStyle(color: Colors.white, fontSize: 14),
+          ),
+          content: SizedBox(
+            width: 250,
+            height: 300,
+            child: ListView(
+              children: [
+                ListTile(
+                  dense: true,
+                  title: Text(
+                    tr('scrap_all'),
+                    style: TextStyle(
+                      color:
+                          currentFilter == null ? Colors.blue : Colors.white70,
+                      fontSize: 13,
+                      fontWeight: currentFilter == null
+                          ? FontWeight.bold
+                          : FontWeight.normal,
+                    ),
+                  ),
+                  onTap: () {
+                    setState(() {
+                      _columnFilters.remove(field);
+                      _applyFiltersAndSort();
+                    });
+                    Navigator.pop(ctx);
+                  },
+                ),
+                const Divider(color: AppColors.border),
+                ...values.map((v) => ListTile(
+                      dense: true,
+                      title: Text(
+                        v,
+                        style: TextStyle(
+                          color:
+                              currentFilter == v ? Colors.blue : Colors.white70,
+                          fontSize: 13,
+                          fontWeight: currentFilter == v
+                              ? FontWeight.bold
+                              : FontWeight.normal,
+                        ),
+                      ),
+                      onTap: () {
+                        setState(() {
+                          _columnFilters[field] = v;
+                          _applyFiltersAndSort();
+                        });
+                        Navigator.pop(ctx);
+                      },
+                    )),
+              ],
+            ),
+          ),
+        );
+      },
+    );
   }
 
   @override
@@ -245,48 +266,43 @@ class PcbSalidaGridPanelState extends State<PcbSalidaGridPanel>
               ? const Center(child: CircularProgressIndicator())
               : _filteredData.isEmpty
                   ? Center(
-                      child: Text(tr('pcb_no_data'),
+                      child: Text(tr('scrap_no_data'),
                           style: const TextStyle(color: Colors.white38)))
                   : ListView.builder(
                       itemCount: _filteredData.length,
                       itemBuilder: (context, index) {
                         final row = _filteredData[index];
                         final isSelected = index == _selectedIndex;
-                        final tipo = (row['tipo_movimiento'] ?? '').toString();
-                        final tipoC = _tipoColor(tipo);
                         return GestureDetector(
                           onTap: () => setState(() => _selectedIndex = index),
+                          onDoubleTap: () => widget.onRowDoubleClick?.call(row),
                           child: Container(
                             height: 30,
                             decoration: BoxDecoration(
                               color: isSelected
-                                  ? tipoC.withValues(alpha: 0.20)
+                                  ? Colors.red.withValues(alpha: 0.20)
                                   : (index.isEven
                                       ? AppColors.gridRowEven
                                       : AppColors.gridRowOdd),
                               border: Border(
-                                  bottom: BorderSide(
-                                      color: AppColors.border
-                                          .withValues(alpha: 0.3))),
+                                bottom: BorderSide(
+                                  color:
+                                      AppColors.border.withValues(alpha: 0.3),
+                                ),
+                              ),
                             ),
                             child: Row(
                               children: List.generate(_fields.length, (ci) {
-                                final val = '${row[_fields[ci]] ?? ''}';
-                                final color = ci == 0 ? tipoC : Colors.white70;
-                                final fw = ci == 0
-                                    ? FontWeight.w600
-                                    : FontWeight.normal;
+                                final field = _fields[ci];
                                 return Expanded(
                                   flex: getColumnFlex(ci),
                                   child: Padding(
                                     padding: const EdgeInsets.symmetric(
                                         horizontal: 6),
                                     child: Text(
-                                      val,
-                                      style: TextStyle(
-                                          color: color,
-                                          fontSize: 12,
-                                          fontWeight: fw),
+                                      '${row[field] ?? ''}',
+                                      style: const TextStyle(
+                                          color: Colors.white70, fontSize: 12),
                                       maxLines: 1,
                                       overflow: TextOverflow.ellipsis,
                                     ),
@@ -299,7 +315,6 @@ class PcbSalidaGridPanelState extends State<PcbSalidaGridPanel>
                       },
                     ),
         ),
-        // Footer
         Container(
           height: 28,
           padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -312,26 +327,11 @@ class PcbSalidaGridPanelState extends State<PcbSalidaGridPanel>
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                 decoration: BoxDecoration(
-                  color: Colors.orange.withValues(alpha: 0.15),
-                  borderRadius: BorderRadius.circular(4),
-                ),
-                child: Text(
-                  tr('pcb_tab_salida'),
-                  style: const TextStyle(
-                      color: Colors.orange,
-                      fontSize: 11,
-                      fontWeight: FontWeight.w600),
-                ),
-              ),
-              const SizedBox(width: 6),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                decoration: BoxDecoration(
                   color: Colors.red.withValues(alpha: 0.15),
                   borderRadius: BorderRadius.circular(4),
                 ),
                 child: Text(
-                  tr('pcb_tab_scrap'),
+                  'SCRAP',
                   style: const TextStyle(
                       color: Colors.red,
                       fontSize: 11,
@@ -340,13 +340,13 @@ class PcbSalidaGridPanelState extends State<PcbSalidaGridPanel>
               ),
               const SizedBox(width: 12),
               Text(
-                '${tr('pcb_total_scans')}: ${_filteredData.length}',
+                '${tr('scrap_total_records')}: ${_filteredData.length}',
                 style: const TextStyle(color: Colors.white54, fontSize: 11),
               ),
               if (_columnFilters.isNotEmpty) ...[
                 const SizedBox(width: 12),
                 Text(
-                  '(${_allData.length} ${tr('pcb_all')})',
+                  '(${_allData.length} ${tr('scrap_all')})',
                   style: const TextStyle(color: Colors.white38, fontSize: 11),
                 ),
               ],

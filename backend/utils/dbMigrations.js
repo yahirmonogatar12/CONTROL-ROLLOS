@@ -49,6 +49,26 @@ async function dropIndexIfExists(table, indexName) {
   }
 }
 
+async function ensureWarehouseCodeIndex() {
+  const indexName = 'idx_cma_smd_codigo_material';
+  const [rows] = await pool.query(`
+    SELECT INDEX_NAME
+    FROM INFORMATION_SCHEMA.STATISTICS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'control_material_almacen_smd'
+      AND INDEX_NAME = ?
+    LIMIT 1
+  `, [indexName]);
+
+  if (rows.length === 0) {
+    await pool.query(`
+      CREATE INDEX idx_cma_smd_codigo_material
+      ON control_material_almacen_smd (codigo_material_recibido(191))
+    `);
+    console.log('✓ Índice de código de material SMD creado');
+  }
+}
+
 // Agregar columna cancelado
 async function addCanceladoColumn() {
   const tables = [
@@ -484,6 +504,49 @@ async function createAuditTables() {
       )
     `);
 
+    // Catálogo persistente de ubicaciones físicas. Conserva también los
+    // espacios vacíos escaneados para incluirlos en auditorías posteriores.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS inventory_location_catalog_smd (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        location VARCHAR(100) NOT NULL,
+        active TINYINT NOT NULL DEFAULT 1,
+        source VARCHAR(30) NOT NULL DEFAULT 'AuditScan',
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        last_seen_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY uk_inventory_location_catalog_smd (location),
+        INDEX idx_inventory_location_catalog_active (active)
+      )
+    `);
+
+    // Conservar sólo ubicaciones que realmente fueron abiertas por un
+    // operador. Las filas Pending precargadas no demuestran que el QR físico
+    // exista y podrían inflar la siguiente auditoría.
+    await pool.query(`
+      DELETE catalog
+      FROM inventory_location_catalog_smd catalog
+      WHERE catalog.source IN ('AuditHistory', 'Inventory')
+        AND NOT EXISTS (
+          SELECT 1
+          FROM inventory_audit_location_smd audited
+          WHERE audited.location = catalog.location
+            AND (audited.started_at IS NOT NULL OR audited.status <> 'Pending')
+        )
+    `);
+
+    await pool.query(`
+      INSERT INTO inventory_location_catalog_smd (
+        location, active, source, created_at, last_seen_at
+      )
+      SELECT DISTINCT TRIM(location), 1, 'AuditHistory', NOW(), NOW()
+      FROM inventory_audit_location_smd
+      WHERE NULLIF(TRIM(location), '') IS NOT NULL
+        AND (started_at IS NOT NULL OR status <> 'Pending')
+      ON DUPLICATE KEY UPDATE
+        active = 1,
+        last_seen_at = GREATEST(last_seen_at, VALUES(last_seen_at))
+    `);
+
     // Tabla de items escaneados
     await pool.query(`
       CREATE TABLE IF NOT EXISTS inventory_audit_item_smd (
@@ -513,6 +576,89 @@ async function createAuditTables() {
     console.log('✓ Tablas de auditoría de inventario verificadas/creadas');
   } catch (err) {
     console.log('Nota: Las tablas de auditoría pueden ya existir:', err.message);
+  }
+}
+
+// Congelar los datos del lote tal como estaban al iniciar la auditoria.
+// Las columnas tambien permiten que auditorias anteriores sigan mostrando
+// el material aunque una salida posterior deje stock_actual en cero.
+async function addAuditSnapshotColumns() {
+  const columns = [
+    { name: 'numero_parte_snapshot', definition: 'VARCHAR(150) NULL AFTER location' },
+    { name: 'numero_lote_material_snapshot', definition: 'VARCHAR(150) NULL AFTER numero_parte_snapshot' },
+    { name: 'cantidad_snapshot', definition: 'DECIMAL(15,4) NULL AFTER numero_lote_material_snapshot' },
+    { name: 'especificacion_snapshot', definition: 'TEXT NULL AFTER cantidad_snapshot' },
+    { name: 'fecha_recibo_snapshot', definition: 'DATETIME NULL AFTER especificacion_snapshot' },
+    { name: 'physical_quantity', definition: 'DECIMAL(15,4) NULL AFTER fecha_recibo_snapshot' },
+    { name: 'physical_quantity_recorded_at', definition: 'DATETIME NULL AFTER physical_quantity' },
+    { name: 'physical_quantity_recorded_by', definition: 'VARCHAR(100) NULL AFTER physical_quantity_recorded_at' },
+    { name: 'is_new_inventory', definition: 'TINYINT NOT NULL DEFAULT 0 AFTER physical_quantity_recorded_by' }
+  ];
+
+  for (const col of columns) {
+    await addColumnIfNotExists('inventory_audit_item_smd', col.name, col.definition);
+  }
+
+  // Backfill idempotente para auditorias creadas antes de esta migracion.
+  await pool.query(`
+    UPDATE inventory_audit_item_smd iai
+    LEFT JOIN control_material_almacen_smd cma ON cma.id = iai.warehousing_id
+    SET
+      iai.numero_parte_snapshot = COALESCE(iai.numero_parte_snapshot, cma.numero_parte),
+      iai.numero_lote_material_snapshot = COALESCE(iai.numero_lote_material_snapshot, cma.numero_lote_material),
+      iai.cantidad_snapshot = COALESCE(iai.cantidad_snapshot, cma.cantidad_actual),
+      iai.especificacion_snapshot = COALESCE(iai.especificacion_snapshot, cma.especificacion),
+      iai.fecha_recibo_snapshot = COALESCE(iai.fecha_recibo_snapshot, cma.fecha_recibo)
+    WHERE iai.numero_parte_snapshot IS NULL
+       OR iai.numero_lote_material_snapshot IS NULL
+       OR iai.cantidad_snapshot IS NULL
+  `);
+
+  // Auditorias activas creadas por versiones anteriores solo tenian filas
+  // para etiquetas ya procesadas. Completar los lotes que siguen activos
+  // permite continuar la auditoria despues de actualizar el backend.
+  const [activeBackfill] = await pool.query(`
+    INSERT IGNORE INTO inventory_audit_item_smd (
+      audit_id,
+      warehousing_id,
+      warehousing_code,
+      location,
+      numero_parte_snapshot,
+      numero_lote_material_snapshot,
+      cantidad_snapshot,
+      especificacion_snapshot,
+      fecha_recibo_snapshot,
+      status
+    )
+    SELECT
+      ia.id,
+      cma.id,
+      il.codigo_material_recibido,
+      COALESCE(NULLIF(TRIM(cma.ubicacion_destino), ''), NULLIF(TRIM(cma.ubicacion_salida), '')),
+      il.numero_parte,
+      il.numero_lote,
+      il.stock_actual,
+      cma.especificacion,
+      cma.fecha_recibo,
+      'Pending'
+    FROM inventory_audit_smd ia
+    JOIN inventario_lotes_smd il ON il.stock_actual > 0
+    JOIN (
+      SELECT c1.*
+      FROM control_material_almacen_smd c1
+      JOIN (
+        SELECT codigo_material_recibido, MAX(id) AS max_id
+        FROM control_material_almacen_smd
+        GROUP BY codigo_material_recibido
+      ) latest ON latest.max_id = c1.id
+    ) cma ON cma.codigo_material_recibido = il.codigo_material_recibido
+    WHERE ia.status = 'InProgress'
+      AND COALESCE(NULLIF(TRIM(cma.ubicacion_destino), ''), NULLIF(TRIM(cma.ubicacion_salida), '')) IS NOT NULL
+  `);
+
+  console.log('✓ Snapshot de auditoria verificado/agregado');
+  if (activeBackfill.affectedRows > 0) {
+    console.log(`✓ ${activeBackfill.affectedRows} lote(s) agregados al snapshot de auditoria activa`);
   }
 }
 
@@ -560,6 +706,64 @@ async function createAuditPartTable() {
   }
 }
 
+// Reparar auditorias activas donde una etiqueta salio por discrepancia y fue
+// devuelta despues. El inventario recupera stock por el trigger de retornos;
+// la auditoria debe reabrir la parte para no quedar desfasada.
+async function reconcileActiveAuditReturns() {
+  try {
+    const [itemsResult] = await pool.query(`
+      UPDATE inventory_audit_item_smd iai
+      JOIN inventory_audit_smd ia ON ia.id = iai.audit_id
+      JOIN material_return_smd mr
+        ON mr.material_warehousing_code = iai.warehousing_code
+       AND mr.created_at >= iai.processed_at
+      SET iai.status = 'Found',
+          iai.scanned_at = mr.return_datetime,
+          iai.scanned_by = COALESCE(mr.returned_by, 'Sistema'),
+          iai.processed_at = NULL,
+          iai.processed_by = NULL,
+          iai.notas = CONCAT_WS(' | ', NULLIF(iai.notas, ''), 'Retorno durante auditoria activa')
+      WHERE ia.status = 'InProgress'
+        AND iai.status = 'ProcessedOut'
+    `);
+
+    await pool.query(`
+      UPDATE inventory_audit_part_smd iap
+      JOIN inventory_audit_smd ia ON ia.id = iap.audit_id
+      JOIN inventory_audit_item_smd iai
+        ON iai.audit_id = iap.audit_id
+       AND iai.location = iap.location
+       AND iai.numero_parte_snapshot = iap.numero_parte
+      SET iap.status = 'Mismatch',
+          iap.flagged_by = COALESCE(iai.scanned_by, 'Sistema'),
+          iap.flagged_at = COALESCE(iai.scanned_at, NOW())
+      WHERE ia.status = 'InProgress'
+        AND iap.status = 'MissingConfirmed'
+        AND iai.status = 'Found'
+        AND iai.notas LIKE '%Retorno durante auditoria activa%'
+    `);
+
+    await pool.query(`
+      UPDATE inventory_audit_location_smd ial
+      JOIN inventory_audit_smd ia ON ia.id = ial.audit_id
+      JOIN inventory_audit_part_smd iap
+        ON iap.audit_id = ial.audit_id AND iap.location = ial.location
+      SET ial.status = 'InProgress',
+          ial.completed_at = NULL,
+          ial.completed_by = NULL
+      WHERE ia.status = 'InProgress'
+        AND ial.status = 'Discrepancy'
+        AND iap.status = 'Mismatch'
+    `);
+
+    if (itemsResult.affectedRows > 0) {
+      console.log(`✓ ${itemsResult.affectedRows} retorno(s) reconciliados con auditoria activa`);
+    }
+  } catch (err) {
+    console.log('Nota: Error reconciliando retornos de auditoria:', err.message);
+  }
+}
+
 // ============================================
 // TABLA PCB INVENTORY SCAN SMD
 // ============================================
@@ -575,7 +779,7 @@ async function createPcbInventoryScanTable() {
         pcb_part_no VARCHAR(11) NOT NULL,
         modelo VARCHAR(120) NOT NULL DEFAULT 'N/A',
         proceso ENUM('SMD','IMD','ASSY') NOT NULL DEFAULT 'SMD',
-        area ENUM('INVENTARIO','REPARACION') NOT NULL DEFAULT 'INVENTARIO',
+        area ENUM('INVENTARIO','INVENTARIO_REPARACION','REPARACION') NOT NULL DEFAULT 'INVENTARIO',
         tipo_movimiento ENUM('ENTRADA','SALIDA','SCRAP') NOT NULL DEFAULT 'ENTRADA',
         qty INT NOT NULL DEFAULT 1,
         array_count INT NOT NULL DEFAULT 1,
@@ -612,7 +816,7 @@ async function migratePcbInventorySchema() {
   await addColumnIfNotExists(
     'pcb_inventory_scan_smd',
     'area',
-    "ENUM('INVENTARIO','REPARACION') NOT NULL DEFAULT 'INVENTARIO' AFTER proceso"
+    "ENUM('INVENTARIO','INVENTARIO_REPARACION','REPARACION') NOT NULL DEFAULT 'INVENTARIO' AFTER proceso"
   );
   await addColumnIfNotExists(
     'pcb_inventory_scan_smd',
@@ -659,6 +863,33 @@ async function migratePcbInventorySchema() {
     'defect_data_id',
     'VARCHAR(50) NULL AFTER defect_source_area'
   );
+
+  try {
+    const [areaCols] = await pool.query(`
+      SELECT COLUMN_TYPE
+      FROM INFORMATION_SCHEMA.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'pcb_inventory_scan_smd'
+      AND COLUMN_NAME = 'area'
+      LIMIT 1
+    `);
+    const areaType = (areaCols[0]?.COLUMN_TYPE || '').toLowerCase();
+    const expectedAreaType =
+      "enum('inventario','inventario_reparacion','reparacion')";
+
+    if (areaType !== expectedAreaType) {
+      await pool.query(`
+        ALTER TABLE pcb_inventory_scan_smd
+        MODIFY COLUMN area
+          ENUM('INVENTARIO','INVENTARIO_REPARACION','REPARACION')
+          NOT NULL DEFAULT 'INVENTARIO'
+      `);
+    }
+
+    console.log('✓ Esquema PCB areas verificado/migrado');
+  } catch (err) {
+    console.log('Nota: Error migrando areas PCB:', err.message);
+  }
 
   try {
     const [procesoCols] = await pool.query(`
@@ -726,6 +957,16 @@ async function migratePcbInventorySchema() {
       ON pcb_inventory_scan_smd (array_group_code)
     `);
     console.log('✓ Creado indice idx_pcb_array_group');
+  } catch (e) {
+    // Puede que ya exista - eso esta bien
+  }
+
+  try {
+    await pool.query(`
+      CREATE INDEX idx_pcb_scanned_original_norm
+      ON pcb_inventory_scan_smd (scanned_original_norm)
+    `);
+    console.log('✓ Creado indice idx_pcb_scanned_original_norm');
   } catch (e) {
     // Puede que ya exista - eso esta bien
   }
@@ -802,6 +1043,220 @@ async function createPcbDefectCatalogTable() {
   }
 }
 
+// Una etiqueta física identifica un solo lote. Los índices compuestos antiguos
+// permitían repetir el código cuando parte o lote cambiaban durante un retorno.
+async function enforceUniqueSmdInventoryLots() {
+  const connection = await pool.getConnection();
+  let lockAcquired = false;
+
+  try {
+    const [[lockResult]] = await connection.query(`
+      SELECT GET_LOCK('migrate_unique_inventory_lots_smd', 30) AS acquired
+    `);
+    lockAcquired = Number(lockResult?.acquired) === 1;
+    if (!lockAcquired) {
+      throw new Error('No se pudo obtener el bloqueo para consolidar lotes SMD');
+    }
+
+    await connection.query(`
+      CREATE TEMPORARY TABLE tmp_inventory_smd_canonical (
+        codigo_material_recibido VARCHAR(128) NOT NULL PRIMARY KEY,
+        canonical_id BIGINT NOT NULL
+      )
+    `);
+
+    // Conservar la fila que coincide con los datos actuales de almacén. Esos
+    // registros son correcciones de identidad, no entradas que deban sumarse.
+    await connection.query(`
+      INSERT INTO tmp_inventory_smd_canonical (
+        codigo_material_recibido,
+        canonical_id
+      )
+      SELECT
+        il.codigo_material_recibido,
+        COALESCE(
+          MAX(CASE WHEN cma.id IS NOT NULL THEN il.id END),
+          MAX(il.id)
+        ) AS canonical_id
+      FROM inventario_lotes_smd il
+      LEFT JOIN control_material_almacen_smd cma
+        ON cma.codigo_material_recibido = il.codigo_material_recibido
+       AND cma.numero_parte = il.numero_parte
+       AND cma.numero_lote_material <=> il.numero_lote
+      GROUP BY il.codigo_material_recibido
+      HAVING COUNT(DISTINCT il.id) > 1
+    `);
+
+    const [deleteResult] = await connection.query(`
+      DELETE duplicate_lot
+      FROM inventario_lotes_smd duplicate_lot
+      JOIN tmp_inventory_smd_canonical canonical
+        ON canonical.codigo_material_recibido = duplicate_lot.codigo_material_recibido
+      WHERE duplicate_lot.id <> canonical.canonical_id
+    `);
+
+    const [indexRows] = await connection.query(`
+      SELECT INDEX_NAME
+      FROM INFORMATION_SCHEMA.STATISTICS
+      WHERE TABLE_SCHEMA = DATABASE()
+        AND TABLE_NAME = 'inventario_lotes_smd'
+        AND INDEX_NAME = 'uk_inv_codigo_material_smd'
+      LIMIT 1
+    `);
+
+    if (indexRows.length === 0) {
+      await connection.query(`
+        CREATE UNIQUE INDEX uk_inv_codigo_material_smd
+        ON inventario_lotes_smd (codigo_material_recibido)
+      `);
+    }
+
+    // El retorno también debe localizar el lote únicamente por la etiqueta,
+    // pues parte/lote pueden haber sido corregidos desde el recibo original.
+    await connection.query('DROP TRIGGER IF EXISTS trg_return_ai_smd');
+    await connection.query(`
+      CREATE TRIGGER trg_return_ai_smd
+      AFTER INSERT ON material_return_smd
+      FOR EACH ROW
+      BEGIN
+        UPDATE inventario_lotes_smd
+        SET total_salida = GREATEST(0, total_salida - NEW.return_qty)
+        WHERE codigo_material_recibido = NEW.material_warehousing_code;
+      END
+    `);
+
+    console.log('✓ Índice único por código de lote SMD verificado/agregado');
+    if (deleteResult.affectedRows > 0) {
+      console.log(`✓ ${deleteResult.affectedRows} fila(s) duplicadas de lote consolidadas`);
+    }
+  } finally {
+    if (lockAcquired) {
+      try {
+        await connection.query(`SELECT RELEASE_LOCK('migrate_unique_inventory_lots_smd')`);
+      } catch (_) {
+        // La conexión libera el bloqueo automáticamente al cerrarse.
+      }
+    }
+    connection.release();
+  }
+}
+
+// Mantener stock_actual >= 0 incluso si la escritura no pasa por los
+// controladores HTTP (auditoría, scripts, concurrencia o cambios de entrada).
+async function enforceNonNegativeSmdInventory() {
+  const connection = await pool.getConnection();
+  let lockAcquired = false;
+
+  try {
+    const [[lockResult]] = await connection.query(`
+      SELECT GET_LOCK('migrate_nonnegative_inventory_smd', 30) AS acquired
+    `);
+    lockAcquired = Number(lockResult?.acquired) === 1;
+    if (!lockAcquired) {
+      throw new Error('No se pudo obtener el bloqueo para proteger inventario SMD');
+    }
+
+    // Los negativos heredados se llevan exactamente a cero. La historia de
+    // salidas permanece en control_material_salida_smd.
+    const [repairResult] = await connection.query(`
+      UPDATE inventario_lotes_smd
+      SET
+        total_entrada = GREATEST(COALESCE(total_entrada, 0), 0),
+        total_salida = LEAST(
+          GREATEST(COALESCE(total_salida, 0), 0),
+          GREATEST(COALESCE(total_entrada, 0), 0)
+        )
+      WHERE total_entrada IS NULL
+         OR total_salida IS NULL
+         OR total_entrada < 0
+         OR total_salida < 0
+         OR total_salida > total_entrada
+    `);
+
+    // Sustituir el trigger anterior, que sumaba la salida sin comprobar stock.
+    await connection.query('DROP TRIGGER IF EXISTS trg_salida_ai_smd');
+    await connection.query('DROP TRIGGER IF EXISTS trg_salida_bi_guard_smd');
+    await connection.query('DROP TRIGGER IF EXISTS trg_inventario_lotes_bi_nonnegative_smd');
+    await connection.query('DROP TRIGGER IF EXISTS trg_inventario_lotes_bu_nonnegative_smd');
+
+    await connection.query(`
+      CREATE TRIGGER trg_inventario_lotes_bi_nonnegative_smd
+      BEFORE INSERT ON inventario_lotes_smd
+      FOR EACH ROW
+      BEGIN
+        IF COALESCE(NEW.total_entrada, 0) < 0
+           OR COALESCE(NEW.total_salida, 0) < 0
+           OR COALESCE(NEW.total_salida, 0) > COALESCE(NEW.total_entrada, 0) THEN
+          SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'NEGATIVE_STOCK_NOT_ALLOWED_SMD';
+        END IF;
+      END
+    `);
+
+    await connection.query(`
+      CREATE TRIGGER trg_inventario_lotes_bu_nonnegative_smd
+      BEFORE UPDATE ON inventario_lotes_smd
+      FOR EACH ROW
+      BEGIN
+        IF COALESCE(NEW.total_entrada, 0) < 0
+           OR COALESCE(NEW.total_salida, 0) < 0
+           OR COALESCE(NEW.total_salida, 0) > COALESCE(NEW.total_entrada, 0) THEN
+          SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'NEGATIVE_STOCK_NOT_ALLOWED_SMD';
+        END IF;
+      END
+    `);
+
+    // La actualización condicional es atómica: dos escaneos simultáneos no
+    // pueden consumir la misma existencia. Si el INSERT falla, también se
+    // revierte esta actualización porque forma parte de la misma transacción.
+    await connection.query(`
+      CREATE TRIGGER trg_salida_bi_guard_smd
+      BEFORE INSERT ON control_material_salida_smd
+      FOR EACH ROW
+      BEGIN
+        IF NEW.cantidad_salida IS NULL OR NEW.cantidad_salida < 0 THEN
+          SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'INVALID_OUTGOING_QUANTITY_SMD';
+        END IF;
+
+        IF NEW.cantidad_salida > 0 THEN
+          UPDATE inventario_lotes_smd
+          SET
+            total_salida = total_salida + NEW.cantidad_salida,
+            ultima_salida = CASE
+              WHEN NEW.fecha_salida IS NULL THEN ultima_salida
+              WHEN ultima_salida IS NULL OR NEW.fecha_salida > ultima_salida
+                THEN NEW.fecha_salida
+              ELSE ultima_salida
+            END
+          WHERE codigo_material_recibido = NEW.codigo_material_recibido
+            AND (total_entrada - total_salida) >= NEW.cantidad_salida;
+
+          IF ROW_COUNT() = 0 THEN
+            SIGNAL SQLSTATE '45000'
+              SET MESSAGE_TEXT = 'INSUFFICIENT_STOCK_SMD';
+          END IF;
+        END IF;
+      END
+    `);
+
+    console.log('✓ Protección de inventario SMD contra negativos instalada');
+    if (repairResult.affectedRows > 0) {
+      console.log(`✓ ${repairResult.affectedRows} lote(s) negativos reparados a stock cero`);
+    }
+  } finally {
+    if (lockAcquired) {
+      try {
+        await connection.query(`SELECT RELEASE_LOCK('migrate_nonnegative_inventory_smd')`);
+      } catch (_) {
+        // La conexión libera el bloqueo automáticamente al cerrarse.
+      }
+    }
+    connection.release();
+  }
+}
+
 // Ejecutar todas las migraciones
 async function runMigrations() {
   console.log('🔄 Ejecutando migraciones de base de datos...');
@@ -812,13 +1267,19 @@ async function runMigrations() {
   await createControlMaterialEntradaSmdTable();
   await addWarehousingExtraColumns();
   await createControlMaterialSalidaTable();
+  await ensureWarehouseCodeIndex();
+  await enforceUniqueSmdInventoryLots();
+  await enforceNonNegativeSmdInventory();
+  await createInventoryAdjustmentSmdTable();
   await createQuarantineTables();
   await createCancellationRequestsTable();
   await addIqcColumns();
   await createIqcTables();
   await addMaterialesIqcConfigColumns();
   await createAuditTables();
+  await addAuditSnapshotColumns();
   await createAuditPartTable();
+  await reconcileActiveAuditReturns();
   await createLotDivisionTable();
   await createRequirementsTables();
   await addReentryColumns();
@@ -826,6 +1287,17 @@ async function runMigrations() {
   await createPcbInventoryScanTable();
   await migratePcbInventorySchema();
   await addPcbInventoryTipoMovimiento();
+  await createScrapMotivosTable();
+  await createScrapRecordsTable();
+  await createScrapRecordEditsTable();
+  await migrateScrapAreaColumn();
+  await addColumnIfNotExists('scrap_records', 'cantidad', 'INT NOT NULL DEFAULT 1 AFTER usuario_registro');
+  await addColumnIfNotExists('scrap_records', 'raw_barcode', 'VARCHAR(180) NULL AFTER part_no');
+  await addColumnIfNotExists('scrap_records', 'proceso', 'VARCHAR(30) NULL AFTER area');
+  await addColumnIfNotExists('scrap_record_edits', 'old_raw_barcode', 'VARCHAR(180) NULL AFTER new_part_no');
+  await addColumnIfNotExists('scrap_record_edits', 'new_raw_barcode', 'VARCHAR(180) NULL AFTER old_raw_barcode');
+  await addColumnIfNotExists('scrap_record_edits', 'old_proceso', 'VARCHAR(30) NULL AFTER new_area');
+  await addColumnIfNotExists('scrap_record_edits', 'new_proceso', 'VARCHAR(30) NULL AFTER old_proceso');
 
   console.log('✅ Migraciones completadas');
 }
@@ -965,8 +1437,159 @@ async function createLotDivisionTable() {
   }
 }
 
+// ============================================
+// SCRAP TABLES
+// ============================================
+
+async function createScrapMotivosTable() {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS scrap_motivos (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        motivo VARCHAR(200) NOT NULL UNIQUE,
+        activo TINYINT DEFAULT 1,
+        creado_por VARCHAR(100) NULL,
+        fecha_creacion DATETIME NULL,
+        actualizado_por VARCHAR(100) NULL,
+        fecha_actualizacion DATETIME NULL,
+        INDEX idx_activo (activo)
+      )
+    `);
+    console.log('  Tabla scrap_motivos verificada/creada');
+  } catch (err) {
+    console.log('Nota: La tabla scrap_motivos puede ya existir:', err.message);
+  }
+}
+
+async function createInventoryAdjustmentSmdTable() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS inventory_adjustment_smd (
+      id BIGINT AUTO_INCREMENT PRIMARY KEY,
+      warehousing_id INT NOT NULL,
+      inventory_lot_id INT NOT NULL,
+      codigo_material_recibido VARCHAR(128) NOT NULL,
+      numero_parte VARCHAR(150) NULL,
+      numero_lote VARCHAR(150) NULL,
+      quantity_before DECIMAL(12,2) NOT NULL,
+      quantity_after DECIMAL(12,2) NOT NULL,
+      adjustment_quantity DECIMAL(12,2) NOT NULL,
+      movement_type VARCHAR(20) NOT NULL,
+      reason VARCHAR(255) NOT NULL,
+      usuario_registro VARCHAR(100) NULL,
+      usuario_registro_id INT NULL,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_inventory_adjustment_smd_code (codigo_material_recibido),
+      INDEX idx_inventory_adjustment_smd_created (created_at),
+      INDEX idx_inventory_adjustment_smd_lot (inventory_lot_id)
+    )
+  `);
+
+  console.log('✓ Tabla inventory_adjustment_smd verificada/creada');
+}
+
+async function createScrapRecordsTable() {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS scrap_records (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+        scanned_original VARCHAR(180) NOT NULL,
+        scanned_original_norm VARCHAR(180) NOT NULL,
+        assy_type VARCHAR(20) NULL,
+        part_no VARCHAR(50) NULL,
+        modelo VARCHAR(120) NOT NULL DEFAULT 'N/A',
+        area VARCHAR(30) NOT NULL,
+        proceso VARCHAR(30) NULL,
+        motivo_scrap_id INT NULL,
+        motivo_scrap_texto VARCHAR(200) NULL,
+        comentarios TEXT NULL,
+        usuario_registro VARCHAR(100) NULL,
+        cantidad INT NOT NULL DEFAULT 1,
+        fecha_registro DATETIME NOT NULL,
+        INDEX idx_fecha (fecha_registro),
+        INDEX idx_area (area),
+        INDEX idx_part_no (part_no),
+        INDEX idx_norm_fecha (scanned_original_norm, fecha_registro),
+        CONSTRAINT fk_scrap_motivo FOREIGN KEY (motivo_scrap_id) REFERENCES scrap_motivos(id) ON DELETE SET NULL
+      )
+    `);
+    console.log('  Tabla scrap_records verificada/creada');
+  } catch (err) {
+    console.log('Nota: La tabla scrap_records puede ya existir:', err.message);
+  }
+}
+
+async function createScrapRecordEditsTable() {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS scrap_record_edits (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+        scrap_record_id BIGINT NOT NULL,
+        old_scanned_original VARCHAR(180) NULL,
+        new_scanned_original VARCHAR(180) NULL,
+        old_scanned_original_norm VARCHAR(180) NULL,
+        new_scanned_original_norm VARCHAR(180) NULL,
+        old_assy_type VARCHAR(20) NULL,
+        new_assy_type VARCHAR(20) NULL,
+        old_part_no VARCHAR(50) NULL,
+        new_part_no VARCHAR(50) NULL,
+        old_modelo VARCHAR(120) NULL,
+        new_modelo VARCHAR(120) NULL,
+        old_area VARCHAR(30) NULL,
+        new_area VARCHAR(30) NULL,
+        old_proceso VARCHAR(30) NULL,
+        new_proceso VARCHAR(30) NULL,
+        old_motivo_scrap_id INT NULL,
+        new_motivo_scrap_id INT NULL,
+        old_motivo_scrap_texto VARCHAR(200) NULL,
+        new_motivo_scrap_texto VARCHAR(200) NULL,
+        old_comentarios TEXT NULL,
+        new_comentarios TEXT NULL,
+        old_cantidad INT NULL,
+        new_cantidad INT NULL,
+        edit_reason TEXT NOT NULL,
+        edited_by_user_id INT NULL,
+        edited_by_name VARCHAR(100) NULL,
+        edited_at DATETIME NOT NULL,
+        INDEX idx_scrap_record_id (scrap_record_id),
+        INDEX idx_edited_at (edited_at),
+        CONSTRAINT fk_scrap_record_edit_record FOREIGN KEY (scrap_record_id) REFERENCES scrap_records(id) ON DELETE CASCADE
+      )
+    `);
+    console.log('  Tabla scrap_record_edits verificada/creada');
+  } catch (err) {
+    console.log('Nota: La tabla scrap_record_edits puede ya existir:', err.message);
+  }
+}
+
+// Migrar columna area de scrap_records de ENUM a VARCHAR
+async function migrateScrapAreaColumn() {
+  try {
+    const [cols] = await pool.query(`
+      SELECT COLUMN_TYPE
+      FROM INFORMATION_SCHEMA.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'scrap_records'
+      AND COLUMN_NAME = 'area'
+      LIMIT 1
+    `);
+    const colType = (cols[0]?.COLUMN_TYPE || '').toLowerCase();
+    if (colType.startsWith('enum')) {
+      await pool.query(`
+        ALTER TABLE scrap_records
+        MODIFY COLUMN area VARCHAR(30) NOT NULL
+      `);
+      console.log('\u2713 Columna scrap_records.area migrada de ENUM a VARCHAR(30)');
+    }
+  } catch (err) {
+    console.log('Nota: Error migrando scrap_records.area:', err.message);
+  }
+}
+
 module.exports = {
   runMigrations,
+  enforceUniqueSmdInventoryLots,
+  enforceNonNegativeSmdInventory,
+  createInventoryAdjustmentSmdTable,
   createPcbDefectCatalogTable,
   migratePcbInventorySchema,
   addPcbInventoryTipoMovimiento,

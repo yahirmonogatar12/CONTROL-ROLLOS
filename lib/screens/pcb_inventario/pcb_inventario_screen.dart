@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:dropdown_button2/dropdown_button2.dart';
 import 'package:excel/excel.dart' as xl;
 import 'package:file_picker/file_picker.dart';
+import 'package:material_warehousing_flutter/core/constants/pcb_areas.dart';
 import 'package:material_warehousing_flutter/core/localization/app_translations.dart';
 import 'package:material_warehousing_flutter/core/theme/app_colors.dart';
 import 'package:material_warehousing_flutter/core/services/api_service.dart';
@@ -48,7 +49,7 @@ class PcbInventarioScreenState extends State<PcbInventarioScreen>
   String _selectedArea = 'ALL';
   String _selectedProceso = 'ALL';
 
-  static const List<String> _areaOptions = ['ALL', 'INVENTARIO', 'REPARACION'];
+  static const List<String> _areaOptions = PcbAreas.filterValues;
   static const List<String> _procesoOptions = ['ALL', 'SMD', 'IMD', 'ASSY'];
 
   // Sorting
@@ -233,10 +234,16 @@ class PcbInventarioScreenState extends State<PcbInventarioScreen>
 
       if (mounted) {
         setState(() {
-          _summaryData =
-              (results[0]['data'] as List?)?.cast<Map<String, dynamic>>() ?? [];
-          _detailData =
-              (results[1]['data'] as List?)?.cast<Map<String, dynamic>>() ?? [];
+          _summaryData = ((results[0]['data'] as List?)
+                      ?.whereType<Map<String, dynamic>>() ??
+                  const <Map<String, dynamic>>[])
+              .map(PcbAreas.withDisplayArea)
+              .toList();
+          _detailData = ((results[1]['data'] as List?)
+                      ?.whereType<Map<String, dynamic>>() ??
+                  const <Map<String, dynamic>>[])
+              .map(PcbAreas.withDisplayArea)
+              .toList();
           _summaryFiltered = List.from(_summaryData);
           _detailFiltered = List.from(_detailData);
           _selectedSummaryIndex = -1;
@@ -451,7 +458,7 @@ class PcbInventarioScreenState extends State<PcbInventarioScreen>
               style: const TextStyle(fontSize: 14, color: Colors.white)),
           const SizedBox(width: 8),
           SizedBox(
-            width: 150,
+            width: 220,
             child: DropdownButtonFormField2<String>(
               decoration: fieldDecoration(),
               value: _selectedArea,
@@ -460,7 +467,9 @@ class PcbInventarioScreenState extends State<PcbInventarioScreen>
               items: _areaOptions
                   .map((a) => DropdownMenuItem(
                         value: a,
-                        child: Text(a, style: const TextStyle(fontSize: 14)),
+                        child: Text(
+                            a == 'ALL' ? tr('pcb_all') : PcbAreas.label(a),
+                            style: const TextStyle(fontSize: 14)),
                       ))
                   .toList(),
               onChanged: (val) {
@@ -917,7 +926,7 @@ class _InitialStockImportDialogState extends State<_InitialStockImportDialog> {
   final TextEditingController _dateController = TextEditingController();
   final TextEditingController _commentController = TextEditingController();
   DateTime _inventoryDate = DateTime.now();
-  String _selectedArea = 'INVENTARIO';
+  String _selectedArea = PcbAreas.inventory;
   String _selectedProceso = 'SMD';
   String? _fileName;
   bool _isSubmitting = false;
@@ -926,7 +935,7 @@ class _InitialStockImportDialogState extends State<_InitialStockImportDialog> {
   List<Map<String, dynamic>> _items = [];
   List<Map<String, dynamic>> _parseErrors = [];
 
-  static const _areas = ['INVENTARIO', 'REPARACION'];
+  static const _areas = PcbAreas.values;
   static const _procesos = ['SMD', 'IMD', 'ASSY'];
 
   String tr(String key) => widget.tr(key);
@@ -1339,7 +1348,7 @@ class _InitialStockImportDialogState extends State<_InitialStockImportDialog> {
                 ),
                 const SizedBox(width: 10),
                 SizedBox(
-                  width: 160,
+                  width: 220,
                   child: DropdownButtonFormField2<String>(
                     decoration: fieldDecoration(),
                     value: _selectedArea,
@@ -1347,7 +1356,7 @@ class _InitialStockImportDialogState extends State<_InitialStockImportDialog> {
                     items: _areas
                         .map((area) => DropdownMenuItem(
                               value: area,
-                              child: Text(area,
+                              child: Text(PcbAreas.label(area),
                                   style: const TextStyle(fontSize: 13)),
                             ))
                         .toList(),
@@ -1355,7 +1364,7 @@ class _InitialStockImportDialogState extends State<_InitialStockImportDialog> {
                       if (value != null) setState(() => _selectedArea = value);
                     },
                     dropdownStyleData: DropdownStyleData(
-                      width: 160,
+                      width: 220,
                       maxHeight: 160,
                       decoration: BoxDecoration(
                         color: AppColors.fieldBackground,

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:material_warehousing_flutter/core/constants/pcb_areas.dart';
 import 'package:material_warehousing_flutter/core/localization/app_translations.dart';
 import 'package:material_warehousing_flutter/core/theme/app_colors.dart';
 import 'package:material_warehousing_flutter/core/services/api_service.dart';
@@ -152,6 +153,8 @@ class PcbEntradaGridPanelState extends State<PcbEntradaGridPanel>
           return pn.contains(partNumber.toUpperCase());
         }).toList();
       }
+
+      allRows = allRows.map(PcbAreas.withDisplayArea).toList();
 
       if (mounted) {
         setState(() {

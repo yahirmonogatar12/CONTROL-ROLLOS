@@ -5,6 +5,28 @@
 
 const { pool } = require('../config/database');
 
+const normalizeRequiredText = (value) => String(value ?? '').trim();
+
+const readNumber = (value) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const parseNonNegativeInteger = (value) => {
+  const normalized = String(value ?? '').trim();
+  if (!/^\d+$/.test(normalized)) return null;
+
+  const parsed = Number(normalized);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
+};
+
+const adjustmentError = (statusCode, code, message) => {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  error.adjustmentCode = code;
+  return error;
+};
+
 // GET /api/inventory/summary - Inventario agrupado por numero_parte
 exports.getSummary = async (req, res, next) => {
   try {
@@ -440,5 +462,218 @@ exports.mobileSearch = async (req, res, next) => {
     });
   } catch (err) {
     next(err);
+  }
+};
+
+// POST /api/inventory/adjust - Ajustar el stock actual de un lote SMD
+exports.adjustInventoryLot = async (req, res, next) => {
+  let connection;
+
+  try {
+    const warehousingId = Number.parseInt(req.body.warehousing_id, 10);
+    const receivedMaterialCode = normalizeRequiredText(
+      req.body.codigo_material_recibido
+    );
+    const targetStock = parseNonNegativeInteger(req.body.target_stock);
+    const reason = normalizeRequiredText(req.body.reason);
+    const registeredBy =
+      normalizeRequiredText(req.body.usuario_registro) || 'Sistema';
+    const rawRegisteredById = req.body.usuario_registro_id;
+    const registeredById =
+      rawRegisteredById !== null &&
+      rawRegisteredById !== undefined &&
+      rawRegisteredById !== '' &&
+      Number.isInteger(Number(rawRegisteredById))
+        ? Number(rawRegisteredById)
+        : null;
+
+    if (!Number.isInteger(warehousingId) || warehousingId <= 0 || !receivedMaterialCode) {
+      throw adjustmentError(
+        400,
+        'INVALID_INVENTORY_LOT',
+        'El lote de inventario seleccionado no es válido'
+      );
+    }
+    if (targetStock === null) {
+      throw adjustmentError(
+        400,
+        'INVALID_TARGET_STOCK',
+        'El stock objetivo debe ser un entero mayor o igual a cero'
+      );
+    }
+    if (!reason) {
+      throw adjustmentError(400, 'REASON_REQUIRED', 'El motivo es requerido');
+    }
+    if (reason.length > 255) {
+      throw adjustmentError(
+        400,
+        'REASON_TOO_LONG',
+        'El motivo no puede exceder 255 caracteres'
+      );
+    }
+
+    connection = await pool.getConnection();
+    await connection.beginTransaction();
+
+    const [rows] = await connection.query(
+      `SELECT
+         cma.id AS warehousing_id,
+         cma.codigo_material_recibido,
+         cma.numero_parte,
+         cma.numero_lote_material,
+         cma.cancelado,
+         cma.iqc_status,
+         il.id AS inventory_lot_id,
+         il.total_entrada,
+         il.total_salida,
+         il.stock_actual
+       FROM control_material_almacen_smd cma
+       INNER JOIN inventario_lotes_smd il
+         ON il.codigo_material_recibido = cma.codigo_material_recibido
+       WHERE cma.id = ?
+         AND cma.codigo_material_recibido = ?
+       LIMIT 1
+       FOR UPDATE`,
+      [warehousingId, receivedMaterialCode]
+    );
+
+    if (rows.length === 0) {
+      throw adjustmentError(
+        404,
+        'INVENTORY_LOT_NOT_FOUND',
+        'No se encontró el lote de inventario seleccionado'
+      );
+    }
+
+    const lot = rows[0];
+    if (Number(lot.cancelado) === 1) {
+      throw adjustmentError(
+        409,
+        'WAREHOUSING_CANCELLED',
+        'No se puede ajustar una entrada cancelada'
+      );
+    }
+    if (!['Released', 'NotRequired'].includes(lot.iqc_status)) {
+      throw adjustmentError(
+        409,
+        'WAREHOUSING_NOT_RELEASED',
+        'El material todavía no está liberado por IQC'
+      );
+    }
+
+    const currentStock = readNumber(lot.stock_actual);
+    const delta = targetStock - currentStock;
+    if (Math.abs(delta) < 0.0001) {
+      throw adjustmentError(
+        409,
+        'NO_INVENTORY_CHANGE',
+        'El stock objetivo debe ser diferente al stock actual'
+      );
+    }
+
+    // El ajuste es un movimiento de inventario, no una modificación de la
+    // recepción original. Esto conserva la cantidad recibida y evita activar
+    // el trigger de almacén por segunda vez.
+    if (delta > 0) {
+      await connection.query(
+        `UPDATE inventario_lotes_smd
+         SET total_entrada = total_entrada + ?
+         WHERE id = ?`,
+        [delta, lot.inventory_lot_id]
+      );
+    } else {
+      await connection.query(
+        `UPDATE inventario_lotes_smd
+         SET total_salida = total_salida + ?,
+             ultima_salida = NOW()
+         WHERE id = ?`,
+        [Math.abs(delta), lot.inventory_lot_id]
+      );
+    }
+
+    const [[updatedInventory]] = await connection.query(
+      `SELECT total_entrada, total_salida, stock_actual
+       FROM inventario_lotes_smd
+       WHERE id = ?
+       FOR UPDATE`,
+      [lot.inventory_lot_id]
+    );
+
+    const updatedStock = readNumber(updatedInventory?.stock_actual);
+    if (Math.abs(updatedStock - targetStock) >= 0.0001) {
+      throw adjustmentError(
+        409,
+        'INVENTORY_ADJUSTMENT_NOT_APPLIED',
+        'No fue posible sincronizar el ajuste con el inventario del lote'
+      );
+    }
+
+    const movementType = delta > 0 ? 'Entry' : 'Exit';
+    await connection.query(
+      `INSERT INTO inventory_adjustment_smd (
+         warehousing_id,
+         inventory_lot_id,
+         codigo_material_recibido,
+         numero_parte,
+         numero_lote,
+         quantity_before,
+         quantity_after,
+         adjustment_quantity,
+         movement_type,
+         reason,
+         usuario_registro,
+         usuario_registro_id
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        lot.warehousing_id,
+        lot.inventory_lot_id,
+        lot.codigo_material_recibido,
+        lot.numero_parte,
+        lot.numero_lote_material,
+        currentStock,
+        targetStock,
+        Math.abs(delta),
+        movementType,
+        reason,
+        registeredBy,
+        registeredById,
+      ]
+    );
+
+    await connection.commit();
+
+    res.status(201).json({
+      success: true,
+      message: 'Ajuste de inventario guardado',
+      data: {
+        warehousing_id: lot.warehousing_id,
+        inventory_lot_id: lot.inventory_lot_id,
+        codigo_material_recibido: lot.codigo_material_recibido,
+        stock_before: currentStock,
+        stock_after: updatedStock,
+        adjustment_quantity: Math.abs(delta),
+        movement_type: movementType,
+      },
+    });
+  } catch (err) {
+    if (connection) {
+      try {
+        await connection.rollback();
+      } catch (_) {
+        // Conservar el error original.
+      }
+    }
+
+    if (err.adjustmentCode) {
+      return res.status(err.statusCode || 400).json({
+        success: false,
+        code: err.adjustmentCode,
+        error: err.message,
+      });
+    }
+
+    next(err);
+  } finally {
+    connection?.release();
   }
 };

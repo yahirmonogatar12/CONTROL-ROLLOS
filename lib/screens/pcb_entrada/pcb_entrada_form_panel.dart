@@ -8,6 +8,7 @@ import 'package:material_warehousing_flutter/core/widgets/field_decoration.dart'
 import 'package:material_warehousing_flutter/core/widgets/table_dropdown_field.dart';
 import 'package:material_warehousing_flutter/core/services/api_service.dart';
 import 'package:material_warehousing_flutter/core/services/auth_service.dart';
+import 'package:material_warehousing_flutter/core/constants/pcb_areas.dart';
 import 'package:material_warehousing_flutter/screens/pcb_common/pcb_user_selection_mixin.dart';
 
 class PcbEntradaFormPanel extends StatefulWidget {
@@ -38,7 +39,7 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel>
   final FocusNode _scanFocusNode = FocusNode();
 
   String _selectedProceso = 'SMD';
-  String _selectedArea = 'INVENTARIO';
+  String _selectedArea = PcbAreas.inventory;
   String? _selectedDefectType;
   String? _detectedEtapa; // 'LQC' | 'OQC' | 'AIS' | null
   String? _detectedSourceArea;
@@ -55,10 +56,11 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel>
   int _pendingInventoryRemaining = 0;
   String? _pendingArrayGroupCode;
   String? _pendingArrayParentCode;
-  String _pendingArrayTargetArea = 'INVENTARIO';
+  String _pendingArrayTargetArea = PcbAreas.inventory;
+  String _pendingRepairArea = PcbAreas.repair;
 
   static const List<String> _procesos = ['SMD', 'IMD', 'ASSY'];
-  static const List<String> _areas = ['INVENTARIO', 'REPARACION'];
+  static const List<String> _areas = PcbAreas.values;
 
   String tr(String key) => widget.languageProvider.tr(key);
 
@@ -101,7 +103,6 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel>
       final savedProcess = prefs.getString('pcb_entrada_last_process');
       final savedArea = prefs.getString('pcb_entrada_last_area');
       final savedComment = prefs.getString('pcb_entrada_last_comment');
-      final savedArrayCount = prefs.getString('pcb_entrada_last_array_count');
       final savedRepairCount = prefs.getString('pcb_entrada_last_repair_count');
       final savedDefectType = prefs.getString('pcb_entrada_last_defect_type');
       final savedComponentLocation =
@@ -115,10 +116,6 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel>
             _selectedArea = savedArea;
           }
           if (savedComment != null) _commentController.text = savedComment;
-          if (savedArrayCount != null &&
-              (int.tryParse(savedArrayCount) ?? 0) > 0) {
-            _arrayCountController.text = savedArrayCount;
-          }
           if (savedRepairCount != null &&
               (int.tryParse(savedRepairCount) ?? 0) > 0) {
             _repairCountController.text = savedRepairCount;
@@ -153,8 +150,7 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel>
       await prefs.setString('pcb_entrada_last_area', _selectedArea);
       await prefs.setString(
           'pcb_entrada_last_comment', _commentController.text);
-      await prefs.setString(
-          'pcb_entrada_last_array_count', _arrayCountController.text);
+      await prefs.remove('pcb_entrada_last_array_count');
       await prefs.setString(
           'pcb_entrada_last_repair_count', _repairCountController.text);
       if (_selectedDefectType != null) {
@@ -172,14 +168,15 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel>
   }
 
   int _getRepairCount() {
-    if (_selectedArea != 'REPARACION') return 0;
+    if (!PcbAreas.isRepair(_selectedArea)) return 0;
     final value = int.tryParse(_repairCountController.text.trim()) ?? 1;
     return value < 1 ? 1 : value;
   }
 
   void _updatePendingArrayTargetArea() {
-    _pendingArrayTargetArea =
-        _pendingRepairRemaining > 0 ? 'REPARACION' : 'INVENTARIO';
+    _pendingArrayTargetArea = _pendingRepairRemaining > 0
+        ? _pendingRepairArea
+        : PcbAreas.inventory;
   }
 
   String _normalizePcbCode(String code) =>
@@ -205,13 +202,15 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel>
   }
 
   void _clearPendingArray() {
+    _arrayCountController.text = '1';
     _pendingArrayRemaining = 0;
     _pendingArrayCount = 1;
     _pendingRepairRemaining = 0;
     _pendingInventoryRemaining = 0;
     _pendingArrayGroupCode = null;
     _pendingArrayParentCode = null;
-    _pendingArrayTargetArea = 'INVENTARIO';
+    _pendingArrayTargetArea = PcbAreas.inventory;
+    _pendingRepairArea = PcbAreas.repair;
   }
 
   void _cancelPendingArray() {
@@ -254,7 +253,9 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel>
       if (selected != null) {
         final etapa = selected['etapa_deteccion']?.toString().toUpperCase();
         setState(() {
-          _selectedArea = 'REPARACION';
+          if (!PcbAreas.isRepair(_selectedArea)) {
+            _selectedArea = PcbAreas.repair;
+          }
           _selectedDefectType = selected!['defecto']?.toString();
           _componentLocationController.text =
               selected['ubicacion']?.toString() ?? '';
@@ -268,12 +269,11 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel>
     final arrayCount = isArrayItem ? _pendingArrayCount : _getArrayCount();
     final repairCount = isArrayItem ? 0 : _getRepairCount();
     final effectiveArea = isArrayItem ? _pendingArrayTargetArea : _selectedArea;
-    final isRepairEntry = effectiveArea == 'REPARACION';
+    final isRepairEntry = PcbAreas.isRepair(effectiveArea);
     final arrayGroupCode =
         isArrayItem ? _pendingArrayGroupCode : _normalizePcbCode(code);
-    final arrayRole = arrayCount > 1
-        ? (effectiveArea == 'REPARACION' ? 'DEFECT' : 'ARRAY_ITEM')
-        : 'SINGLE';
+    final arrayRole =
+        arrayCount > 1 ? (isRepairEntry ? 'DEFECT' : 'ARRAY_ITEM') : 'SINGLE';
 
     if (arrayCount > 99) {
       setState(() {
@@ -285,7 +285,7 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel>
     }
 
     if (!isArrayItem &&
-        _selectedArea == 'REPARACION' &&
+        PcbAreas.isRepair(_selectedArea) &&
         (repairCount > arrayCount || repairCount < 1)) {
       setState(() {
         _statusMessage = tr('pcb_invalid_repair_count');
@@ -354,7 +354,8 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel>
             : (fallbackId > 0 ? [fallbackId] : []);
         String nextMessage;
         if (isArrayItem) {
-          if (effectiveArea == 'REPARACION' && _pendingRepairRemaining > 0) {
+          if (PcbAreas.isRepair(effectiveArea) &&
+              _pendingRepairRemaining > 0) {
             _pendingRepairRemaining -= 1;
           } else if (_pendingInventoryRemaining > 0) {
             _pendingInventoryRemaining -= 1;
@@ -369,13 +370,14 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel>
           } else {
             _updatePendingArrayTargetArea();
             nextMessage =
-                '${tr('pcb_scan_saved')}: ${data?['pcb_part_no'] ?? ''} | ${tr('pcb_array_remaining')}: $_pendingArrayRemaining ($_pendingArrayTargetArea)';
+                '${tr('pcb_scan_saved')}: ${data?['pcb_part_no'] ?? ''} | ${tr('pcb_array_remaining')}: $_pendingArrayRemaining (${PcbAreas.label(_pendingArrayTargetArea)})';
           }
         } else if (arrayCount > 1) {
           _pendingArrayCount = arrayCount;
           _pendingArrayGroupCode = _normalizePcbCode(code);
           _pendingArrayParentCode = code;
-          if (_selectedArea == 'REPARACION') {
+          if (PcbAreas.isRepair(_selectedArea)) {
+            _pendingRepairArea = _selectedArea;
             _pendingRepairRemaining = repairCount - 1;
             _pendingInventoryRemaining = arrayCount - repairCount;
           } else {
@@ -386,7 +388,7 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel>
               _pendingRepairRemaining + _pendingInventoryRemaining;
           _updatePendingArrayTargetArea();
           nextMessage =
-              '${tr('pcb_scan_saved')}: ${data?['pcb_part_no'] ?? ''} | ${tr('pcb_array_remaining')}: $_pendingArrayRemaining ($_pendingArrayTargetArea)';
+              '${tr('pcb_scan_saved')}: ${data?['pcb_part_no'] ?? ''} | ${tr('pcb_array_remaining')}: $_pendingArrayRemaining (${PcbAreas.label(_pendingArrayTargetArea)})';
         } else {
           _clearDetectedDefect();
           nextMessage =
@@ -603,8 +605,8 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel>
   @override
   Widget build(BuildContext context) {
     final isRepairContext = _hasPendingArrayScans
-        ? _pendingArrayTargetArea == 'REPARACION'
-        : _selectedArea == 'REPARACION';
+        ? PcbAreas.isRepair(_pendingArrayTargetArea)
+        : PcbAreas.isRepair(_selectedArea);
     final defectRows = _defectRows;
     final userRows = pcbUserRows;
     // defect_data can provide defect text not present in pcb_defect_catalog.
@@ -649,7 +651,7 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel>
                     style: const TextStyle(fontSize: 14, color: Colors.white)),
               ),
               SizedBox(
-                width: 180,
+                width: 220,
                 child: DropdownButtonFormField2<String>(
                   decoration: fieldDecoration(),
                   value: _selectedArea,
@@ -658,8 +660,8 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel>
                   items: _areas
                       .map((a) => DropdownMenuItem(
                             value: a,
-                            child:
-                                Text(a, style: const TextStyle(fontSize: 14)),
+                            child: Text(PcbAreas.label(a),
+                                style: const TextStyle(fontSize: 14)),
                           ))
                       .toList(),
                   onChanged: _hasPendingArrayScans
@@ -765,7 +767,8 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel>
                   decoration: fieldDecoration(),
                   style: const TextStyle(fontSize: 14),
                   enabled:
-                      !_hasPendingArrayScans && _selectedArea == 'REPARACION',
+                      !_hasPendingArrayScans &&
+                          PcbAreas.isRepair(_selectedArea),
                   keyboardType: TextInputType.number,
                   inputFormatters: [FilteringTextInputFormatter.digitsOnly],
                   onChanged: (_) => _saveLocalPrefs(),
@@ -814,7 +817,7 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel>
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
-                      '${tr('pcb_scan_remaining_array')}: $_pendingArrayRemaining / ${_pendingArrayCount - 1} ($_pendingArrayTargetArea) | ${tr('pcb_area_repair_short')}: $_pendingRepairRemaining, ${tr('pcb_area_inventory_short')}: $_pendingInventoryRemaining',
+                      '${tr('pcb_scan_remaining_array')}: $_pendingArrayRemaining / ${_pendingArrayCount - 1} (${PcbAreas.label(_pendingArrayTargetArea)}) | ${tr('pcb_area_repair_short')}: $_pendingRepairRemaining, ${tr('pcb_area_inventory_short')}: $_pendingInventoryRemaining',
                       style: const TextStyle(
                           color: Colors.cyan,
                           fontSize: 12,

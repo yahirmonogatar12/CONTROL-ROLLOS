@@ -148,6 +148,13 @@ class AuthService {
     return hasPermission('view_inventory');
   }
 
+  /// Verifica si el usuario puede ajustar el stock actual de un lote
+  static bool get canWriteInventoryAdjustment {
+    if (_currentUser == null) return false;
+    if (hasFullAccess) return true;
+    return hasPermission('write_inventory_adjustment');
+  }
+
   /// Verifica si el usuario puede ver IQC
   static bool get canViewIqc {
     if (_currentUser == null) return false;
@@ -342,6 +349,54 @@ class AuthService {
     if (_currentUser == null) return false;
     if (hasFullAccess) return true;
     return hasPermission('view_pcb_bom');
+  }
+
+  /// Verifica si el usuario puede ver Control de Scrap.
+  static bool get canViewScrap {
+    if (_currentUser == null) return false;
+    if (hasFullAccess) return true;
+    final dept = _currentUser!.departamento;
+    if (dept.contains('SMD') ||
+        dept.contains('IMD') ||
+        dept.contains('Assy') ||
+        dept.contains('Componente') ||
+        dept.contains('Mantenimiento') ||
+        dept.contains('Produccion') ||
+        dept.contains('Calidad')) {
+      return true;
+    }
+    return hasPermission('view_scrap');
+  }
+
+  /// Verifica si el usuario puede registrar scrap.
+  static bool get canWriteScrap {
+    if (_currentUser == null) return false;
+    if (hasFullAccess) return true;
+    final dept = _currentUser!.departamento;
+    if (dept.contains('SMD') ||
+        dept.contains('IMD') ||
+        dept.contains('Assy') ||
+        dept.contains('Componente') ||
+        dept.contains('Mantenimiento') ||
+        dept.contains('Produccion') ||
+        dept.contains('Calidad')) {
+      return true;
+    }
+    return hasPermission('write_scrap');
+  }
+
+  /// Verifica si el usuario puede gestionar el catálogo compartido de scrap.
+  static bool get canManageScrapMotivos {
+    if (_currentUser == null) return false;
+    if (hasFullAccess) return true;
+    return hasPermission('manage_scrap_motivos');
+  }
+
+  /// Verifica si el usuario puede editar el historial de scrap.
+  static bool get canEditScrapHistory {
+    if (_currentUser == null) return false;
+    if (hasFullAccess) return true;
+    return hasPermission('edit_scrap_history');
   }
 
   /// Verifica si el usuario puede ver solicitudes de material SMT

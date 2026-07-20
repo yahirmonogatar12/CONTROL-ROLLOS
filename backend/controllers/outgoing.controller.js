@@ -8,6 +8,57 @@ function normalizeCode(value) {
   return String(value || '').trim().toUpperCase();
 }
 
+function outgoingError(message, code, statusCode = 409) {
+  const error = new Error(message);
+  error.code = code;
+  error.statusCode = statusCode;
+  return error;
+}
+
+async function lockAndValidateOutgoingStock(connection, {
+  codigoMaterial,
+  cantidad
+}) {
+  const isMissingQuantity = cantidad === null
+    || cantidad === undefined
+    || (typeof cantidad === 'string' && cantidad.trim() === '');
+  const outgoingQty = Number(cantidad);
+
+  if (isMissingQuantity || !Number.isFinite(outgoingQty) || outgoingQty < 0) {
+    throw outgoingError(
+      'La cantidad de salida debe ser un n煤mero mayor o igual a cero',
+      'INVALID_OUTGOING_QUANTITY',
+      400
+    );
+  }
+
+  const [lotRows] = await connection.query(`
+    SELECT id, total_entrada, total_salida, stock_actual
+    FROM inventario_lotes_smd
+    WHERE codigo_material_recibido = ?
+    FOR UPDATE
+  `, [codigoMaterial]);
+
+  if (lotRows.length === 0) {
+    throw outgoingError(
+      'El lote no existe en el inventario disponible',
+      'INVENTORY_LOT_NOT_FOUND',
+      409
+    );
+  }
+
+  const availableQty = Number(lotRows[0].stock_actual || 0);
+  if (outgoingQty > availableQty) {
+    throw outgoingError(
+      `Stock insuficiente. Disponible: ${availableQty}; solicitado: ${outgoingQty}`,
+      'INSUFFICIENT_STOCK',
+      409
+    );
+  }
+
+  return { outgoingQty, availableQty, inventoryLotId: lotRows[0].id };
+}
+
 async function validateOutgoingCodes(codes) {
   const normalizedCodes = [...new Set(codes.map(normalizeCode).filter(Boolean))];
   if (normalizedCodes.length === 0) {
@@ -29,7 +80,7 @@ async function validateOutgoingCodes(codes) {
       COALESCE(m.standard_pack, 0) as standard_pack
     FROM control_material_almacen_smd c
     LEFT JOIN materiales m ON c.numero_parte = m.numero_parte
-    WHERE UPPER(c.codigo_material_recibido) IN (${placeholders})
+    WHERE c.codigo_material_recibido IN (${placeholders})
   `, normalizedCodes);
 
   const materialMap = new Map(
@@ -118,7 +169,7 @@ const checkSalida = async (req, res, next) => {
     const [rows] = await pool.query(`
       SELECT tiene_salida 
       FROM control_material_almacen_smd 
-      WHERE UPPER(codigo_material_recibido) = ?
+      WHERE codigo_material_recibido = ?
       LIMIT 1
     `, [code]);
 
@@ -148,7 +199,7 @@ const validateBatch = async (req, res, next) => {
     if (requestedCodes.length === 0) {
       return res.status(400).json({
         valid: false,
-        error: 'C骴igo requerido',
+        error: 'C贸digo requerido',
         code: 'MISSING_CODE'
       });
     }
@@ -229,7 +280,7 @@ const createBatch = async (req, res, next) => {
             tiene_salida,
             cancelado
           FROM control_material_almacen_smd 
-          WHERE UPPER(codigo_material_recibido) = ?
+          WHERE codigo_material_recibido = ?
           FOR UPDATE
         `, [code]);
 
@@ -263,6 +314,11 @@ const createBatch = async (req, res, next) => {
           }
         }
 
+        const { outgoingQty } = await lockAndValidateOutgoingStock(connection, {
+          codigoMaterial: code,
+          cantidad: mat.cantidad_actual
+        });
+
         // Insertar salida
         await connection.query(`
           INSERT INTO control_material_salida_smd (
@@ -283,7 +339,7 @@ const createBatch = async (req, res, next) => {
           mat.numero_lote_material,
           'MOBILE',
           'BATCH SCAN',
-          mat.cantidad_actual,
+          outgoingQty,
           fechaSalida,
           mat.especificacion,
           usuario_registro || 'Mobile User'
@@ -293,13 +349,13 @@ const createBatch = async (req, res, next) => {
         await connection.query(`
           UPDATE control_material_almacen_smd 
           SET tiene_salida = 1 
-          WHERE UPPER(codigo_material_recibido) = ?
+          WHERE codigo_material_recibido = ?
         `, [code]);
 
         results.success.push({ 
           code, 
           numero_parte: mat.numero_parte,
-          cantidad: mat.cantidad_actual 
+          cantidad: outgoingQty
         });
 
       } catch (itemErr) {
@@ -372,6 +428,8 @@ const getLocationsByPartNumber = async (req, res, next) => {
 
 // POST /api/outgoing - Crear salida
 const create = async (req, res, next) => {
+  const connection = await pool.getConnection();
+
   try {
     const {
       codigo_material_recibido,
@@ -389,30 +447,63 @@ const create = async (req, res, next) => {
       vendedor
     } = req.body;
 
-    // Verificar si el material existe y si ya tiene salida (case-insensitive)
-    const [checkRows] = await pool.query(`
-      SELECT tiene_salida
-      FROM control_material_almacen_smd
-      WHERE UPPER(codigo_material_recibido) = UPPER(?)
-      LIMIT 1
-    `, [codigo_material_recibido]);
-
-    if (checkRows.length === 0) {
-      return res.status(404).json({
-        error: 'Material no encontrado en inventario',
-        code: 'NOT_FOUND'
-      });
+    const normalizedMaterialCode = normalizeCode(codigo_material_recibido);
+    if (!normalizedMaterialCode) {
+      throw outgoingError('C贸digo de material requerido', 'MISSING_CODE', 400);
     }
 
-    if (checkRows[0].tiene_salida === 1) {
-      return res.status(400).json({
-        error: 'Este material ya tiene una salida registrada',
-        code: 'ALREADY_HAS_OUTGOING'
-      });
+    await connection.beginTransaction();
+
+    // Bloquear la etiqueta y usar sus datos can贸nicos para que el n煤mero de
+    // parte o lote recibido en el body no pueda apuntar a otra existencia.
+    const [checkRows] = await connection.query(`
+      SELECT
+        codigo_material_recibido,
+        numero_parte,
+        numero_lote_material,
+        cantidad_actual,
+        tiene_salida,
+        cancelado
+      FROM control_material_almacen_smd
+      WHERE codigo_material_recibido = ?
+      LIMIT 1
+      FOR UPDATE
+    `, [normalizedMaterialCode]);
+
+    if (checkRows.length === 0) {
+      throw outgoingError('Material no encontrado en inventario', 'NOT_FOUND', 404);
+    }
+
+    const warehouseMaterial = checkRows[0];
+
+    if (warehouseMaterial.cancelado === 1) {
+      throw outgoingError('Este material est谩 cancelado', 'CANCELLED', 409);
+    }
+
+    if (warehouseMaterial.tiene_salida === 1) {
+      throw outgoingError(
+        'Este material ya tiene una salida registrada',
+        'ALREADY_HAS_OUTGOING',
+        409
+      );
+    }
+
+    const { outgoingQty } = await lockAndValidateOutgoingStock(connection, {
+      codigoMaterial: warehouseMaterial.codigo_material_recibido,
+      cantidad: cantidad_salida
+    });
+
+    const labelQty = Number(warehouseMaterial.cantidad_actual || 0);
+    if (outgoingQty > labelQty) {
+      throw outgoingError(
+        `La salida excede la cantidad de la etiqueta. Disponible: ${labelQty}; solicitado: ${outgoingQty}`,
+        'INSUFFICIENT_LABEL_STOCK',
+        409
+      );
     }
 
     // Siempre usar NOW() de MySQL para fecha_salida y fecha_registro
-    const [result] = await pool.query(`
+    const [result] = await connection.query(`
       INSERT INTO control_material_salida_smd (
         codigo_material_recibido,
         numero_parte,
@@ -431,16 +522,16 @@ const create = async (req, res, next) => {
         vendedor
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), ?, ?, ?)
     `, [
-      codigo_material_recibido,
-      numero_parte,
-      numero_lote,
+      warehouseMaterial.codigo_material_recibido,
+      warehouseMaterial.numero_parte,
+      warehouseMaterial.numero_lote_material,
       modelo,
       depto_salida,
       proceso_salida,
       linea_proceso || null,
       comparacion_escaneada || null,
       comparacion_resultado || null,
-      cantidad_salida,
+      outgoingQty,
       especificacion_material,
       usuario_registro,
       vendedor || ''
@@ -448,20 +539,25 @@ const create = async (req, res, next) => {
 
     // Marcar como tiene salida SOLO si la cantidad_salida es > 0
     // Si es 0 (comparaci贸n NG), no marcar como tiene salida para permitir salida posterior
-    if (cantidad_salida > 0) {
-      await pool.query(`
+    if (outgoingQty > 0) {
+      await connection.query(`
         UPDATE control_material_almacen_smd 
         SET tiene_salida = 1 
-        WHERE UPPER(codigo_material_recibido) = UPPER(?)
-      `, [codigo_material_recibido]);
+        WHERE codigo_material_recibido = ?
+      `, [warehouseMaterial.codigo_material_recibido]);
     }
+
+    await connection.commit();
 
     res.status(201).json({
       id: result.insertId,
       message: 'Registro de salida creado exitosamente'
     });
   } catch (err) {
+    await connection.rollback();
     next(err);
+  } finally {
+    connection.release();
   }
 };
 

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:material_warehousing_flutter/core/constants/pcb_areas.dart';
 import 'package:material_warehousing_flutter/core/localization/app_translations.dart';
 import 'package:material_warehousing_flutter/core/services/api_service.dart';
 import 'package:material_warehousing_flutter/core/services/auth_service.dart';
@@ -27,7 +28,7 @@ class _MobilePcbInventoryScreenState extends State<MobilePcbInventoryScreen> {
   int _totalStock = 0;
 
   static const List<String> _procesos = ['ALL', 'SMD', 'IMD', 'ASSY'];
-  static const List<String> _areas = ['ALL', 'INVENTARIO', 'REPARACION'];
+  static const List<String> _areas = PcbAreas.filterValues;
 
   String tr(String key) => widget.languageProvider.tr(key);
 
@@ -156,6 +157,7 @@ class _MobilePcbInventoryScreenState extends State<MobilePcbInventoryScreen> {
                   value: _selectedArea,
                   items: _areas,
                   icon: Icons.category,
+                  itemLabel: PcbAreas.label,
                   onChanged: (value) {
                     if (value == null) return;
                     setState(() => _selectedArea = value);
@@ -187,6 +189,7 @@ class _MobilePcbInventoryScreenState extends State<MobilePcbInventoryScreen> {
     required List<String> items,
     required IconData icon,
     required ValueChanged<String?> onChanged,
+    String Function(String)? itemLabel,
   }) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10),
@@ -211,7 +214,9 @@ class _MobilePcbInventoryScreenState extends State<MobilePcbInventoryScreen> {
                       const SizedBox(width: 6),
                       Expanded(
                         child: Text(
-                          item == 'ALL' ? tr('pcb_all') : item,
+                          item == 'ALL'
+                              ? tr('pcb_all')
+                              : itemLabel?.call(item) ?? item,
                           overflow: TextOverflow.ellipsis,
                         ),
                       ),
@@ -289,7 +294,7 @@ class _MobilePcbInventoryScreenState extends State<MobilePcbInventoryScreen> {
     final partNo = row['pcb_part_no']?.toString() ?? '-';
     final modelo = row['modelo']?.toString() ?? 'N/A';
     final proceso = row['proceso']?.toString() ?? '-';
-    final area = row['area']?.toString() ?? '-';
+    final area = PcbAreas.label(row['area']);
     final entrada = NumberParser.toInt(row['total_entrada']);
     final salida = NumberParser.toInt(row['total_salida']);
     final scrap = NumberParser.toInt(row['total_scrap']);

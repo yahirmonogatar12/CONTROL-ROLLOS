@@ -1,9 +1,11 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
+import '../config/server_config.dart';
 
 /// Configuración de GitHub para actualizaciones
 class GitHubConfig {
@@ -54,8 +56,12 @@ class UpdateInfo {
       }
     }
     
-    // Si no hay asset, usar URL directa del release
-    downloadUrl ??= json['html_url']?.toString();
+    // Si la API no incluye assets, usar el nombre generado por build.ps1.
+    // No usar html_url: guardaría una página HTML con extensión .exe.
+    if (downloadUrl == null && tagName.isNotEmpty && latestVersion.isNotEmpty) {
+      downloadUrl =
+          '${GitHubConfig.downloadUrl}/$tagName/Control_inventario_SMD_Setup_v$latestVersion.exe';
+    }
     
     // Verificar si es pre-release (considerarlo como obligatorio si no lo es)
     final isPrerelease = json['prerelease'] == true;
@@ -113,12 +119,26 @@ class UpdateInfo {
   }
 }
 
+class _UpdateCheckAttempt {
+  final String source;
+  final UpdateInfo? info;
+  final String? error;
+
+  const _UpdateCheckAttempt({
+    required this.source,
+    this.info,
+    this.error,
+  });
+}
+
 /// Servicio para manejar actualizaciones de la aplicación
 class UpdateService {
   static String? _currentVersion;
   static bool _isChecking = false;
   static bool _isDownloading = false;
   static double _downloadProgress = 0.0;
+  static String? _lastCheckError;
+  static String? _lastDownloadError;
   
   /// Versión actual de la aplicación
   static String get currentVersion => _currentVersion ?? '0.0.0';
@@ -131,6 +151,12 @@ class UpdateService {
   
   /// Progreso de descarga (0.0 - 1.0)
   static double get downloadProgress => _downloadProgress;
+
+  /// Último error de verificación, listo para mostrar al usuario.
+  static String? get lastCheckError => _lastCheckError;
+
+  /// Último error de descarga o ejecución del instalador.
+  static String? get lastDownloadError => _lastDownloadError;
   
   /// Cargar la versión actual desde VERSION.txt
   static Future<void> loadCurrentVersion() async {
@@ -164,51 +190,227 @@ class UpdateService {
     }
   }
   
-  /// Verificar si hay actualizaciones disponibles (consulta GitHub Releases)
+  /// Verificar si hay actualizaciones disponibles.
+  /// Consulta GitHub y el backend configurado en paralelo para que una red que
+  /// bloquee api.github.com todavía pueda obtener la versión desde el servidor.
   static Future<UpdateInfo?> checkForUpdates() async {
     if (_isChecking) return null;
-    
+
     try {
       _isChecking = true;
-      
-      // Asegurarse de que tenemos la versión actual
+      _lastCheckError = null;
+
       if (_currentVersion == null) {
         await loadCurrentVersion();
       }
-      
-      debugPrint('🔍 Checking GitHub for updates...');
-      debugPrint('📍 API URL: ${GitHubConfig.apiUrl}');
-      
-      final response = await http.get(
-        Uri.parse(GitHubConfig.apiUrl),
-        headers: {
-          'Accept': 'application/vnd.github.v3+json',
-          'User-Agent': 'CONTROL-ROLLOS-App',
-        },
-      ).timeout(const Duration(seconds: 15));
-      
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        final updateInfo = UpdateInfo.fromGitHub(data, _currentVersion ?? '0.0.0');
-        
-        debugPrint('📦 GitHub latest version: ${updateInfo.latestVersion}');
-        debugPrint('📱 Current version: ${updateInfo.currentVersion}');
-        debugPrint('🔄 Update available: ${updateInfo.updateAvailable}');
-        
-        return updateInfo;
-      } else if (response.statusCode == 404) {
-        debugPrint('⚠️ No releases found on GitHub');
-        return null;
-      } else {
-        debugPrint('❌ GitHub API error: ${response.statusCode}');
-        return null;
+
+      final attempts = await Future.wait([
+        _attemptUpdateCheck('GitHub', _checkGitHubApi),
+        _attemptUpdateCheck('servidor ${ServerConfig.baseUrl}',
+            _checkConfiguredServer),
+      ]);
+
+      // GitHub CONTROL-ROLLOS es la fuente autoritativa. El backend es una
+      // tabla compartida y nunca debe reemplazar una respuesta válida de este
+      // repositorio con la versión de otra aplicación.
+      final githubAttempt = attempts.first;
+      if (githubAttempt.info != null) {
+        _logUpdateInfo(githubAttempt.source, githubAttempt.info!);
+        return githubAttempt.info;
       }
-    } catch (e) {
-      debugPrint('❌ Error checking for updates: $e');
+
+      // api.github.com puede estar bloqueado aunque github.com funcione.
+      final webAttempt = await _attemptUpdateCheck(
+        'página de GitHub',
+        _checkGitHubReleasePage,
+      );
+      if (webAttempt.info != null) {
+        _logUpdateInfo(webAttempt.source, webAttempt.info!);
+        return webAttempt.info;
+      }
+
+      // Si GitHub no fue accesible, aceptar la respuesta válida del backend.
+      final serverAttempt = attempts[1];
+      if (serverAttempt.info != null) {
+        _logUpdateInfo(serverAttempt.source, serverAttempt.info!);
+        return serverAttempt.info;
+      }
+
+      final errors = <String>[
+        for (final attempt in [...attempts, webAttempt])
+          if (attempt.error != null) '${attempt.source}: ${attempt.error}',
+      ];
+      _lastCheckError = errors.isEmpty
+          ? 'No se recibió una respuesta válida de actualización.'
+          : 'No se pudo consultar la actualización. ${errors.join(' | ')}';
+      debugPrint('❌ $_lastCheckError');
       return null;
     } finally {
       _isChecking = false;
     }
+  }
+
+  static Future<_UpdateCheckAttempt> _attemptUpdateCheck(
+    String source,
+    Future<UpdateInfo> Function() action,
+  ) async {
+    try {
+      return _UpdateCheckAttempt(source: source, info: await action());
+    } catch (error) {
+      final message = _friendlyNetworkError(error);
+      debugPrint('⚠️ Update check failed ($source): $message');
+      return _UpdateCheckAttempt(source: source, error: message);
+    }
+  }
+
+  static Future<UpdateInfo> _checkGitHubApi() async {
+    final response = await http.get(
+      Uri.parse(GitHubConfig.apiUrl),
+      headers: {
+        'Accept': 'application/vnd.github.v3+json',
+        'User-Agent': 'CONTROL-ROLLOS-App',
+      },
+    ).timeout(const Duration(seconds: 10));
+
+    if (response.statusCode != 200) {
+      throw HttpException('GitHub respondió HTTP ${response.statusCode}');
+    }
+    final data = jsonDecode(response.body);
+    if (data is! Map<String, dynamic> ||
+        (data['tag_name']?.toString().isEmpty ?? true)) {
+      throw const FormatException('GitHub devolvió una respuesta sin versión');
+    }
+    return UpdateInfo.fromGitHub(data, currentVersion);
+  }
+
+  static Future<UpdateInfo> _checkConfiguredServer() async {
+    final uri = Uri.parse('${ServerConfig.baseUrl}/updates/check').replace(
+      queryParameters: {
+        'currentVersion': currentVersion,
+        'app': 'control_inventario_smd',
+      },
+    );
+    final response = await http.get(
+      uri,
+      headers: {'Accept': 'application/json'},
+    ).timeout(const Duration(seconds: 7));
+
+    if (response.statusCode != 200) {
+      throw HttpException('el servidor respondió HTTP ${response.statusCode}');
+    }
+    final data = jsonDecode(response.body);
+    if (data is! Map<String, dynamic> || data['success'] != true) {
+      throw const FormatException('el servidor devolvió una respuesta inválida');
+    }
+    final info = UpdateInfo.fromJson(data);
+    if (info.latestVersion.trim().isEmpty) {
+      throw const FormatException(
+        'el servidor no tiene versiones publicadas',
+      );
+    }
+    final serverDownloadUrl = info.downloadUrl?.trim();
+    if (serverDownloadUrl != null &&
+        serverDownloadUrl.isNotEmpty &&
+        !_isControlInventarioInstallerUrl(serverDownloadUrl)) {
+      throw FormatException(
+        'el servidor devolvió una actualización de otra aplicación: '
+        '$serverDownloadUrl',
+      );
+    }
+    if (!info.updateAvailable ||
+        (serverDownloadUrl != null && serverDownloadUrl.isNotEmpty)) {
+      return info;
+    }
+
+    final normalizedVersion = info.latestVersion.startsWith('v')
+        ? info.latestVersion.substring(1)
+        : info.latestVersion;
+    return UpdateInfo(
+      updateAvailable: info.updateAvailable,
+      currentVersion: info.currentVersion,
+      latestVersion: normalizedVersion,
+      releaseDate: info.releaseDate,
+      downloadUrl:
+          '${GitHubConfig.downloadUrl}/v$normalizedVersion/Control_inventario_SMD_Setup_v$normalizedVersion.exe',
+      releaseNotes: info.releaseNotes,
+      isMandatory: info.isMandatory,
+    );
+  }
+
+  static bool _isControlInventarioInstallerUrl(String value) {
+    final uri = Uri.tryParse(value);
+    if (uri == null) return false;
+    final lowerPath = uri.path.toLowerCase();
+    final hasExpectedInstaller =
+        lowerPath.contains('control_inventario_smd_setup_v') &&
+            lowerPath.endsWith('.exe');
+    if (!hasExpectedInstaller) return false;
+
+    if (uri.host.toLowerCase() == 'github.com') {
+      return lowerPath.contains(
+        '/${GitHubConfig.owner.toLowerCase()}/${GitHubConfig.repo.toLowerCase()}/releases/download/',
+      );
+    }
+    return uri.scheme == 'http' || uri.scheme == 'https';
+  }
+
+  static Future<UpdateInfo> _checkGitHubReleasePage() async {
+    final client = http.Client();
+    try {
+      final request = http.Request(
+        'GET',
+        Uri.parse(
+          'https://github.com/${GitHubConfig.owner}/${GitHubConfig.repo}/releases/latest',
+        ),
+      )
+        ..followRedirects = false
+        ..headers['User-Agent'] = 'CONTROL-ROLLOS-App';
+      final response = await client.send(request).timeout(
+            const Duration(seconds: 10),
+          );
+      final location = response.headers['location'] ?? '';
+      await response.stream.drain<void>();
+      final match = RegExp(r'/releases/tag/([^/?#]+)').firstMatch(location);
+      if (match == null) {
+        throw const FormatException(
+          'GitHub no indicó la versión más reciente',
+        );
+      }
+      final tagName = Uri.decodeComponent(match.group(1)!);
+      final latestVersion =
+          tagName.startsWith('v') ? tagName.substring(1) : tagName;
+      return UpdateInfo(
+        updateAvailable:
+            UpdateInfo._compareVersions(latestVersion, currentVersion) > 0,
+        currentVersion: currentVersion,
+        latestVersion: latestVersion,
+        downloadUrl:
+            '${GitHubConfig.downloadUrl}/$tagName/Control_inventario_SMD_Setup_v$latestVersion.exe',
+        isMandatory: true,
+      );
+    } finally {
+      client.close();
+    }
+  }
+
+  static void _logUpdateInfo(String source, UpdateInfo info) {
+    debugPrint('📦 Update source: $source');
+    debugPrint('📦 Latest version: ${info.latestVersion}');
+    debugPrint('📱 Current version: ${info.currentVersion}');
+    debugPrint('🔄 Update available: ${info.updateAvailable}');
+  }
+
+  static String _friendlyNetworkError(Object error) {
+    if (error is TimeoutException) return 'tiempo de espera agotado';
+    if (error is SocketException) {
+      return 'sin conexión o dominio bloqueado (${error.message})';
+    }
+    if (error is HandshakeException) {
+      return 'certificado TLS rechazado por la PC o la red';
+    }
+    if (error is FormatException) return error.message;
+    if (error is HttpException) return error.message;
+    return error.toString();
   }
   
   /// Descargar e instalar actualización
@@ -218,58 +420,128 @@ class UpdateService {
     Function(double)? onProgress,
   }) async {
     if (_isDownloading) return false;
-    
+
+    http.Client? client;
+    IOSink? sink;
+    File? partialFile;
     try {
       _isDownloading = true;
       _downloadProgress = 0.0;
-      
-      // Determinar URL de descarga (usar la proporcionada o construir desde GitHub)
-      final url = downloadUrl ?? 
-        '${GitHubConfig.downloadUrl}/$version/Control_inventario_SMD_Setup.exe';
-      
-      // Obtener directorio de descargas
-      final downloadsDir = await getDownloadsDirectory() ?? await getTemporaryDirectory();
-      final installerPath = '${downloadsDir.path}\\Control_inventario_SMD_Setup_$version.exe';
-      
+      _lastDownloadError = null;
+
+      final normalizedVersion = version.startsWith('v')
+          ? version.substring(1)
+          : version;
+      final tagName = version.startsWith('v') ? version : 'v$version';
+      final url = (downloadUrl != null && downloadUrl.trim().isNotEmpty)
+          ? downloadUrl.trim()
+          : '${GitHubConfig.downloadUrl}/$tagName/Control_inventario_SMD_Setup_v$normalizedVersion.exe';
+
+      // Usar TEMP evita carpetas Descargas redirigidas, OneDrive y protección
+      // contra escritura que varían entre PCs.
+      final tempDir = await getTemporaryDirectory();
+      final updateDir = Directory(
+        '${tempDir.path}\\control_inventario_smd_updates',
+      );
+      await updateDir.create(recursive: true);
+      final installerPath =
+          '${updateDir.path}\\Control_inventario_SMD_Setup_v$normalizedVersion.exe';
+      partialFile = File('$installerPath.part');
+      if (await partialFile.exists()) await partialFile.delete();
+
       debugPrint('📥 Downloading update from: $url');
       debugPrint('📁 Saving to: $installerPath');
-      
-      // Descargar archivo
+
+      client = http.Client();
       final request = http.Request('GET', Uri.parse(url));
-      final response = await http.Client().send(request);
-      
+      request.headers['User-Agent'] = 'CONTROL-ROLLOS-App';
+      final response = await client.send(request).timeout(
+            const Duration(seconds: 20),
+          );
+
       if (response.statusCode != 200) {
-        throw Exception('Download failed with status: ${response.statusCode}');
+        await response.stream.drain<void>();
+        throw HttpException(
+          'la descarga respondió HTTP ${response.statusCode}',
+        );
       }
-      
+
+      final contentType = response.headers['content-type']?.toLowerCase() ?? '';
+      if (contentType.contains('text/html')) {
+        await response.stream.drain<void>();
+        throw const FormatException(
+          'el enlace devolvió una página web en lugar del instalador',
+        );
+      }
+
       final contentLength = response.contentLength ?? 0;
-      final file = File(installerPath);
-      final sink = file.openWrite();
-      
+      sink = partialFile.openWrite();
       int downloaded = 0;
-      
-      await for (final chunk in response.stream) {
+
+      await for (final chunk in response.stream.timeout(
+        const Duration(seconds: 30),
+      )) {
         sink.add(chunk);
         downloaded += chunk.length;
-        
+
         if (contentLength > 0) {
           _downloadProgress = downloaded / contentLength;
           onProgress?.call(_downloadProgress);
         }
       }
-      
+
+      await sink.flush();
       await sink.close();
-      
+      sink = null;
+
+      if (contentLength > 0 && downloaded != contentLength) {
+        throw HttpException(
+          'descarga incompleta: $downloaded de $contentLength bytes',
+        );
+      }
+      if (downloaded < 1024 * 1024) {
+        throw const FormatException(
+          'el archivo descargado es demasiado pequeño para ser el instalador',
+        );
+      }
+
+      final randomAccess = await partialFile.open();
+      final signature = await randomAccess.read(2);
+      await randomAccess.close();
+      if (signature.length != 2 ||
+          signature[0] != 0x4D ||
+          signature[1] != 0x5A) {
+        throw const FormatException(
+          'el archivo descargado no es un ejecutable de Windows válido',
+        );
+      }
+
+      final installer = File(installerPath);
+      if (await installer.exists()) await installer.delete();
+      await partialFile.rename(installerPath);
+      partialFile = null;
+
+      _downloadProgress = 1.0;
+      onProgress?.call(_downloadProgress);
       debugPrint('✅ Download complete: $installerPath');
-      
-      // Ejecutar instalador
       await _runInstaller(installerPath);
-      
+
       return true;
     } catch (e) {
+      _lastDownloadError =
+          'No se pudo descargar o abrir la actualización: ${_friendlyNetworkError(e)}';
       debugPrint('❌ Error downloading update: $e');
       return false;
     } finally {
+      try {
+        await sink?.close();
+      } catch (_) {}
+      client?.close();
+      if (partialFile != null) {
+        try {
+          if (await partialFile.exists()) await partialFile.delete();
+        } catch (_) {}
+      }
       _isDownloading = false;
       _downloadProgress = 0.0;
     }
@@ -346,6 +618,14 @@ class UpdateService {
     
     if (updateInfo != null && updateInfo.updateAvailable) {
       await showUpdateDialog(context, updateInfo);
+    } else if (_lastCheckError != null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(_lastCheckError!),
+          backgroundColor: Colors.red.shade700,
+          duration: const Duration(seconds: 10),
+        ),
+      );
     } else if (showNoUpdateMessage) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -379,7 +659,7 @@ class _UpdateDialogState extends State<_UpdateDialog> {
   @override
   Widget build(BuildContext context) {
     return PopScope(
-      canPop: widget.canDismiss && !_isDownloading,
+      canPop: (widget.canDismiss || _error != null) && !_isDownloading,
       child: AlertDialog(
         backgroundColor: const Color(0xFF1E1E2E),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
@@ -388,7 +668,7 @@ class _UpdateDialogState extends State<_UpdateDialog> {
             Container(
               padding: const EdgeInsets.all(8),
               decoration: BoxDecoration(
-                color: Colors.blue.withOpacity(0.2),
+                color: Colors.blue.withValues(alpha: 0.2),
                 borderRadius: BorderRadius.circular(8),
               ),
               child: const Icon(Icons.system_update, color: Colors.blue, size: 28),
@@ -489,9 +769,10 @@ class _UpdateDialogState extends State<_UpdateDialog> {
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                   decoration: BoxDecoration(
-                    color: Colors.red.withOpacity(0.2),
+                    color: Colors.red.withValues(alpha: 0.2),
                     borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: Colors.red.withOpacity(0.5)),
+                    border:
+                        Border.all(color: Colors.red.withValues(alpha: 0.5)),
                   ),
                   child: const Row(
                     children: [
@@ -533,7 +814,7 @@ class _UpdateDialogState extends State<_UpdateDialog> {
                 Container(
                   padding: const EdgeInsets.all(8),
                   decoration: BoxDecoration(
-                    color: Colors.red.withOpacity(0.2),
+                    color: Colors.red.withValues(alpha: 0.2),
                     borderRadius: BorderRadius.circular(8),
                   ),
                   child: Row(
@@ -554,12 +835,26 @@ class _UpdateDialogState extends State<_UpdateDialog> {
           ),
         ),
         actions: [
-          if (widget.canDismiss && !_isDownloading)
+          if ((widget.canDismiss || _error != null) && !_isDownloading)
             TextButton(
               onPressed: () => Navigator.of(context).pop(),
-              child: const Text('Más tarde', style: TextStyle(color: Colors.white54)),
+              child: Text(
+                _error == null ? 'Más tarde' : 'Continuar sin actualizar',
+                style: const TextStyle(color: Colors.white54),
+              ),
             ),
-          
+
+          if (_error != null &&
+              widget.updateInfo.downloadUrl != null &&
+              !_isDownloading)
+            TextButton.icon(
+              onPressed: () => UpdateService.openDownloadUrl(
+                widget.updateInfo.downloadUrl!,
+              ),
+              icon: const Icon(Icons.open_in_browser),
+              label: const Text('Abrir descarga manual'),
+            ),
+
           if (!_isDownloading)
             ElevatedButton.icon(
               onPressed: _downloadAndInstall,
@@ -596,13 +891,9 @@ class _UpdateDialogState extends State<_UpdateDialog> {
       if (!success && mounted) {
         setState(() {
           _isDownloading = false;
-          _error = 'Error al descargar la actualización. Intente abrir el enlace manualmente.';
+          _error = UpdateService.lastDownloadError ??
+              'No se pudo descargar la actualización.';
         });
-        
-        // Si hay URL de descarga, ofrecerla como alternativa
-        if (widget.updateInfo.downloadUrl != null) {
-          await UpdateService.openDownloadUrl(widget.updateInfo.downloadUrl!);
-        }
       }
     } catch (e) {
       if (mounted) {

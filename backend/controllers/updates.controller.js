@@ -6,6 +6,7 @@ const fs = require('fs');
 exports.checkForUpdates = async (req, res, next) => {
   try {
     const { currentVersion } = req.query;
+    const appKey = (req.query.app || '').toString().trim().toLowerCase();
     
     if (!currentVersion) {
       return res.status(400).json({ 
@@ -14,6 +15,13 @@ exports.checkForUpdates = async (req, res, next) => {
       });
     }
     
+    // app_versions es compartida por varias aplicaciones. Cuando Control
+    // Inventario consulta, limitar por el nombre real de su instalador para no
+    // devolver releases de Control de Almacén u otros productos.
+    const appFilter = appKey === 'control_inventario_smd'
+      ? "AND LOCATE('control_inventario_smd_setup_v', LOWER(download_url)) > 0 AND LOWER(download_url) LIKE '%.exe'"
+      : '';
+
     // Obtener la versión más reciente activa
     const [rows] = await pool.query(`
       SELECT 
@@ -25,6 +33,7 @@ exports.checkForUpdates = async (req, res, next) => {
         min_version
       FROM app_versions 
       WHERE is_active = TRUE
+      ${appFilter}
       ORDER BY release_date DESC
       LIMIT 1
     `);

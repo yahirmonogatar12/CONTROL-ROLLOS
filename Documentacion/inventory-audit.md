@@ -1,6 +1,6 @@
 # Inventory Audit (Auditoria de Inventario)
 
-> **Ultima actualizacion:** Enero 2026
+> **Ultima actualizacion:** Julio 2026
 
 Este documento describe el flujo real de auditoria de inventario segun la implementacion en backend (`backend/controllers/audit.controller.js`) y los datos en la base de datos.
 
@@ -16,7 +16,8 @@ Validar fisicamente el inventario por ubicacion y registrar discrepancias. Al fi
 
 1. **Supervisor (PC) inicia auditoria**
    - Se crea una nueva auditoria con status `InProgress`.
-   - Se generan ubicaciones a auditar a partir de `control_material_almacen`.
+   - Se generan ubicaciones a auditar a partir del catálogo físico persistente
+     y del inventario activo.
 2. **Operadores (movil) escanean ubicaciones y materiales**
    - Cada ubicacion pasa de `Pending` a `InProgress`.
    - Cada material escaneado se marca como `Found`.
@@ -38,7 +39,25 @@ Al iniciar la auditoria se incluyen SOLO materiales activos:
 - `tiene_salida = 0 o NULL`
 - `ubicacion_salida` no nula y no vacia
 
-Las ubicaciones se agrupan por `ubicacion_salida` y se almacenan en `inventory_audit_location`.
+Las ubicaciones se agrupan por `ubicacion_salida` y se almacenan en
+`inventory_audit_location_smd`. Además, `inventory_location_catalog_smd`
+conserva ubicaciones vacías o nuevas escaneadas por el operador, para que las
+auditorías posteriores también las incluyan.
+
+Una ubicación que no estaba precargada se crea automáticamente al escanear su
+QR. Si no contiene materiales, el operador puede confirmarla como vacía.
+
+## Cantidad física y material nuevo
+
+- El operador puede registrar una etiqueta con su cantidad física desde el
+  resumen móvil de la ubicación.
+- La cantidad esperada permanece en `cantidad_snapshot`; la observada se guarda
+  en `physical_quantity` para conservar la comparación histórica.
+- Si la cantidad física es distinta, el inventario se sincroniza mediante un
+  movimiento en `inventory_adjustment_smd`.
+- Si la etiqueta no existe, se solicitan número de parte y lote, se crea la
+  entrada en `control_material_almacen_smd` y se da de alta el lote en
+  `inventario_lotes_smd` dentro de la misma transacción.
 
 ---
 
@@ -77,6 +96,7 @@ Las ubicaciones se agrupan por `ubicacion_salida` y se almacenan en `inventory_a
 ### Operaciones Movil
 - `POST /api/audit/scan-location` - iniciar ubicacion
 - `POST /api/audit/scan-item` - escanear material
+- `POST /api/audit/physical-item` - capturar cantidad física o dar de alta material
 - `POST /api/audit/mark-missing` - marcar faltante
 - `POST /api/audit/complete-location` - completar ubicacion
 

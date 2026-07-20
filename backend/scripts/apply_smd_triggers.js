@@ -6,6 +6,10 @@ const fs = require('fs');
 const path = require('path');
 require('dotenv').config({ path: path.resolve(__dirname, '..', '.env') });
 const { pool } = require('../config/database');
+const {
+  enforceUniqueSmdInventoryLots,
+  enforceNonNegativeSmdInventory
+} = require('../utils/dbMigrations');
 
 const SQL_PATH = path.resolve(__dirname, '..', 'sql', 'apply_smd_triggers.sql');
 
@@ -131,29 +135,6 @@ BEGIN
 END;`
       },
       {
-        name: 'trg_salida_ai_smd',
-        sql: `DROP TRIGGER IF EXISTS trg_salida_ai_smd; CREATE TRIGGER trg_salida_ai_smd
-AFTER INSERT ON control_material_salida_smd
-FOR EACH ROW
-INSERT INTO inventario_lotes_smd (
-  codigo_material_recibido,
-  numero_parte,
-  numero_lote,
-  total_salida,
-  ultima_salida
-)
-VALUES (
-  NEW.codigo_material_recibido,
-  NEW.numero_parte,
-  NEW.numero_lote,
-  NEW.cantidad_salida,
-  NEW.fecha_salida
-)
-ON DUPLICATE KEY UPDATE
-  total_salida  = total_salida + NEW.cantidad_salida,
-  ultima_salida = GREATEST(ultima_salida, NEW.fecha_salida);`
-      },
-      {
         name: 'trg_return_ai_smd',
         sql: `DROP TRIGGER IF EXISTS trg_return_ai_smd; CREATE TRIGGER trg_return_ai_smd
 AFTER INSERT ON material_return_smd
@@ -180,6 +161,11 @@ END;`
       await conn.query(createOnly);
       console.log('  ✔ asegurado:', tdef.name);
     }
+
+    // Consolida etiquetas e instala el trigger de salida atómico y los
+    // invariantes. También reemplaza cualquier trg_salida_ai_smd heredado.
+    await enforceUniqueSmdInventoryLots();
+    await enforceNonNegativeSmdInventory();
 
     // Verificar
     const [rows] = await conn.query(

@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:material_warehousing_flutter/core/localization/app_translations.dart';
 import 'package:material_warehousing_flutter/core/services/api_service.dart';
 import 'package:material_warehousing_flutter/core/services/auth_service.dart';
+import 'package:material_warehousing_flutter/core/constants/pcb_areas.dart';
 import 'package:material_warehousing_flutter/core/theme/app_colors.dart';
 import 'package:material_warehousing_flutter/core/widgets/field_decoration.dart';
 
@@ -36,7 +37,7 @@ class _MobilePcbEntryScreenState extends State<MobilePcbEntryScreen> {
   final FocusNode _scanFocusNode = FocusNode();
 
   String _selectedProceso = 'SMD';
-  String _selectedArea = 'INVENTARIO';
+  String _selectedArea = PcbAreas.inventory;
   String? _selectedDefectType;
   List<Map<String, dynamic>> _defects = [];
   DateTime _inventoryDate = DateTime.now();
@@ -50,10 +51,11 @@ class _MobilePcbEntryScreenState extends State<MobilePcbEntryScreen> {
   int _pendingInventoryRemaining = 0;
   String? _pendingArrayGroupCode;
   String? _pendingArrayParentCode;
-  String _pendingArrayTargetArea = 'INVENTARIO';
+  String _pendingArrayTargetArea = PcbAreas.inventory;
+  String _pendingRepairArea = PcbAreas.repair;
 
   static const List<String> _procesos = ['SMD', 'IMD', 'ASSY'];
-  static const List<String> _areas = ['INVENTARIO', 'REPARACION'];
+  static const List<String> _areas = PcbAreas.values;
 
   String tr(String key) => widget.languageProvider.tr(key);
 
@@ -97,8 +99,6 @@ class _MobilePcbEntryScreenState extends State<MobilePcbEntryScreen> {
       final savedProcess = prefs.getString('mobile_pcb_entry_last_process');
       final savedArea = prefs.getString('mobile_pcb_entry_last_area');
       final savedComment = prefs.getString('mobile_pcb_entry_last_comment');
-      final savedArrayCount =
-          prefs.getString('mobile_pcb_entry_last_array_count');
       final savedRepairCount =
           prefs.getString('mobile_pcb_entry_last_repair_count');
       final savedDefectType =
@@ -114,10 +114,6 @@ class _MobilePcbEntryScreenState extends State<MobilePcbEntryScreen> {
             _selectedArea = savedArea;
           }
           if (savedComment != null) _commentController.text = savedComment;
-          if (savedArrayCount != null &&
-              (int.tryParse(savedArrayCount) ?? 0) > 0) {
-            _arrayCountController.text = savedArrayCount;
-          }
           if (savedRepairCount != null &&
               (int.tryParse(savedRepairCount) ?? 0) > 0) {
             _repairCountController.text = savedRepairCount;
@@ -140,8 +136,7 @@ class _MobilePcbEntryScreenState extends State<MobilePcbEntryScreen> {
       await prefs.setString('mobile_pcb_entry_last_area', _selectedArea);
       await prefs.setString(
           'mobile_pcb_entry_last_comment', _commentController.text);
-      await prefs.setString(
-          'mobile_pcb_entry_last_array_count', _arrayCountController.text);
+      await prefs.remove('mobile_pcb_entry_last_array_count');
       await prefs.setString(
           'mobile_pcb_entry_last_repair_count', _repairCountController.text);
       if (_selectedDefectType != null) {
@@ -171,14 +166,15 @@ class _MobilePcbEntryScreenState extends State<MobilePcbEntryScreen> {
   }
 
   int _getRepairCount() {
-    if (_selectedArea != 'REPARACION') return 0;
+    if (!PcbAreas.isRepair(_selectedArea)) return 0;
     final value = int.tryParse(_repairCountController.text.trim()) ?? 1;
     return value < 1 ? 1 : value;
   }
 
   void _updatePendingArrayTargetArea() {
-    _pendingArrayTargetArea =
-        _pendingRepairRemaining > 0 ? 'REPARACION' : 'INVENTARIO';
+    _pendingArrayTargetArea = _pendingRepairRemaining > 0
+        ? _pendingRepairArea
+        : PcbAreas.inventory;
   }
 
   String _normalizePcbCode(String code) =>
@@ -195,13 +191,15 @@ class _MobilePcbEntryScreenState extends State<MobilePcbEntryScreen> {
   }
 
   void _clearPendingArray() {
+    _arrayCountController.text = '1';
     _pendingArrayRemaining = 0;
     _pendingArrayCount = 1;
     _pendingRepairRemaining = 0;
     _pendingInventoryRemaining = 0;
     _pendingArrayGroupCode = null;
     _pendingArrayParentCode = null;
-    _pendingArrayTargetArea = 'INVENTARIO';
+    _pendingArrayTargetArea = PcbAreas.inventory;
+    _pendingRepairArea = PcbAreas.repair;
   }
 
   void _cancelPendingArray() {
@@ -220,12 +218,11 @@ class _MobilePcbEntryScreenState extends State<MobilePcbEntryScreen> {
     final arrayCount = isArrayItem ? _pendingArrayCount : _getArrayCount();
     final repairCount = isArrayItem ? 0 : _getRepairCount();
     final effectiveArea = isArrayItem ? _pendingArrayTargetArea : _selectedArea;
-    final isRepairEntry = effectiveArea == 'REPARACION';
+    final isRepairEntry = PcbAreas.isRepair(effectiveArea);
     final arrayGroupCode =
         isArrayItem ? _pendingArrayGroupCode : _normalizePcbCode(code);
-    final arrayRole = arrayCount > 1
-        ? (effectiveArea == 'REPARACION' ? 'DEFECT' : 'ARRAY_ITEM')
-        : 'SINGLE';
+    final arrayRole =
+        arrayCount > 1 ? (isRepairEntry ? 'DEFECT' : 'ARRAY_ITEM') : 'SINGLE';
 
     if (arrayCount > 99) {
       setState(() {
@@ -237,7 +234,7 @@ class _MobilePcbEntryScreenState extends State<MobilePcbEntryScreen> {
     }
 
     if (!isArrayItem &&
-        _selectedArea == 'REPARACION' &&
+        PcbAreas.isRepair(_selectedArea) &&
         (repairCount > arrayCount || repairCount < 1)) {
       setState(() {
         _statusMessage = tr('pcb_invalid_repair_count');
@@ -297,7 +294,8 @@ class _MobilePcbEntryScreenState extends State<MobilePcbEntryScreen> {
       final data = result['data'];
       String nextMessage;
       if (isArrayItem) {
-        if (effectiveArea == 'REPARACION' && _pendingRepairRemaining > 0) {
+        if (PcbAreas.isRepair(effectiveArea) &&
+            _pendingRepairRemaining > 0) {
           _pendingRepairRemaining -= 1;
         } else if (_pendingInventoryRemaining > 0) {
           _pendingInventoryRemaining -= 1;
@@ -311,13 +309,14 @@ class _MobilePcbEntryScreenState extends State<MobilePcbEntryScreen> {
         } else {
           _updatePendingArrayTargetArea();
           nextMessage =
-              '${tr('pcb_scan_saved')}: ${data?['pcb_part_no'] ?? ''} | ${tr('pcb_array_remaining')}: $_pendingArrayRemaining ($_pendingArrayTargetArea)';
+              '${tr('pcb_scan_saved')}: ${data?['pcb_part_no'] ?? ''} | ${tr('pcb_array_remaining')}: $_pendingArrayRemaining (${PcbAreas.label(_pendingArrayTargetArea)})';
         }
       } else if (arrayCount > 1) {
         _pendingArrayCount = arrayCount;
         _pendingArrayGroupCode = _normalizePcbCode(code);
         _pendingArrayParentCode = code;
-        if (_selectedArea == 'REPARACION') {
+        if (PcbAreas.isRepair(_selectedArea)) {
+          _pendingRepairArea = _selectedArea;
           _pendingRepairRemaining = repairCount - 1;
           _pendingInventoryRemaining = arrayCount - repairCount;
         } else {
@@ -328,7 +327,7 @@ class _MobilePcbEntryScreenState extends State<MobilePcbEntryScreen> {
             _pendingRepairRemaining + _pendingInventoryRemaining;
         _updatePendingArrayTargetArea();
         nextMessage =
-            '${tr('pcb_scan_saved')}: ${data?['pcb_part_no'] ?? ''} | ${tr('pcb_array_remaining')}: $_pendingArrayRemaining ($_pendingArrayTargetArea)';
+            '${tr('pcb_scan_saved')}: ${data?['pcb_part_no'] ?? ''} | ${tr('pcb_array_remaining')}: $_pendingArrayRemaining (${PcbAreas.label(_pendingArrayTargetArea)})';
       } else {
         nextMessage =
             '${tr('pcb_scan_saved')}: ${data?['pcb_part_no'] ?? ''} - ${data?['modelo'] ?? 'N/A'} (${data?['proceso'] ?? ''})';
@@ -387,8 +386,8 @@ class _MobilePcbEntryScreenState extends State<MobilePcbEntryScreen> {
   @override
   Widget build(BuildContext context) {
     final isRepairContext = _hasPendingArrayScans
-        ? _pendingArrayTargetArea == 'REPARACION'
-        : _selectedArea == 'REPARACION';
+        ? PcbAreas.isRepair(_pendingArrayTargetArea)
+        : PcbAreas.isRepair(_selectedArea);
 
     return Container(
       color: const Color(0xFF1A1E2C),
@@ -456,7 +455,7 @@ class _MobilePcbEntryScreenState extends State<MobilePcbEntryScreen> {
                   ),
                 ),
                 Text(
-                  '${tr('pcb_scan_remaining_array')} ($_pendingArrayTargetArea)',
+                  '${tr('pcb_scan_remaining_array')} (${PcbAreas.label(_pendingArrayTargetArea)})',
                   style: const TextStyle(color: Colors.white70, fontSize: 12),
                 ),
               ],
@@ -573,6 +572,7 @@ class _MobilePcbEntryScreenState extends State<MobilePcbEntryScreen> {
           label: tr('pcb_area'),
           value: _selectedArea,
           items: _areas,
+          itemLabel: PcbAreas.label,
           enabled: !_hasPendingArrayScans,
           onChanged: (val) {
             if (val != null) {
@@ -602,7 +602,8 @@ class _MobilePcbEntryScreenState extends State<MobilePcbEntryScreen> {
           child: _buildLabeledTextField(
             label: tr('pcb_repair_count'),
             controller: _repairCountController,
-            enabled: !_hasPendingArrayScans && _selectedArea == 'REPARACION',
+            enabled: !_hasPendingArrayScans &&
+                PcbAreas.isRepair(_selectedArea),
             keyboardType: TextInputType.number,
             inputFormatters: [FilteringTextInputFormatter.digitsOnly],
           ),
@@ -763,6 +764,7 @@ class _MobilePcbEntryScreenState extends State<MobilePcbEntryScreen> {
     required ValueChanged<String?> onChanged,
     bool enabled = true,
     String? hint,
+    String Function(String)? itemLabel,
   }) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -782,7 +784,8 @@ class _MobilePcbEntryScreenState extends State<MobilePcbEntryScreen> {
           items: items
               .map((v) => DropdownMenuItem(
                     value: v,
-                    child: Text(v, style: const TextStyle(fontSize: 14)),
+                    child: Text(itemLabel?.call(v) ?? v,
+                        style: const TextStyle(fontSize: 14)),
                   ))
               .toList(),
           onChanged: enabled ? onChanged : null,

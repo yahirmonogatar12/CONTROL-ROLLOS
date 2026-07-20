@@ -86,30 +86,124 @@ BEGIN
 END$$
 DELIMITER ;
 
--- 4) Trigger: control_material_salida_smd (EXIT) - INSERT
-DROP TRIGGER IF EXISTS trg_salida_ai_smd;
-DELIMITER $$
-CREATE TRIGGER trg_salida_ai_smd
-AFTER INSERT ON control_material_salida_smd
-FOR EACH ROW
-INSERT INTO inventario_lotes_smd (
+-- 4) Protección global: ningún lote puede quedar con stock negativo
+DROP TEMPORARY TABLE IF EXISTS tmp_inventory_smd_canonical;
+CREATE TEMPORARY TABLE tmp_inventory_smd_canonical (
+  codigo_material_recibido VARCHAR(128) NOT NULL PRIMARY KEY,
+  canonical_id BIGINT NOT NULL
+);
+
+INSERT INTO tmp_inventory_smd_canonical (
   codigo_material_recibido,
-  numero_parte,
-  numero_lote,
-  total_salida,
-  ultima_salida
+  canonical_id
 )
-VALUES (
-  NEW.codigo_material_recibido,
-  NEW.numero_parte,
-  NEW.numero_lote,
-  NEW.cantidad_salida,
-  NEW.fecha_salida
-)
-ON DUPLICATE KEY UPDATE
-  total_salida  = total_salida + NEW.cantidad_salida,
-  ultima_salida = GREATEST(ultima_salida, NEW.fecha_salida);
-$$
+SELECT
+  il.codigo_material_recibido,
+  COALESCE(
+    MAX(CASE WHEN cma.id IS NOT NULL THEN il.id END),
+    MAX(il.id)
+  )
+FROM inventario_lotes_smd il
+LEFT JOIN control_material_almacen_smd cma
+  ON cma.codigo_material_recibido = il.codigo_material_recibido
+ AND cma.numero_parte = il.numero_parte
+ AND cma.numero_lote_material <=> il.numero_lote
+GROUP BY il.codigo_material_recibido
+HAVING COUNT(DISTINCT il.id) > 1;
+
+DELETE duplicate_lot
+FROM inventario_lotes_smd duplicate_lot
+JOIN tmp_inventory_smd_canonical canonical
+  ON canonical.codigo_material_recibido = duplicate_lot.codigo_material_recibido
+WHERE duplicate_lot.id <> canonical.canonical_id;
+
+SET @unique_code_index_exists = (
+  SELECT COUNT(*)
+  FROM INFORMATION_SCHEMA.STATISTICS
+  WHERE TABLE_SCHEMA = DATABASE()
+    AND TABLE_NAME = 'inventario_lotes_smd'
+    AND INDEX_NAME = 'uk_inv_codigo_material_smd'
+);
+SET @unique_code_index_sql = IF(
+  @unique_code_index_exists = 0,
+  'CREATE UNIQUE INDEX uk_inv_codigo_material_smd ON inventario_lotes_smd (codigo_material_recibido)',
+  'SELECT 1'
+);
+PREPARE unique_code_index_stmt FROM @unique_code_index_sql;
+EXECUTE unique_code_index_stmt;
+DEALLOCATE PREPARE unique_code_index_stmt;
+
+UPDATE inventario_lotes_smd
+SET
+  total_entrada = GREATEST(COALESCE(total_entrada, 0), 0),
+  total_salida = LEAST(
+    GREATEST(COALESCE(total_salida, 0), 0),
+    GREATEST(COALESCE(total_entrada, 0), 0)
+  )
+WHERE total_entrada IS NULL
+   OR total_salida IS NULL
+   OR total_entrada < 0
+   OR total_salida < 0
+   OR total_salida > total_entrada;
+
+DROP TRIGGER IF EXISTS trg_salida_ai_smd;
+DROP TRIGGER IF EXISTS trg_salida_bi_guard_smd;
+DROP TRIGGER IF EXISTS trg_inventario_lotes_bi_nonnegative_smd;
+DROP TRIGGER IF EXISTS trg_inventario_lotes_bu_nonnegative_smd;
+
+DELIMITER $$
+CREATE TRIGGER trg_inventario_lotes_bi_nonnegative_smd
+BEFORE INSERT ON inventario_lotes_smd
+FOR EACH ROW
+BEGIN
+  IF COALESCE(NEW.total_entrada, 0) < 0
+     OR COALESCE(NEW.total_salida, 0) < 0
+     OR COALESCE(NEW.total_salida, 0) > COALESCE(NEW.total_entrada, 0) THEN
+    SIGNAL SQLSTATE '45000'
+      SET MESSAGE_TEXT = 'NEGATIVE_STOCK_NOT_ALLOWED_SMD';
+  END IF;
+END$$
+
+CREATE TRIGGER trg_inventario_lotes_bu_nonnegative_smd
+BEFORE UPDATE ON inventario_lotes_smd
+FOR EACH ROW
+BEGIN
+  IF COALESCE(NEW.total_entrada, 0) < 0
+     OR COALESCE(NEW.total_salida, 0) < 0
+     OR COALESCE(NEW.total_salida, 0) > COALESCE(NEW.total_entrada, 0) THEN
+    SIGNAL SQLSTATE '45000'
+      SET MESSAGE_TEXT = 'NEGATIVE_STOCK_NOT_ALLOWED_SMD';
+  END IF;
+END$$
+
+CREATE TRIGGER trg_salida_bi_guard_smd
+BEFORE INSERT ON control_material_salida_smd
+FOR EACH ROW
+BEGIN
+  IF NEW.cantidad_salida IS NULL OR NEW.cantidad_salida < 0 THEN
+    SIGNAL SQLSTATE '45000'
+      SET MESSAGE_TEXT = 'INVALID_OUTGOING_QUANTITY_SMD';
+  END IF;
+
+  IF NEW.cantidad_salida > 0 THEN
+    UPDATE inventario_lotes_smd
+    SET
+      total_salida = total_salida + NEW.cantidad_salida,
+      ultima_salida = CASE
+        WHEN NEW.fecha_salida IS NULL THEN ultima_salida
+        WHEN ultima_salida IS NULL OR NEW.fecha_salida > ultima_salida
+          THEN NEW.fecha_salida
+        ELSE ultima_salida
+      END
+    WHERE codigo_material_recibido = NEW.codigo_material_recibido
+      AND (total_entrada - total_salida) >= NEW.cantidad_salida;
+
+    IF ROW_COUNT() = 0 THEN
+      SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'INSUFFICIENT_STOCK_SMD';
+    END IF;
+  END IF;
+END$$
 DELIMITER ;
 
 -- 5) Trigger: material_return_smd (RETURN) - INSERT (adaptado a columnas _smd)
@@ -122,9 +216,7 @@ BEGIN
   -- ajustar total_salida en inventario_lotes_smd cuando hay devolución
   UPDATE inventario_lotes_smd
   SET total_salida = GREATEST(0, total_salida - NEW.return_qty)
-  WHERE codigo_material_recibido = NEW.material_warehousing_code
-    AND numero_parte = NEW.part_number
-    AND numero_lote = NEW.material_lot_no;
+  WHERE codigo_material_recibido = NEW.material_warehousing_code;
 END$$
 DELIMITER ;
 

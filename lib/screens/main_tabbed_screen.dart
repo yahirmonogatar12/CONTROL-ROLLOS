@@ -22,6 +22,8 @@ import 'package:material_warehousing_flutter/screens/pcb_salida/pcb_salida_scree
 import 'package:material_warehousing_flutter/screens/pcb_inventario/pcb_inventario_screen.dart';
 import 'package:material_warehousing_flutter/screens/pcb_bom/pcb_bom_screen.dart';
 import 'package:material_warehousing_flutter/screens/pcb_defects/pcb_defects_screen.dart';
+import 'package:material_warehousing_flutter/screens/scrap/scrap_screen.dart';
+import 'package:material_warehousing_flutter/screens/scrap_motivos/scrap_motivos_screen.dart';
 import 'package:material_warehousing_flutter/screens/smt_requests/smt_requests_screen.dart';
 import 'package:material_warehousing_flutter/core/widgets/smt_notification_overlay.dart';
 import 'dart:async';
@@ -257,6 +259,22 @@ class _MainTabbedScreenState extends State<MainTabbedScreen> {
       _visibleTabs.add(_TabInfo(
         key: 'pcb_defects',
         titleKey: 'pcb_defects_title',
+      ));
+    }
+
+    // Control de Scrap - áreas de producción/calidad + acceso total.
+    if (AuthService.canViewScrap) {
+      _visibleTabs.add(_TabInfo(
+        key: 'scrap_control',
+        titleKey: 'scrap_control_title',
+      ));
+    }
+
+    // Catálogo compartido de defectos de Scrap.
+    if (AuthService.canManageScrapMotivos) {
+      _visibleTabs.add(_TabInfo(
+        key: 'scrap_motivos',
+        titleKey: 'scrap_motivos_title',
       ));
     }
 
@@ -516,6 +534,16 @@ class _MainTabbedScreenState extends State<MainTabbedScreen> {
       case 'pcb_defects':
         return PcbDefectsScreen(
           key: ValueKey('pcb_defects_$currentLocale'),
+          languageProvider: widget.languageProvider,
+        );
+      case 'scrap_control':
+        return ScrapScreen(
+          key: ValueKey('scrap_control_$currentLocale'),
+          languageProvider: widget.languageProvider,
+        );
+      case 'scrap_motivos':
+        return ScrapMotivosScreen(
+          key: ValueKey('scrap_motivos_$currentLocale'),
           languageProvider: widget.languageProvider,
         );
       case 'inventory_audit':

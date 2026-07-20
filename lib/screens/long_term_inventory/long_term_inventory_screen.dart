@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:material_warehousing_flutter/core/localization/app_translations.dart';
 import 'package:material_warehousing_flutter/core/theme/app_colors.dart';
 import 'package:material_warehousing_flutter/core/services/api_service.dart';
+import 'package:material_warehousing_flutter/core/services/auth_service.dart';
 import 'package:material_warehousing_flutter/core/services/excel_export_service.dart';
 import 'package:material_warehousing_flutter/core/widgets/grid_footer.dart';
 import 'package:material_warehousing_flutter/core/widgets/resizable_grid_header.dart';
@@ -15,7 +16,6 @@ class LongTermInventoryScreen extends StatefulWidget {
   @override
   State<LongTermInventoryScreen> createState() => LongTermInventoryScreenState();
 }
-
 class LongTermInventoryScreenState extends State<LongTermInventoryScreen> with SingleTickerProviderStateMixin, ResizableColumnsMixin {
   late TabController _tabController;
   
@@ -157,6 +157,271 @@ class LongTermInventoryScreenState extends State<LongTermInventoryScreen> with S
     }
   }
   
+
+  void _showSnackBar(String message, {Color? backgroundColor}) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: backgroundColor,
+        duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+
+  double _readQuantity(dynamic value) =>
+      double.tryParse(value?.toString() ?? '') ?? 0;
+
+  String _formatQuantity(dynamic value) {
+    final quantity = _readQuantity(value);
+    if ((quantity - quantity.roundToDouble()).abs() < 0.001) {
+      return quantity.toStringAsFixed(0);
+    }
+    final fixed = quantity.toStringAsFixed(2);
+    return fixed.endsWith('0')
+        ? fixed.substring(0, fixed.length - 1)
+        : fixed;
+  }
+
+  String _currentUsername() {
+    final user = AuthService.currentUser;
+    if (user == null) return 'Sistema';
+    final fullName = user.nombreCompleto.trim();
+    return fullName.isNotEmpty ? fullName : user.username;
+  }
+
+  List<Map<String, String>> _buildDetailHeaders() {
+    final baseHeaders = [
+      {'label': tr('part_number'), 'field': 'numero_parte'},
+      {'label': tr('lot_number'), 'field': 'numero_lote'},
+      {'label': tr('material_warehousing_code'), 'field': 'codigo_material_recibido'},
+      {'label': tr('material_spec'), 'field': 'especificacion'},
+      {'label': tr('location'), 'field': 'ubicacion'},
+      {'label': tr('unit'), 'field': 'unidad_medida'},
+    ];
+    final movementHeaders = [
+      {'label': tr('total_in'), 'field': 'total_entrada'},
+      {'label': tr('total_out'), 'field': 'total_salida'},
+    ];
+    final finalHeaders = [
+      {'label': tr('current_stock'), 'field': 'stock_actual'},
+      {'label': tr('entry_date'), 'field': 'fecha_recibo'},
+      {'label': tr('exit_date'), 'field': 'fecha_salida'},
+      {'label': tr('entry_user'), 'field': 'usuario_entrada'},
+      {'label': tr('exit_user'), 'field': 'usuario_salida'},
+    ];
+    return _useDateRange
+        ? [...baseHeaders, ...movementHeaders, ...finalHeaders]
+        : [...baseHeaders, ...finalHeaders];
+  }
+
+  List<Map<String, dynamic>> _getDisplayedDetailData(
+      [List<Map<String, String>>? headers]) {
+    final effectiveHeaders = headers ?? _buildDetailHeaders();
+    if (_searchText.isEmpty) {
+      return List<Map<String, dynamic>>.from(_detailData);
+    }
+    return _detailData.where((row) {
+      return effectiveHeaders.any((header) {
+        final field = header['field']!;
+        final value = row[field]?.toString().toLowerCase() ?? '';
+        return value.contains(_searchText);
+      });
+    }).toList();
+  }
+
+  List<Map<String, dynamic>> _getSelectedDetailRows() {
+    final displayed = _getDisplayedDetailData();
+    final indices = _selectedDetailIndices.toList()..sort();
+    return indices
+        .where((index) => index >= 0 && index < displayed.length)
+        .map((index) => displayed[index])
+        .toList();
+  }
+
+  Future<void> _openAdjustInventoryDialog() async {
+    if (!AuthService.canWriteInventoryAdjustment) {
+      _showSnackBar(tr('no_permission'), backgroundColor: Colors.red);
+      return;
+    }
+    if (_tabController.index != 1 || _useDateRange) {
+      _showSnackBar(tr('adjust_current_mode_only'),
+          backgroundColor: Colors.orange);
+      return;
+    }
+
+    final selectedRows = _getSelectedDetailRows();
+    if (selectedRows.length != 1) {
+      _showSnackBar(tr('select_single_row'), backgroundColor: Colors.orange);
+      return;
+    }
+
+    final row = selectedRows.first;
+    final currentStock = _readQuantity(row['stock_actual']);
+    final unit = row['unidad_medida']?.toString() ?? 'EA';
+    final targetController =
+        TextEditingController(text: _formatQuantity(currentStock));
+    final reasonController = TextEditingController();
+
+    final payload = await showDialog<Map<String, dynamic>>(
+      context: context,
+      builder: (dialogContext) {
+        String? validationError;
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            final target = int.tryParse(targetController.text.trim());
+            final delta = target == null ? null : target - currentStock;
+            return AlertDialog(
+              backgroundColor: const Color(0xFF2D2D30),
+              title: Text(tr('adjust_stock'),
+                  style: const TextStyle(color: Colors.white, fontSize: 15)),
+              content: SizedBox(
+                width: 420,
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        '${tr('material_warehousing_code')}: ${row['codigo_material_recibido'] ?? ''}',
+                        style: const TextStyle(color: Colors.white70, fontSize: 12),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        '${tr('part_number')}: ${row['numero_parte'] ?? ''}',
+                        style: const TextStyle(color: Colors.white70, fontSize: 12),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        '${tr('lot_number')}: ${row['numero_lote'] ?? ''}',
+                        style: const TextStyle(color: Colors.white70, fontSize: 12),
+                      ),
+                      const SizedBox(height: 12),
+                      Text(
+                        '${tr('current_stock')}: ${_formatQuantity(currentStock)} $unit',
+                        style: const TextStyle(color: Colors.white, fontSize: 12),
+                      ),
+                      const SizedBox(height: 10),
+                      TextField(
+                        controller: targetController,
+                        keyboardType: const TextInputType.numberWithOptions(decimal: false),
+                        inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                        style: const TextStyle(color: Colors.white, fontSize: 12),
+                        decoration: InputDecoration(
+                          labelText: tr('target_stock'),
+                          labelStyle: const TextStyle(color: Colors.white70, fontSize: 12),
+                          filled: true,
+                          fillColor: AppColors.fieldBackground,
+                          border: const OutlineInputBorder(),
+                        ),
+                        onChanged: (_) =>
+                            setDialogState(() => validationError = null),
+                      ),
+                      const SizedBox(height: 10),
+                      TextField(
+                        controller: reasonController,
+                        maxLines: 2,
+                        maxLength: 255,
+                        style: const TextStyle(color: Colors.white, fontSize: 12),
+                        decoration: InputDecoration(
+                          labelText: tr('reason'),
+                          labelStyle: const TextStyle(color: Colors.white70, fontSize: 12),
+                          filled: true,
+                          fillColor: AppColors.fieldBackground,
+                          border: const OutlineInputBorder(),
+                        ),
+                        onChanged: (_) =>
+                            setDialogState(() => validationError = null),
+                      ),
+                      if (delta != null && delta != 0)
+                        Text(
+                          '${delta > 0 ? tr('entries') : tr('exits')}: '
+                          '${_formatQuantity(delta.abs())} $unit',
+                          style: TextStyle(
+                            color: delta > 0
+                                ? Colors.greenAccent
+                                : Colors.orangeAccent,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      if (validationError != null) ...[
+                        const SizedBox(height: 8),
+                        Text(validationError!,
+                            style: const TextStyle(color: Colors.red, fontSize: 12)),
+                      ],
+                    ],
+                  ),
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(dialogContext),
+                  child: Text(tr('cancel')),
+                ),
+                TextButton(
+                  onPressed: () {
+                    final target = int.tryParse(targetController.text.trim());
+                    final reason = reasonController.text.trim();
+                    if (target == null || target < 0) {
+                      setDialogState(() =>
+                          validationError = tr('invalid_target_stock'));
+                    } else if ((target - currentStock).abs() < 0.0001) {
+                      setDialogState(() =>
+                          validationError = tr('no_inventory_change'));
+                    } else if (reason.isEmpty) {
+                      setDialogState(() => validationError =
+                          tr('adjustment_reason_required'));
+                    } else {
+                      Navigator.pop(dialogContext, {
+                        'target_stock': target,
+                        'reason': reason,
+                      });
+                    }
+                  },
+                  child: Text(tr('save')),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    targetController.dispose();
+    reasonController.dispose();
+    if (payload == null) return;
+
+    final warehousingId = int.tryParse('${row['warehousing_id'] ?? ''}');
+    if (warehousingId == null) {
+      _showSnackBar(tr('invalid_target_stock'), backgroundColor: Colors.red);
+      return;
+    }
+
+    final user = AuthService.currentUser;
+    final response = await ApiService.adjustInventoryLot(
+      warehousingId: warehousingId,
+      codigoMaterialRecibido:
+          row['codigo_material_recibido']?.toString() ?? '',
+      targetStock: payload['target_stock'] as num,
+      reason: payload['reason'] as String,
+      usuarioRegistro: _currentUsername(),
+      usuarioRegistroId: user?.id,
+    );
+    if (!mounted) return;
+
+    if (response['success'] == true) {
+      await _loadSummaryData();
+      await _loadDetailData();
+      _showSnackBar(tr('adjustment_saved'), backgroundColor: Colors.green);
+    } else {
+      _showSnackBar(
+        response['error']?.toString() ?? tr('outgoing_error'),
+        backgroundColor: Colors.red,
+      );
+    }
+  }
+
   void _clearSearch() {
     _searchPartController.clear();
     _searchLabelController.clear();
@@ -971,6 +1236,23 @@ class LongTermInventoryScreenState extends State<LongTermInventoryScreen> with S
                 ),
               ],
               const Spacer(),
+              if (_tabController.index == 1 && !_useDateRange) ...[
+                SizedBox(
+                  height: 28,
+                  child: ElevatedButton(
+                    onPressed: _openAdjustInventoryDialog,
+                    style: ElevatedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                      backgroundColor: AuthService.canWriteInventoryAdjustment
+                          ? AppColors.buttonSave
+                          : AppColors.buttonGray,
+                    ),
+                    child: Text(tr('adjust_stock'),
+                        style: const TextStyle(fontSize: 11)),
+                  ),
+                ),
+                const SizedBox(width: 4),
+              ],
               // Botón Excel Export
               SizedBox(
                 height: 28,
@@ -1180,46 +1462,8 @@ class LongTermInventoryScreenState extends State<LongTermInventoryScreen> with S
   }
   
   Widget _buildDetailGrid() {
-    // Headers base
-    final baseHeaders = [
-      {'label': tr('part_number'), 'field': 'numero_parte'},
-      {'label': tr('lot_number'), 'field': 'numero_lote'},
-      {'label': tr('material_warehousing_code'), 'field': 'codigo_material_recibido'},
-      {'label': tr('material_spec'), 'field': 'especificacion'},
-      {'label': tr('location'), 'field': 'ubicacion'},
-      {'label': tr('unit'), 'field': 'unidad_medida'},
-    ];
-    
-    // Headers de entries/exits (solo en Date Range)
-    final entryExitHeaders = [
-      {'label': tr('total_in'), 'field': 'total_entrada'},
-      {'label': tr('total_out'), 'field': 'total_salida'},
-    ];
-    
-    // Headers finales
-    final finalHeaders = [
-      {'label': tr('current_stock'), 'field': 'stock_actual'},
-      {'label': tr('entry_date'), 'field': 'fecha_recibo'},
-      {'label': tr('exit_date'), 'field': 'fecha_salida'},
-      {'label': tr('entry_user'), 'field': 'usuario_entrada'},
-      {'label': tr('exit_user'), 'field': 'usuario_salida'},
-    ];
-    
-    // Combinar headers según el modo
-    final headers = _useDateRange 
-        ? [...baseHeaders, ...entryExitHeaders, ...finalHeaders]
-        : [...baseHeaders, ...finalHeaders];
-    
-    // Filtrar por búsqueda Ctrl+F
-    final displayData = _searchText.isEmpty
-        ? _detailData
-        : _detailData.where((row) {
-            return headers.any((h) {
-              final field = h['field'] as String;
-              final value = row[field]?.toString().toLowerCase() ?? '';
-              return value.contains(_searchText);
-            });
-          }).toList();
+    final headers = _buildDetailHeaders();
+    final displayData = _getDisplayedDetailData(headers);
     
     return Container(
       color: AppColors.gridBackground,

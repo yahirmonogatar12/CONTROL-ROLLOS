@@ -5,6 +5,7 @@ import 'package:material_warehousing_flutter/core/localization/app_translations.
 import 'package:material_warehousing_flutter/core/theme/app_colors.dart';
 import 'package:material_warehousing_flutter/core/widgets/server_config_widget.dart';
 import 'package:material_warehousing_flutter/screens/mobile/mobile_entry_screen.dart';
+import 'package:material_warehousing_flutter/screens/mobile/mobile_outgoing_screen.dart';
 import 'package:material_warehousing_flutter/screens/mobile/mobile_inventory_screen.dart';
 import 'package:material_warehousing_flutter/screens/mobile/mobile_reentry_screen.dart';
 import 'package:material_warehousing_flutter/screens/mobile/mobile_return_screen.dart';
@@ -15,7 +16,7 @@ import 'package:material_warehousing_flutter/screens/mobile/mobile_pcb_exit_scre
 import 'package:material_warehousing_flutter/screens/mobile/mobile_pcb_inventory_screen.dart';
 
 /// Scaffold principal para la app móvil
-/// Navegación: Entry, Inventory, Return, Reentry, Audit
+/// Navegación: Entry, Outgoing, Inventory, Return, Reentry, Audit
 class MobileHomeScaffold extends StatefulWidget {
   final LanguageProvider languageProvider;
   final VoidCallback onLogout;
@@ -94,6 +95,17 @@ class _MobileHomeScaffoldState extends State<MobileHomeScaffold> {
           builder: () =>
               MobileEntryScreen(languageProvider: widget.languageProvider),
           isAllowed: () => AuthService.canWriteWarehousing,
+        ),
+        _TabDef(
+          // Se conserva el índice de los módulos existentes para que los
+          // cambios de permisos no alteren la pantalla seleccionada.
+          index: 9,
+          icon: Icons.output,
+          label: tr('nav_outgoing'),
+          title: tr('nav_outgoing'),
+          builder: () =>
+              MobileOutgoingScreen(languageProvider: widget.languageProvider),
+          isAllowed: () => AuthService.canWriteOutgoing,
         ),
         _TabDef(
           index: 1,

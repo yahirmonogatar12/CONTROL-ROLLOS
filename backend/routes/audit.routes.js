@@ -41,8 +41,15 @@ router.get('/location-items', controller.getLocationItems);
 // Escanear ubicacion (inicia verificacion en esa ubicacion)
 router.post('/scan-location', controller.scanLocation);
 
+// Reabrir ubicaciones/partes cerradas desde móvil
+router.post('/reopen-location', controller.reopenLocation);
+router.post('/reopen-part', controller.reopenPart);
+
 // Escanear material (marca Found)
 router.post('/scan-item', controller.scanItem);
+
+// Registrar conteo físico, ajustar cantidad o dar de alta material encontrado
+router.post('/physical-item', controller.registerPhysicalItem);
 
 // Marcar material como no encontrado (Missing)
 router.post('/mark-missing', controller.markMissing);
@@ -65,6 +72,9 @@ router.post('/flag-mismatch', controller.flagMismatch);
 
 // Escanear etiqueta individual de una parte en Mismatch
 router.post('/scan-part-item', controller.scanPartItem);
+
+// Deshacer una discrepancia o confirmarla como OK
+router.post('/undo-mismatch', controller.undoMismatch);
 
 // Confirmar faltantes de una parte en Mismatch
 router.post('/confirm-missing', controller.confirmMissing);

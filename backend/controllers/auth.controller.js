@@ -389,6 +389,7 @@ exports.getAvailablePermissions = async (req, res, next) => {
       { key: 'view_outgoing', name: 'Ver Salidas', category: 'Almacén', description: 'Puede ver el módulo de salidas de material' },
       { key: 'write_outgoing', name: 'Editar Salidas', category: 'Almacén', description: 'Puede crear/editar salidas de material' },
       { key: 'view_inventory', name: 'Ver Inventario', category: 'Almacén', description: 'Puede ver el inventario' },
+      { key: 'write_inventory_adjustment', name: 'Ajustar Inventario Actual', category: 'Almacén', description: 'Puede editar la cantidad actual de los lotes SMD' },
       { key: 'view_material_return', name: 'Ver Devoluciones', category: 'Almacén', description: 'Puede ver el módulo de devoluciones de material' },
       { key: 'write_material_return', name: 'Crear Devoluciones', category: 'Almacén', description: 'Puede crear devoluciones de material' },
       { key: 'approve_cancellation', name: 'Aprobar Cancelaciones', category: 'Almacén', description: 'Puede aprobar/rechazar solicitudes de cancelación de entradas' },
@@ -420,6 +421,10 @@ exports.getAvailablePermissions = async (req, res, next) => {
       { key: 'view_pcb_salida', name: 'Ver PCB Salida', category: 'Inventario PCB', description: 'Puede ver el módulo de salida de PCBs' },
       { key: 'view_pcb_inventario', name: 'Ver PCB Inventario', category: 'Inventario PCB', description: 'Puede ver el inventario actual de PCBs' },
       { key: 'view_pcb_bom', name: 'Ver BOM PCB', category: 'Inventario PCB', description: 'Puede consultar specs de componentes en el BOM PCB' },
+      { key: 'view_scrap', name: 'Ver Control Scrap', category: 'Scrap', description: 'Puede ver el modulo de control de scrap' },
+      { key: 'write_scrap', name: 'Registrar Scrap', category: 'Scrap', description: 'Puede registrar escaneos de scrap' },
+      { key: 'edit_scrap_history', name: 'Editar Historial Scrap', category: 'Scrap', description: 'Puede modificar registros historicos de scrap' },
+      { key: 'manage_scrap_motivos', name: 'Gestionar Catalogo de Defectos', category: 'Scrap', description: 'Puede ver y administrar el catalogo de defectos (motivos de scrap)' },
       { key: 'view_smt_requests', name: 'Ver Solicitudes SMT', category: 'SMT', description: 'Puede ver y surtir solicitudes de material de las líneas SMT' },
     ];
     res.json(permissions);

@@ -1,11 +1,12 @@
 /**
  * PCB Inventory Controller - Inventario de PCBs por escaneo
  * Soporta 3 tipos de movimiento: ENTRADA, SALIDA, SCRAP
- * Soporta 2 areas: INVENTARIO, REPARACION
+ * Soporta 3 areas: INVENTARIO, INVENTARIO_REPARACION, REPARACION
  * Soporta 3 procesos: SMD, IMD, ASSY
  * Pantalla Flutter: lib/screens/pcb_inventory/
  */
 
+const crypto = require('node:crypto');
 const { pool } = require('../config/database');
 
 // ============================================
@@ -59,6 +60,20 @@ function normalizeClientDateTime(value) {
 
 function normalizeCode(code) {
   return (code || '').trim().toUpperCase().replace(/\s+/g, '');
+}
+
+function getEntryLockName(scannedOriginalNorm) {
+  const hash = crypto
+    .createHash('sha256')
+    .update(scannedOriginalNorm)
+    .digest('hex')
+    .slice(0, 48);
+  return `pcb-entry:${hash}`;
+}
+
+function getEquivalentNormalizedCodes(scannedOriginalNorm) {
+  const canonical = scannedOriginalNorm.replace(/;+$/, '');
+  return [canonical, `${canonical};`];
 }
 
 function parseScannedCode(code) {
@@ -125,8 +140,12 @@ async function lookupModelosBatch(connection, pcbPartNos) {
 }
 
 const VALID_PROCESOS = ['SMD', 'IMD', 'ASSY'];
-const VALID_AREAS = ['INVENTARIO', 'REPARACION'];
+const VALID_AREAS = ['INVENTARIO', 'INVENTARIO_REPARACION', 'REPARACION'];
 const VALID_TIPOS = ['ENTRADA', 'SALIDA', 'SCRAP'];
+
+function isRepairArea(area) {
+  return area === 'INVENTARIO_REPARACION' || area === 'REPARACION';
+}
 
 function parseArrayCount(value) {
   const parsed = parseInt(value, 10);
@@ -202,11 +221,12 @@ const VALID_ARRAY_ROLES = ['SINGLE', 'DEFECT', 'ARRAY_ITEM'];
 // ============================================
 // POST /api/pcb-inventory/scan
 // Acepta tipo_movimiento: ENTRADA | SALIDA | SCRAP
-// Acepta area: INVENTARIO | REPARACION
+// Acepta area: INVENTARIO | INVENTARIO_REPARACION | REPARACION
 // Acepta proceso: SMD | IMD | ASSY
 // ============================================
 exports.scan = async (req, res, next) => {
   let connection;
+  let entryLockName;
   try {
     const {
       scanned_code,
@@ -319,16 +339,17 @@ exports.scan = async (req, res, next) => {
     const scannedOriginal = scanned_code.trim();
     const scannedOriginalNorm = normalizeCode(scanned_code);
     const arrayGroupCode = normalizeCode(array_group_code || scannedOriginal);
-    const roleVal = array_role || (arrayCount > 1 ? (areaVal === 'REPARACION' ? 'DEFECT' : 'ARRAY_ITEM') : 'SINGLE');
-    const defectTypeVal = areaVal === 'REPARACION' && defect_type
+    const repairArea = isRepairArea(areaVal);
+    const roleVal = array_role || (arrayCount > 1 ? (repairArea ? 'DEFECT' : 'ARRAY_ITEM') : 'SINGLE');
+    const defectTypeVal = repairArea && defect_type
       ? defect_type.toString().trim().toUpperCase()
       : null;
-    const componentLocationVal = areaVal === 'REPARACION' && component_location
+    const componentLocationVal = repairArea && component_location
       ? component_location.toString().trim().toUpperCase()
       : null;
     const VALID_ETAPAS = ['LQC', 'OQC', 'AIS'];
     let etapaDeteccionVal = null;
-    if (areaVal === 'REPARACION' && etapa_deteccion) {
+    if (repairArea && etapa_deteccion) {
       const etapaUpper = etapa_deteccion.toString().trim().toUpperCase();
       if (!VALID_ETAPAS.includes(etapaUpper)) {
         return res.status(400).json({
@@ -339,10 +360,10 @@ exports.scan = async (req, res, next) => {
       }
       etapaDeteccionVal = etapaUpper;
     }
-    const defectSourceAreaVal = areaVal === 'REPARACION' && defect_source_area
+    const defectSourceAreaVal = repairArea && defect_source_area
       ? defect_source_area.toString().trim()
       : null;
-    const defectDataIdVal = areaVal === 'REPARACION' && defect_data_id
+    const defectDataIdVal = repairArea && defect_data_id
       ? defect_data_id.toString().trim()
       : null;
     if (!VALID_ARRAY_ROLES.includes(roleVal)) {
@@ -356,7 +377,68 @@ exports.scan = async (req, res, next) => {
     connection = await pool.getConnection();
     await connection.beginTransaction();
 
-    if (tipo === 'ENTRADA' && areaVal === 'REPARACION') {
+    if (tipo === 'ENTRADA') {
+      entryLockName = getEntryLockName(scannedOriginalNorm);
+      const [lockRows] = await connection.query(
+        'SELECT GET_LOCK(?, 5) AS acquired',
+        [entryLockName]
+      );
+
+      if (Number(lockRows[0]?.acquired) !== 1) {
+        await connection.rollback();
+        return res.status(409).json({
+          success: false,
+          message: 'Otra captura de esta PCB esta en proceso. Intente nuevamente.',
+          code: 'PCB_ENTRY_BUSY',
+        });
+      }
+
+      const equivalentCodes = getEquivalentNormalizedCodes(scannedOriginalNorm);
+      const [balanceRows] = await connection.query(
+        `SELECT area, proceso, SUM(
+           CASE WHEN tipo_movimiento = 'ENTRADA' THEN qty
+                WHEN tipo_movimiento IN ('SALIDA', 'SCRAP') THEN -qty
+                ELSE 0 END
+         ) AS remaining_qty
+         FROM pcb_inventory_scan_smd
+         WHERE scanned_original_norm IN (?, ?)
+         GROUP BY area, proceso
+         HAVING remaining_qty > 0`,
+        equivalentCodes
+      );
+      const remainingQty = balanceRows.reduce(
+        (sum, row) => sum + Number(row.remaining_qty || 0),
+        0
+      );
+
+      if (remainingQty > 0) {
+        const [latestEntries] = await connection.query(
+          `SELECT id, inventory_date, area, proceso, array_group_code, created_at
+           FROM pcb_inventory_scan_smd
+           WHERE tipo_movimiento = 'ENTRADA'
+           AND scanned_original_norm IN (?, ?)
+           ORDER BY created_at DESC, id DESC
+           LIMIT 1`,
+          equivalentCodes
+        );
+        const latestEntry = latestEntries[0] || {};
+
+        await connection.rollback();
+        return res.status(409).json({
+          success: false,
+          message: `Esta PCB ya tiene una entrada activa. Stock pendiente: ${remainingQty}`,
+          code: 'PCB_ALREADY_IN_INVENTORY',
+          existing_id: latestEntry.id || null,
+          available_stock: remainingQty,
+          inventory_date: latestEntry.inventory_date || null,
+          area: latestEntry.area || null,
+          proceso: latestEntry.proceso || null,
+          array_group_code: latestEntry.array_group_code || null,
+        });
+      }
+    }
+
+    if (tipo === 'ENTRADA' && repairArea) {
       if (!defectTypeVal) {
         await connection.rollback();
         return res.status(400).json({
@@ -426,15 +508,25 @@ exports.scan = async (req, res, next) => {
 
         const knownQty = arrayEntries.reduce((sum, row) => sum + Number(row.qty || 0), 0);
         const expectedQty = Number(source.array_count || knownQty);
-        if (knownQty < expectedQty) {
-          await connection.rollback();
-          return res.status(409).json({
-            success: false,
-            message: `Array incompleto: registrados ${knownQty} de ${expectedQty}. Escanea todas las PCBs del array antes de dar salida.`,
-            code: 'ARRAY_INCOMPLETE',
-            known_qty: knownQty,
-            expected_qty: expectedQty,
-          });
+        const arrayWasIncomplete = knownQty < expectedQty;
+        const closedArrayCount = arrayWasIncomplete ? knownQty : expectedQty;
+        if (arrayWasIncomplete) {
+          // Cerrar el array con las PCB realmente vinculadas para poder dar
+          // salida a todas las capturadas, aunque faltaran escaneos.
+          await connection.query(
+            `UPDATE pcb_inventory_scan_smd
+             SET array_count = ?,
+                 array_role = CASE WHEN ? = 1 THEN 'SINGLE' ELSE array_role END
+             WHERE tipo_movimiento = 'ENTRADA'
+             AND array_group_code = ?`,
+            [closedArrayCount, closedArrayCount, source.array_group_code]
+          );
+          source.array_count = closedArrayCount;
+          if (closedArrayCount === 1) source.array_role = 'SINGLE';
+          for (const row of arrayEntries) {
+            row.array_count = closedArrayCount;
+            if (closedArrayCount === 1) row.array_role = 'SINGLE';
+          }
         }
 
         const [outRows] = await connection.query(
@@ -516,7 +608,9 @@ exports.scan = async (req, res, next) => {
           total_qty: pendingRows.reduce((sum, row) => sum + Number(row.remaining_qty || 0), 0),
           array_exit: true,
           array_group_code: source.array_group_code,
-          array_count: expectedQty,
+          array_count: closedArrayCount,
+          expected_array_count: expectedQty,
+          array_closed_incomplete: arrayWasIncomplete,
         });
       }
 
@@ -671,6 +765,11 @@ exports.scan = async (req, res, next) => {
     }
     next(err);
   } finally {
+    if (connection && entryLockName) {
+      try {
+        await connection.query('SELECT RELEASE_LOCK(?)', [entryLockName]);
+      } catch (_) {}
+    }
     if (connection) connection.release();
   }
 };

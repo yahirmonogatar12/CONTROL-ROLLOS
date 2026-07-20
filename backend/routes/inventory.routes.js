@@ -11,6 +11,9 @@ router.get('/summary', ctrl.getSummary);
 // GET /api/inventory/lots - Detalle de lotes
 router.get('/lots', ctrl.getLots);
 
+// POST /api/inventory/adjust - Ajustar stock actual de un lote
+router.post('/adjust', ctrl.adjustInventoryLot);
+
 // GET /api/inventory/search-label - Buscar por etiqueta
 router.get('/search-label', ctrl.searchByLabel);
 

@@ -61,7 +61,7 @@ async function applyMounterTrigger() {
     console.log('  2. Busca Barcode en control_material_almacen_smd (tiene_salida=0, cancelado=0)');
     console.log('  3. INSERT en control_material_salida_smd (depto=SMD, proceso=Mounter)');
     console.log('  4. UPDATE tiene_salida=1 en control_material_almacen_smd');
-    console.log('  5. trg_salida_ai_smd actualiza inventario_lotes_smd automaticamente');
+    console.log('  5. trg_salida_bi_guard_smd descuenta inventario sin permitir negativos');
     console.log('\nMapeo de lineas:');
     console.log('  1line -> LINEA A | 2line -> LINEA B | 3line -> LINEA C | 4line -> LINEA D');
 

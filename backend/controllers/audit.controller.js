@@ -18,6 +18,11 @@
  * (stock_actual > 0 y con ubicacion valida resuelta desde control_material_almacen_smd).
  */
 const { pool } = require('../config/database');
+const {
+  normalizeAuditLocation,
+  parsePhysicalQuantity,
+  getPhysicalAdjustment
+} = require('../utils/auditPhysical');
 
 // Funciones WebSocket deshabilitadas (ya no se usan, polling en su lugar)
 // Se mantienen para compatibilidad con llamadas existentes en el controlador.
@@ -25,6 +30,11 @@ const setWebSocketServer = () => { };
 const broadcastAuditUpdate = () => { };
 
 const AUDIT_LOCATION_EXPR = `COALESCE(NULLIF(TRIM(cma.ubicacion_destino), ''), NULLIF(TRIM(cma.ubicacion_salida), ''))`;
+const AUDIT_ITEM_PART_EXPR = 'COALESCE(iai.numero_parte_snapshot, cma.numero_parte)';
+const AUDIT_ITEM_LOT_EXPR = 'COALESCE(iai.numero_lote_material_snapshot, cma.numero_lote_material)';
+const AUDIT_ITEM_QTY_EXPR = 'COALESCE(iai.cantidad_snapshot, cma.cantidad_actual)';
+const AUDIT_ITEM_SPEC_EXPR = 'COALESCE(iai.especificacion_snapshot, cma.especificacion)';
+const AUDIT_ITEM_RECEIPT_EXPR = 'COALESCE(iai.fecha_recibo_snapshot, cma.fecha_recibo)';
 
 function getAuditInventorySnapshotQuery() {
   return `
@@ -34,6 +44,8 @@ function getAuditInventorySnapshotQuery() {
       il.numero_parte,
       il.numero_lote AS numero_lote_material,
       il.stock_actual AS cantidad_actual,
+      il.total_salida,
+      cma.tiene_salida,
       ${AUDIT_LOCATION_EXPR} AS location,
       COALESCE(cma.especificacion, '') AS especificacion,
       cma.fecha_recibo
@@ -51,6 +63,120 @@ function getAuditInventorySnapshotQuery() {
       AND ${AUDIT_LOCATION_EXPR} IS NOT NULL
       AND ${AUDIT_LOCATION_EXPR} <> ''
   `;
+}
+
+// Fuente estable de la auditoria. A diferencia de inventario_lotes_smd, estos
+// datos no desaparecen cuando una salida deja stock_actual en cero.
+function getPersistedAuditItemsQuery() {
+  return `
+    SELECT
+      iai.id AS audit_item_id,
+      iai.audit_id,
+      iai.warehousing_id,
+      iai.warehousing_code AS codigo_material_recibido,
+      iai.location,
+      ${AUDIT_ITEM_PART_EXPR} AS numero_parte,
+      ${AUDIT_ITEM_LOT_EXPR} AS numero_lote_material,
+      ${AUDIT_ITEM_QTY_EXPR} AS cantidad_actual,
+      ${AUDIT_ITEM_SPEC_EXPR} AS especificacion,
+      ${AUDIT_ITEM_RECEIPT_EXPR} AS fecha_recibo,
+      iai.physical_quantity,
+      iai.physical_quantity_recorded_at,
+      iai.physical_quantity_recorded_by,
+      iai.is_new_inventory,
+      iai.status AS audit_status,
+      iai.scanned_at,
+      iai.scanned_by,
+      iai.processed_at,
+      iai.processed_by
+    FROM inventory_audit_item_smd iai
+    LEFT JOIN control_material_almacen_smd cma ON cma.id = iai.warehousing_id
+  `;
+}
+
+// Registra la salida y garantiza que inventario_lotes_smd quede descontado en
+// la misma transaccion. Normalmente lo hace trg_salida_bi_guard_smd; la verificacion
+// posterior cubre instalaciones donde el trigger no exista o este desfasado.
+async function createImmediateAuditOutgoing(connection, item, usuario) {
+  const [lotRows] = await connection.query(`
+    SELECT id, total_salida, stock_actual
+    FROM inventario_lotes_smd
+    WHERE codigo_material_recibido = ?
+    LIMIT 1
+    FOR UPDATE
+  `, [item.warehousing_code]);
+
+  if (lotRows.length === 0) {
+    throw new Error(`Lote de inventario no encontrado para ${item.warehousing_code}`);
+  }
+
+  const stockBefore = Number(lotRows[0].stock_actual || 0);
+  if (stockBefore <= 0) {
+    return { created: false, quantity: 0, stockAfter: stockBefore };
+  }
+
+  // Una discrepancia de auditoria retira la existencia completa que el lote
+  // tiene en ese momento, no una cantidad CMA que pudo quedar obsoleta.
+  const quantity = stockBefore;
+  const totalSalidaBefore = Number(lotRows[0].total_salida || 0);
+
+  const [outgoingResult] = await connection.query(`
+    INSERT INTO control_material_salida_smd (
+      codigo_material_recibido,
+      numero_parte,
+      numero_lote,
+      depto_salida,
+      proceso_salida,
+      cantidad_salida,
+      fecha_salida,
+      fecha_registro,
+      especificacion_material,
+      usuario_registro
+    ) VALUES (?, ?, ?, 'AUDITORIA', 'DISCREPANCIA INVENTARIO', ?, NOW(), NOW(), ?, ?)
+  `, [
+    item.warehousing_code,
+    item.numero_parte,
+    item.numero_lote_material,
+    quantity,
+    item.especificacion || null,
+    usuario || 'Sistema'
+  ]);
+
+  const [afterTriggerRows] = await connection.query(`
+    SELECT total_salida, stock_actual
+    FROM inventario_lotes_smd
+    WHERE id = ?
+    FOR UPDATE
+  `, [lotRows[0].id]);
+
+  const expectedTotalSalida = totalSalidaBefore + quantity;
+  const totalSalidaAfterTrigger = Number(afterTriggerRows[0]?.total_salida || 0);
+  if (totalSalidaAfterTrigger + 0.0001 < expectedTotalSalida) {
+    await connection.query(`
+      UPDATE inventario_lotes_smd
+      SET total_salida = ?, ultima_salida = NOW()
+      WHERE id = ?
+    `, [expectedTotalSalida, lotRows[0].id]);
+  }
+
+  // Una salida de auditoria no es desecho. Mantener estado_desecho intacto
+  // permite que el flujo normal de devolucion reactive el material.
+  await connection.query(`
+    UPDATE control_material_almacen_smd
+    SET tiene_salida = 1
+    WHERE id = ?
+  `, [item.warehousing_id]);
+
+  const [finalRows] = await connection.query(`
+    SELECT stock_actual FROM inventario_lotes_smd WHERE id = ?
+  `, [lotRows[0].id]);
+
+  return {
+    created: true,
+    outgoingId: outgoingResult.insertId,
+    quantity,
+    stockAfter: Number(finalRows[0]?.stock_actual || 0)
+  };
 }
 
 async function getAuditInventoryMaterialByCode(warehousingCode) {
@@ -73,6 +199,1133 @@ async function getAuditInventoryMaterialByWarehousingId(warehousingId) {
   `, [warehousingId]);
 
   return rows[0] || null;
+}
+
+function isInventoryCountableIqcStatus(status) {
+  return ['Released', 'NotRequired'].includes(String(status || 'NotRequired'));
+}
+
+function auditRecoveryError(code, error, extra = {}) {
+  return { success: false, code, error, ...extra };
+}
+
+async function findAutomaticAuditEntrySource(connection, warehousingCode) {
+  const [warehouseRows] = await connection.query(`
+    SELECT
+      cma.*,
+      m.especificacion_material,
+      m.unidad_medida AS catalog_unidad_medida,
+      m.ubicacion_material,
+      m.vendedor AS material_vendedor,
+      'control_material_almacen' AS source_table
+    FROM control_material_almacen cma
+    LEFT JOIN materiales m ON m.numero_parte = cma.numero_parte
+    WHERE cma.codigo_material_recibido = ?
+      AND (cma.cancelado = 0 OR cma.cancelado IS NULL)
+    ORDER BY cma.id DESC
+    LIMIT 1
+    FOR UPDATE
+  `, [warehousingCode]);
+
+  if (warehouseRows.length > 0) {
+    return warehouseRows[0];
+  }
+
+  const [outgoingRows] = await connection.query(`
+    SELECT
+      cms.id,
+      cms.codigo_material_recibido,
+      cms.numero_parte,
+      cms.numero_lote AS numero_lote_material,
+      cms.cantidad_salida AS cantidad_actual,
+      cms.especificacion_material AS especificacion,
+      cms.vendedor,
+      cms.fecha_salida AS fecha_recibo,
+      cms.usuario_registro,
+      m.codigo_material,
+      m.codigo_material AS codigo_material_final,
+      m.propiedad_material,
+      m.unidad_medida AS catalog_unidad_medida,
+      m.especificacion_material,
+      m.ubicacion_material,
+      m.vendedor AS material_vendedor,
+      'WarehouseOut' AS forma_material,
+      0 AS iqc_required,
+      'NotRequired' AS iqc_status,
+      'control_material_salida' AS source_table
+    FROM control_material_salida cms
+    LEFT JOIN materiales m ON m.numero_parte = cms.numero_parte
+    WHERE cms.codigo_material_recibido = ?
+      AND (cms.cancelado = 0 OR cms.cancelado IS NULL)
+      AND (cms.rechazado = 0 OR cms.rechazado IS NULL)
+    ORDER BY cms.id DESC
+    LIMIT 1
+    FOR UPDATE
+  `, [warehousingCode]);
+
+  return outgoingRows[0] || null;
+}
+
+async function insertAutomaticAuditWarehouseEntry(
+  connection,
+  source,
+  location,
+  usuario
+) {
+  const code = String(source.codigo_material_recibido || '').trim();
+  const partNumber = String(source.numero_parte || '').trim();
+  const lotNumber = String(
+    source.numero_lote_material || source.numero_lote || ''
+  ).trim();
+  const quantity = Number(source.cantidad_actual || source.cantidad_salida || 0);
+  const iqcRequired = Number(source.iqc_required || 0) === 1;
+  const iqcStatus = String(
+    source.iqc_status || (iqcRequired ? 'Pending' : 'NotRequired')
+  );
+
+  if (!code || !partNumber || !lotNumber || !Number.isFinite(quantity) || quantity <= 0) {
+    return auditRecoveryError(
+      'AUTO_ENTRY_INCOMPLETE_SOURCE',
+      'El material existe, pero no tiene parte, lote o cantidad válida para crear la entrada'
+    );
+  }
+
+  if (!isInventoryCountableIqcStatus(iqcStatus)) {
+    return auditRecoveryError(
+      'IQC_NOT_RELEASED',
+      `El material requiere liberación de IQC antes de entrar al inventario (estado: ${iqcStatus})`
+    );
+  }
+
+  if (
+    source.propiedad_material
+    && String(source.propiedad_material).trim().toUpperCase() !== 'SMD'
+  ) {
+    return auditRecoveryError(
+      'MATERIAL_NOT_SMD',
+      'El material no pertenece al almacén SMD'
+    );
+  }
+
+  const receivingLotCode = source.receiving_lot_code
+    || (code.length >= 20 ? code.substring(0, 20) : null);
+  const labelSeq = source.label_seq
+    || (code.length > 20 ? parseInt(code.substring(20), 10) || null : null);
+
+  const [insertResult] = await connection.query(`
+    INSERT INTO control_material_almacen_smd (
+      forma_material,
+      cliente,
+      codigo_material_original,
+      codigo_material,
+      material_importacion_local,
+      fecha_recibo,
+      fecha_fabricacion,
+      cantidad_actual,
+      numero_lote_material,
+      codigo_material_recibido,
+      numero_parte,
+      cantidad_estandarizada,
+      codigo_material_final,
+      propiedad_material,
+      especificacion,
+      material_importacion_local_final,
+      estado_desecho,
+      ubicacion_salida,
+      ubicacion_destino,
+      vendedor,
+      usuario_registro,
+      fecha_registro,
+      unidad_medida,
+      receiving_lot_code,
+      label_seq,
+      iqc_required,
+      iqc_status,
+      inspection_lot_sequence,
+      tiene_salida
+    ) VALUES (?, ?, ?, ?, ?, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, NOW(), ?, ?, ?, ?, ?, ?, 0)
+  `, [
+    source.forma_material || 'AuditAutoEntry',
+    source.cliente || null,
+    source.codigo_material_original || null,
+    source.codigo_material || source.material_codigo || null,
+    source.material_importacion_local || null,
+    source.fecha_fabricacion || null,
+    quantity,
+    lotNumber,
+    code,
+    partNumber,
+    source.cantidad_estandarizada || null,
+    source.codigo_material_final || source.codigo_material || null,
+    source.propiedad_material || 'SMD',
+    source.especificacion || source.especificacion_material || null,
+    source.material_importacion_local_final || null,
+    location,
+    location,
+    source.vendedor || source.material_vendedor || null,
+    usuario,
+    source.unidad_medida || source.catalog_unidad_medida || 'EA',
+    receivingLotCode,
+    labelSeq,
+    iqcRequired ? 1 : 0,
+    iqcStatus,
+    source.inspection_lot_sequence || 1
+  ]);
+
+  if (source.source_table === 'control_material_almacen') {
+    await connection.query(`
+      UPDATE control_material_almacen
+      SET confirmado_smd = 1,
+          confirmado_smd_por = ?,
+          confirmado_smd_at = NOW()
+      WHERE id = ?
+    `, [usuario, source.id]);
+  } else if (source.source_table === 'control_material_salida') {
+    await connection.query(`
+      UPDATE control_material_salida
+      SET confirmado = 1,
+          confirmado_por = ?,
+          confirmado_at = NOW()
+      WHERE id = ?
+    `, [usuario, source.id]);
+  }
+
+  return {
+    success: true,
+    warehousingId: insertResult.insertId,
+    quantity
+  };
+}
+
+async function ensureAutomaticMaterialInAudit(
+  connection,
+  auditId,
+  material,
+  location,
+  usuario,
+  action
+) {
+  const [existingItems] = await connection.query(`
+    SELECT id, status
+    FROM inventory_audit_item_smd
+    WHERE audit_id = ? AND warehousing_id = ?
+    LIMIT 1
+    FOR UPDATE
+  `, [auditId, material.warehousing_id]);
+
+  if (existingItems.length > 0) {
+    if (action !== 'none') {
+      await connection.query(`
+        UPDATE inventory_audit_item_smd
+        SET status = 'Pending',
+            scanned_at = NULL,
+            scanned_by = NULL,
+            processed_at = NULL,
+            processed_by = NULL,
+            notas = CONCAT_WS(' | ', NULLIF(notas, ''), ?)
+        WHERE id = ?
+      `, [`Entrada automática por escaneo de auditoría (${action})`, existingItems[0].id]);
+
+      await connection.query(`
+        UPDATE inventory_audit_part_smd
+        SET status = 'Mismatch',
+            flagged_by = ?,
+            flagged_at = NOW()
+        WHERE audit_id = ?
+          AND location = ?
+          AND numero_parte = ?
+          AND status = 'MissingConfirmed'
+      `, [usuario, auditId, location, material.numero_parte]);
+
+      await connection.query(`
+        UPDATE inventory_audit_location_smd
+        SET status = 'InProgress',
+            completed_at = NULL,
+            completed_by = NULL
+        WHERE audit_id = ?
+          AND location = ?
+          AND status = 'Discrepancy'
+      `, [auditId, location]);
+    }
+    return false;
+  }
+
+  const [locationRows] = await connection.query(`
+    SELECT id
+    FROM inventory_audit_location_smd
+    WHERE audit_id = ? AND location = ?
+    LIMIT 1
+    FOR UPDATE
+  `, [auditId, location]);
+
+  if (locationRows.length === 0) {
+    await connection.query(`
+      INSERT INTO inventory_audit_location_smd (
+        audit_id, location, status, total_items, total_qty, started_at, started_by
+      ) VALUES (?, ?, 'InProgress', 1, ?, NOW(), ?)
+    `, [auditId, location, material.cantidad_actual, usuario]);
+
+    await connection.query(`
+      UPDATE inventory_audit_smd
+      SET total_locations = total_locations + 1,
+          total_items = total_items + 1
+      WHERE id = ?
+    `, [auditId]);
+  } else {
+    await connection.query(`
+      UPDATE inventory_audit_location_smd
+      SET total_items = total_items + 1,
+          total_qty = total_qty + ?,
+          status = 'InProgress',
+          completed_at = NULL,
+          completed_by = NULL
+      WHERE id = ?
+    `, [material.cantidad_actual, locationRows[0].id]);
+
+    await connection.query(`
+      UPDATE inventory_audit_smd
+      SET total_items = total_items + 1
+      WHERE id = ?
+    `, [auditId]);
+  }
+
+  await connection.query(`
+    INSERT INTO inventory_audit_item_smd (
+      audit_id,
+      warehousing_id,
+      warehousing_code,
+      location,
+      numero_parte_snapshot,
+      numero_lote_material_snapshot,
+      cantidad_snapshot,
+      especificacion_snapshot,
+      fecha_recibo_snapshot,
+      status,
+      notas
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending', ?)
+  `, [
+    auditId,
+    material.warehousing_id,
+    material.codigo_material_recibido,
+    location,
+    material.numero_parte,
+    material.numero_lote_material,
+    material.cantidad_actual,
+    material.especificacion || null,
+    material.fecha_recibo || null,
+    `Entrada automática por escaneo de auditoría (${action})`
+  ]);
+
+  await connection.query(`
+    INSERT INTO inventory_audit_part_smd (
+      audit_id,
+      location,
+      numero_parte,
+      expected_items,
+      expected_qty,
+      status,
+      flagged_by,
+      flagged_at
+    ) VALUES (?, ?, ?, 1, ?, 'Mismatch', ?, NOW())
+    ON DUPLICATE KEY UPDATE
+      expected_items = expected_items + 1,
+      expected_qty = expected_qty + VALUES(expected_qty),
+      status = 'Mismatch',
+      flagged_by = VALUES(flagged_by),
+      flagged_at = NOW()
+  `, [
+    auditId,
+    location,
+    material.numero_parte,
+    material.cantidad_actual,
+    usuario
+  ]);
+
+  return true;
+}
+
+async function recoverAuditMaterialForScan(
+  auditId,
+  warehousingCode,
+  requestedLocation,
+  usuario,
+  expectedPartNumber = null
+) {
+  const connection = await pool.getConnection();
+  const normalizedCode = String(warehousingCode || '').trim();
+  const normalizedRequestedLocation = String(requestedLocation || '').trim();
+  const normalizedExpectedPart = String(expectedPartNumber || '').trim();
+  const userName = usuario || 'Mobile';
+
+  try {
+    await connection.beginTransaction();
+
+    const [snapshotRows] = await connection.query(`
+      SELECT location
+      FROM inventory_audit_item_smd
+      WHERE audit_id = ? AND warehousing_code = ?
+      LIMIT 1
+      FOR UPDATE
+    `, [auditId, normalizedCode]);
+
+    const snapshotLocation = String(snapshotRows[0]?.location || '').trim();
+    if (
+      snapshotLocation
+      && normalizedRequestedLocation
+      && snapshotLocation !== normalizedRequestedLocation
+    ) {
+      await connection.rollback();
+      return auditRecoveryError(
+        'WRONG_LOCATION',
+        `El material está registrado en ${snapshotLocation}, no en ${normalizedRequestedLocation}`,
+        {
+          expectedLocation: snapshotLocation,
+          scannedLocation: normalizedRequestedLocation
+        }
+      );
+    }
+
+    const [existingRows] = await connection.query(`
+      SELECT
+        cma.*,
+        il.id AS inventory_lot_id,
+        il.total_entrada,
+        il.total_salida,
+        il.stock_actual
+      FROM control_material_almacen_smd cma
+      LEFT JOIN inventario_lotes_smd il
+        ON il.codigo_material_recibido = cma.codigo_material_recibido
+      WHERE cma.codigo_material_recibido = ?
+      ORDER BY cma.id DESC
+      LIMIT 1
+      FOR UPDATE
+    `, [normalizedCode]);
+
+    let action = 'none';
+    let targetLocation = snapshotLocation || normalizedRequestedLocation;
+    let warehousingId = null;
+
+    if (existingRows.length > 0) {
+      const material = existingRows[0];
+
+      if (
+        normalizedExpectedPart
+        && String(material.numero_parte || '').trim() !== normalizedExpectedPart
+      ) {
+        await connection.rollback();
+        return auditRecoveryError(
+          'WRONG_PART',
+          `El material pertenece a la parte ${material.numero_parte}, no a ${normalizedExpectedPart}`
+        );
+      }
+
+      if (Number(material.cancelado || 0) === 1 || Number(material.estado_desecho || 0) === 1) {
+        await connection.rollback();
+        return auditRecoveryError(
+          'MATERIAL_NOT_ELIGIBLE',
+          'El material está cancelado o marcado como desecho y no puede entrar automáticamente'
+        );
+      }
+
+      if (!isInventoryCountableIqcStatus(material.iqc_status)) {
+        await connection.rollback();
+        return auditRecoveryError(
+          'IQC_NOT_RELEASED',
+          `El material requiere liberación de IQC antes de entrar al inventario (estado: ${material.iqc_status})`
+        );
+      }
+
+      targetLocation = targetLocation
+        || String(material.ubicacion_destino || material.ubicacion_salida || '').trim();
+      if (!targetLocation) {
+        await connection.rollback();
+        return auditRecoveryError(
+          'LOCATION_REQUIRED_FOR_AUTO_ENTRY',
+          'Se requiere la ubicación para crear la entrada automática'
+        );
+      }
+
+      const quantity = Number(material.cantidad_actual || 0);
+      const totalSalidaBefore = Number(material.total_salida || 0);
+      const stockBefore = Number(material.stock_actual || 0);
+
+      if (!Number.isFinite(quantity) || quantity <= 0) {
+        await connection.rollback();
+        return auditRecoveryError(
+          'INVALID_AUTO_ENTRY_QUANTITY',
+          'El material no tiene una cantidad válida para recuperar'
+        );
+      }
+
+      if (material.inventory_lot_id && totalSalidaBefore > 0) {
+        const returnQty = Math.max(0, totalSalidaBefore);
+
+        await connection.query(`
+          INSERT INTO material_return_smd (
+            warehousing_id,
+            material_warehousing_code,
+            material_code,
+            part_number,
+            material_lot_no,
+            material_spec,
+            remain_qty,
+            return_qty,
+            remarks,
+            returned_by,
+            return_datetime
+          ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, NOW())
+        `, [
+          material.id,
+          material.codigo_material_recibido,
+          material.codigo_material || null,
+          material.numero_parte,
+          material.numero_lote_material,
+          material.especificacion || null,
+          returnQty,
+          `Entrada automática por escaneo de auditoría #${auditId} en ${targetLocation}`,
+          userName
+        ]);
+
+        const expectedTotalSalida = Math.max(0, totalSalidaBefore - returnQty);
+        await connection.query(`
+          UPDATE inventario_lotes_smd
+          SET total_salida = ?
+          WHERE id = ?
+        `, [expectedTotalSalida, material.inventory_lot_id]);
+        action = 'automatic_return';
+      } else if (!material.inventory_lot_id || stockBefore <= 0) {
+        await connection.query(`
+          INSERT INTO inventario_lotes_smd (
+            codigo_material_recibido,
+            numero_parte,
+            numero_lote,
+            total_entrada,
+            total_salida,
+            unidad_medida,
+            primer_recibo
+          ) VALUES (?, ?, ?, ?, 0, ?, COALESCE(?, NOW()))
+          ON DUPLICATE KEY UPDATE
+            total_entrada = GREATEST(total_entrada, VALUES(total_entrada)),
+            total_salida = 0
+        `, [
+          material.codigo_material_recibido,
+          material.numero_parte,
+          material.numero_lote_material,
+          quantity,
+          material.unidad_medida || 'EA',
+          material.fecha_recibo || null
+        ]);
+        action = 'automatic_entry';
+      }
+
+      const currentLocation = String(
+        material.ubicacion_destino || material.ubicacion_salida || ''
+      ).trim();
+      if (
+        action === 'none'
+        && (
+          Number(material.tiene_salida || 0) === 1
+          || (!snapshotLocation && currentLocation !== targetLocation)
+        )
+      ) {
+        action = 'automatic_reentry';
+      }
+
+      await connection.query(`
+        UPDATE control_material_almacen_smd
+        SET tiene_salida = 0,
+            ubicacion_anterior = CASE
+              WHEN COALESCE(NULLIF(TRIM(ubicacion_destino), ''), NULLIF(TRIM(ubicacion_salida), '')) <> ?
+              THEN COALESCE(NULLIF(TRIM(ubicacion_destino), ''), NULLIF(TRIM(ubicacion_salida), ''))
+              ELSE ubicacion_anterior
+            END,
+            ubicacion_salida = ?,
+            ubicacion_destino = ?,
+            fecha_reingreso = CASE WHEN ? <> 'none' THEN NOW() ELSE fecha_reingreso END,
+            usuario_reingreso = CASE WHEN ? <> 'none' THEN ? ELSE usuario_reingreso END
+        WHERE id = ?
+      `, [
+        targetLocation,
+        targetLocation,
+        targetLocation,
+        action,
+        action,
+        userName,
+        material.id
+      ]);
+
+      warehousingId = material.id;
+    } else {
+      if (!targetLocation) {
+        await connection.rollback();
+        return auditRecoveryError(
+          'LOCATION_REQUIRED_FOR_AUTO_ENTRY',
+          'Se requiere la ubicación para crear la entrada automática'
+        );
+      }
+
+      const source = await findAutomaticAuditEntrySource(connection, normalizedCode);
+      if (!source) {
+        await connection.rollback();
+        return auditRecoveryError(
+          'MATERIAL_NOT_FOUND',
+          'Material no encontrado en inventario ni en las entradas de almacén'
+        );
+      }
+
+      if (
+        normalizedExpectedPart
+        && String(source.numero_parte || '').trim() !== normalizedExpectedPart
+      ) {
+        await connection.rollback();
+        return auditRecoveryError(
+          'WRONG_PART',
+          `El material pertenece a la parte ${source.numero_parte}, no a ${normalizedExpectedPart}`
+        );
+      }
+
+      const inserted = await insertAutomaticAuditWarehouseEntry(
+        connection,
+        source,
+        targetLocation,
+        userName
+      );
+      if (!inserted.success) {
+        await connection.rollback();
+        return inserted;
+      }
+
+      warehousingId = inserted.warehousingId;
+      action = 'automatic_entry';
+    }
+
+    const [materialRows] = await connection.query(`
+      SELECT *
+      FROM (${getAuditInventorySnapshotQuery()}) ai
+      WHERE ai.warehousing_id = ?
+      LIMIT 1
+    `, [warehousingId]);
+
+    if (materialRows.length === 0) {
+      await connection.rollback();
+      return auditRecoveryError(
+        'AUTO_ENTRY_NOT_IN_INVENTORY',
+        'La entrada se preparó, pero no quedó disponible en el inventario'
+      );
+    }
+
+    const recoveredMaterial = materialRows[0];
+    await ensureAutomaticMaterialInAudit(
+      connection,
+      auditId,
+      recoveredMaterial,
+      targetLocation,
+      userName,
+      action
+    );
+
+    await connection.commit();
+    return {
+      success: true,
+      material: recoveredMaterial,
+      action,
+      automaticEntry: action !== 'none'
+    };
+  } catch (err) {
+    await connection.rollback();
+    throw err;
+  } finally {
+    connection.release();
+  }
+}
+
+async function ensureAuditLocationRecord(
+  connection,
+  auditId,
+  location,
+  usuario
+) {
+  await connection.query(`
+    INSERT INTO inventory_location_catalog_smd (
+      location, active, source, created_at, last_seen_at
+    ) VALUES (?, 1, 'AuditScan', NOW(), NOW())
+    ON DUPLICATE KEY UPDATE active = 1, last_seen_at = NOW()
+  `, [location]);
+
+  const [inserted] = await connection.query(`
+    INSERT IGNORE INTO inventory_audit_location_smd (
+      audit_id, location, status, total_items, total_qty,
+      started_at, started_by
+    ) VALUES (?, ?, 'InProgress', 0, 0, NOW(), ?)
+  `, [auditId, location, usuario]);
+
+  if (inserted.affectedRows > 0) {
+    await connection.query(`
+      UPDATE inventory_audit_smd
+      SET total_locations = total_locations + 1
+      WHERE id = ?
+    `, [auditId]);
+  }
+
+  return inserted.affectedRows > 0;
+}
+
+async function registerPhysicalItem(req, res, next) {
+  const connection = await pool.getConnection();
+  const location = normalizeAuditLocation(req.body.location);
+  const warehousingCode = String(req.body.warehousing_code || '').trim();
+  const suppliedPart = String(req.body.numero_parte || '').trim();
+  const suppliedLot = String(req.body.numero_lote || '').trim();
+  const suppliedSpec = String(req.body.especificacion || '').trim();
+  const suppliedUnit = String(req.body.unidad_medida || 'EA').trim() || 'EA';
+  const physicalQuantity = parsePhysicalQuantity(req.body.physical_quantity);
+  const usuario = String(req.body.usuario || 'Mobile');
+  const usuarioId = Number(req.body.usuario_id || 0) || null;
+
+  if (!location || !warehousingCode || physicalQuantity === null) {
+    connection.release();
+    return res.status(400).json({
+      success: false,
+      code: 'INVALID_PHYSICAL_ITEM',
+      error: 'Se requiere ubicación, código de material y una cantidad física mayor a cero'
+    });
+  }
+
+  try {
+    await connection.beginTransaction();
+
+    const [active] = await connection.query(`
+      SELECT id
+      FROM inventory_audit_smd
+      WHERE status = 'InProgress'
+      ORDER BY created_at DESC
+      LIMIT 1
+      FOR UPDATE
+    `);
+    if (active.length === 0) {
+      await connection.rollback();
+      return res.status(400).json({
+        success: false,
+        code: 'NO_ACTIVE_AUDIT',
+        error: 'No hay auditoría activa'
+      });
+    }
+
+    const auditId = active[0].id;
+    await ensureAuditLocationRecord(
+      connection,
+      auditId,
+      location,
+      usuario
+    );
+
+    const [auditItems] = await connection.query(`
+      SELECT id, warehousing_id, location, numero_parte_snapshot,
+             numero_lote_material_snapshot, cantidad_snapshot, status
+      FROM inventory_audit_item_smd
+      WHERE audit_id = ? AND warehousing_code = ?
+      LIMIT 1
+      FOR UPDATE
+    `, [auditId, warehousingCode]);
+    if (
+      auditItems.length > 0
+      && String(auditItems[0].location || '').trim() !== location
+    ) {
+      await connection.rollback();
+      return res.status(409).json({
+        success: false,
+        code: 'WRONG_LOCATION',
+        error: `El material pertenece a ${auditItems[0].location}; use reubicación antes de contarlo en ${location}`,
+        expectedLocation: auditItems[0].location,
+        scannedLocation: location
+      });
+    }
+
+    let [materialRows] = await connection.query(`
+      SELECT
+        cma.*,
+        il.id AS inventory_lot_id,
+        il.total_entrada,
+        il.total_salida,
+        il.stock_actual
+      FROM control_material_almacen_smd cma
+      LEFT JOIN inventario_lotes_smd il
+        ON il.codigo_material_recibido = cma.codigo_material_recibido
+      WHERE cma.codigo_material_recibido = ?
+      ORDER BY cma.id DESC
+      LIMIT 1
+      FOR UPDATE
+    `, [warehousingCode]);
+
+    let createdInventory = false;
+    if (materialRows.length === 0) {
+      const automaticSource = await findAutomaticAuditEntrySource(
+        connection,
+        warehousingCode
+      );
+      const newPart = suppliedPart || String(
+        automaticSource?.numero_parte || ''
+      ).trim();
+      const newLot = suppliedLot || String(
+        automaticSource?.numero_lote_material
+          || automaticSource?.numero_lote
+          || ''
+      ).trim();
+
+      if (!newPart || !newLot) {
+        await connection.rollback();
+        return res.status(409).json({
+          success: false,
+          code: 'NEW_MATERIAL_DETAILS_REQUIRED',
+          error: 'El material es nuevo. Capture número de parte y número de lote'
+        });
+      }
+
+      const [catalogRows] = await connection.query(`
+        SELECT * FROM materiales
+        WHERE numero_parte = ?
+        LIMIT 1
+      `, [newPart]);
+      const catalog = catalogRows[0] || {};
+      const inserted = await insertAutomaticAuditWarehouseEntry(
+        connection,
+        {
+          ...(automaticSource || {}),
+          codigo_material_recibido: warehousingCode,
+          numero_parte: newPart,
+          numero_lote_material: newLot,
+          cantidad_actual: physicalQuantity,
+          especificacion: suppliedSpec
+            || automaticSource?.especificacion
+            || automaticSource?.especificacion_material
+            || catalog.especificacion_material
+            || null,
+          codigo_material: automaticSource?.codigo_material
+            || catalog.codigo_material
+            || null,
+          codigo_material_final: automaticSource?.codigo_material_final
+            || automaticSource?.codigo_material
+            || catalog.codigo_material
+            || null,
+          propiedad_material: 'SMD',
+          unidad_medida: automaticSource?.unidad_medida
+            || suppliedUnit
+            || catalog.unidad_medida
+            || 'EA',
+          vendedor: automaticSource?.vendedor || catalog.vendedor || null,
+          forma_material: automaticSource?.forma_material
+            || 'AuditPhysicalEntry',
+          iqc_required: automaticSource?.iqc_required || 0,
+          iqc_status: automaticSource?.iqc_status || 'NotRequired'
+        },
+        location,
+        usuario
+      );
+      if (!inserted.success) {
+        await connection.rollback();
+        return res.status(409).json(inserted);
+      }
+
+      createdInventory = true;
+      [materialRows] = await connection.query(`
+        SELECT
+          cma.*,
+          il.id AS inventory_lot_id,
+          il.total_entrada,
+          il.total_salida,
+          il.stock_actual
+        FROM control_material_almacen_smd cma
+        LEFT JOIN inventario_lotes_smd il
+          ON il.codigo_material_recibido = cma.codigo_material_recibido
+        WHERE cma.id = ?
+        LIMIT 1
+        FOR UPDATE
+      `, [inserted.warehousingId]);
+    }
+
+    const material = materialRows[0];
+    if (
+      Number(material.cancelado || 0) === 1
+      || Number(material.estado_desecho || 0) === 1
+    ) {
+      await connection.rollback();
+      return res.status(409).json({
+        success: false,
+        code: 'MATERIAL_NOT_ELIGIBLE',
+        error: 'El material está cancelado o marcado como desecho'
+      });
+    }
+    if (!isInventoryCountableIqcStatus(material.iqc_status)) {
+      await connection.rollback();
+      return res.status(409).json({
+        success: false,
+        code: 'IQC_NOT_RELEASED',
+        error: `El material no está liberado por IQC (${material.iqc_status})`
+      });
+    }
+
+    const currentLocation = String(
+      material.ubicacion_destino || material.ubicacion_salida || ''
+    ).trim();
+    const stockBefore = Number(material.stock_actual || 0);
+    if (
+      !createdInventory
+      && stockBefore > 0
+      && currentLocation
+      && currentLocation !== location
+    ) {
+      await connection.rollback();
+      return res.status(409).json({
+        success: false,
+        code: 'WRONG_LOCATION',
+        error: `El material está registrado en ${currentLocation}, no en ${location}`,
+        expectedLocation: currentLocation,
+        scannedLocation: location
+      });
+    }
+
+    let inventoryLotId = material.inventory_lot_id;
+    let stockAfter = stockBefore;
+    const adjustment = getPhysicalAdjustment(stockBefore, physicalQuantity);
+    if (!adjustment) {
+      await connection.rollback();
+      return res.status(409).json({
+        success: false,
+        code: 'INVALID_INVENTORY_STATE',
+        error: 'El inventario actual no tiene una cantidad válida para ajustarse'
+      });
+    }
+    let delta = adjustment.delta;
+
+    if (!inventoryLotId) {
+      const [lotInsert] = await connection.query(`
+        INSERT INTO inventario_lotes_smd (
+          codigo_material_recibido, numero_parte, numero_lote,
+          total_entrada, total_salida, unidad_medida, primer_recibo
+        ) VALUES (?, ?, ?, ?, 0, ?, NOW())
+      `, [
+        warehousingCode,
+        material.numero_parte,
+        material.numero_lote_material,
+        physicalQuantity,
+        material.unidad_medida || suppliedUnit
+      ]);
+      inventoryLotId = lotInsert.insertId;
+      stockAfter = physicalQuantity;
+      delta = physicalQuantity;
+      createdInventory = true;
+    } else if (Math.abs(delta) >= 0.0001) {
+      if (delta > 0) {
+        await connection.query(`
+          UPDATE inventario_lotes_smd
+          SET total_entrada = total_entrada + ?
+          WHERE id = ?
+        `, [delta, inventoryLotId]);
+      } else {
+        await connection.query(`
+          UPDATE inventario_lotes_smd
+          SET total_salida = total_salida + ?, ultima_salida = NOW()
+          WHERE id = ?
+        `, [Math.abs(delta), inventoryLotId]);
+      }
+
+      const [[updatedLot]] = await connection.query(`
+        SELECT stock_actual
+        FROM inventario_lotes_smd
+        WHERE id = ?
+        FOR UPDATE
+      `, [inventoryLotId]);
+      stockAfter = Number(updatedLot?.stock_actual || 0);
+      if (Math.abs(stockAfter - physicalQuantity) >= 0.0001) {
+        throw new Error('No fue posible sincronizar la cantidad física con el inventario');
+      }
+
+      await connection.query(`
+        INSERT INTO inventory_adjustment_smd (
+          warehousing_id, inventory_lot_id, codigo_material_recibido,
+          numero_parte, numero_lote, quantity_before, quantity_after,
+          adjustment_quantity, movement_type, reason,
+          usuario_registro, usuario_registro_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `, [
+        material.id,
+        inventoryLotId,
+        warehousingCode,
+        material.numero_parte,
+        material.numero_lote_material,
+        stockBefore,
+        stockAfter,
+        Math.abs(delta),
+        delta > 0 ? 'Entry' : 'Exit',
+        `Conteo físico auditoría ${auditId} en ${location}`,
+        usuario,
+        usuarioId
+      ]);
+    }
+
+    await connection.query(`
+      UPDATE control_material_almacen_smd
+      SET tiene_salida = 0,
+          ubicacion_salida = ?,
+          ubicacion_destino = ?
+      WHERE id = ?
+    `, [location, location, material.id]);
+
+    const partNumber = String(material.numero_parte || suppliedPart).trim();
+    const lotNumber = String(
+      material.numero_lote_material || suppliedLot
+    ).trim();
+    const expectedQuantity = auditItems.length > 0
+      ? Number(auditItems[0].cantidad_snapshot || 0)
+      : 0;
+    const isNewAuditItem = auditItems.length === 0;
+
+    if (auditItems.length > 0) {
+      await connection.query(`
+        UPDATE inventory_audit_item_smd
+        SET status = 'Found',
+            scanned_at = NOW(),
+            scanned_by = ?,
+            physical_quantity = ?,
+            physical_quantity_recorded_at = NOW(),
+            physical_quantity_recorded_by = ?,
+            notas = CONCAT_WS(' | ', NULLIF(notas, ''), ?)
+        WHERE id = ?
+      `, [
+        usuario,
+        physicalQuantity,
+        usuario,
+        `Cantidad física capturada: ${physicalQuantity}`,
+        auditItems[0].id
+      ]);
+    } else {
+      await connection.query(`
+        INSERT INTO inventory_audit_item_smd (
+          audit_id, warehousing_id, warehousing_code, location,
+          numero_parte_snapshot, numero_lote_material_snapshot,
+          cantidad_snapshot, especificacion_snapshot, fecha_recibo_snapshot,
+          physical_quantity, physical_quantity_recorded_at,
+          physical_quantity_recorded_by, is_new_inventory,
+          status, scanned_at, scanned_by, notas
+        ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, NOW(), ?, NOW(), ?, ?,
+                  'Found', NOW(), ?, ?)
+      `, [
+        auditId,
+        material.id,
+        warehousingCode,
+        location,
+        partNumber,
+        lotNumber,
+        suppliedSpec || material.especificacion || null,
+        physicalQuantity,
+        usuario,
+        createdInventory ? 1 : 0,
+        usuario,
+        createdInventory
+          ? 'Material nuevo dado de alta durante auditoría'
+          : 'Material adicional encontrado durante auditoría'
+      ]);
+      await connection.query(`
+        UPDATE inventory_audit_smd
+        SET total_items = total_items + 1
+        WHERE id = ?
+      `, [auditId]);
+    }
+
+    await connection.query(`
+      INSERT INTO inventory_audit_part_smd (
+        audit_id, location, numero_parte, expected_items, expected_qty,
+        status, scanned_items, scanned_qty, confirmed_by, confirmed_at
+      ) VALUES (?, ?, ?, 0, 0, 'VerifiedByScan', 1, ?, ?, NOW())
+      ON DUPLICATE KEY UPDATE
+        confirmed_by = VALUES(confirmed_by),
+        confirmed_at = NOW()
+    `, [auditId, location, partNumber, physicalQuantity, usuario]);
+
+    const [[partScanStats]] = await connection.query(`
+      SELECT
+        SUM(CASE WHEN status = 'Found' THEN 1 ELSE 0 END) AS scanned_items,
+        COALESCE(SUM(
+          CASE WHEN status = 'Found'
+            THEN COALESCE(physical_quantity, cantidad_snapshot)
+            ELSE 0
+          END
+        ), 0) AS scanned_qty,
+        SUM(CASE WHEN status <> 'Found' THEN 1 ELSE 0 END) AS pending_items
+      FROM inventory_audit_item_smd
+      WHERE audit_id = ? AND location = ? AND numero_parte_snapshot = ?
+    `, [auditId, location, partNumber]);
+
+    await connection.query(`
+      UPDATE inventory_audit_part_smd
+      SET scanned_items = ?,
+          scanned_qty = ?,
+          status = ?,
+          confirmed_by = ?,
+          confirmed_at = NOW()
+      WHERE audit_id = ? AND location = ? AND numero_parte = ?
+    `, [
+      Number(partScanStats?.scanned_items || 0),
+      Number(partScanStats?.scanned_qty || 0),
+      Number(partScanStats?.pending_items || 0) === 0
+        ? 'VerifiedByScan'
+        : 'Mismatch',
+      usuario,
+      auditId,
+      location,
+      partNumber
+    ]);
+
+    await connection.query(`
+      UPDATE inventory_audit_location_smd ial
+      SET total_items = (
+            SELECT COUNT(*) FROM inventory_audit_item_smd iai
+            WHERE iai.audit_id = ial.audit_id AND iai.location = ial.location
+          ),
+          total_qty = (
+            SELECT COALESCE(SUM(COALESCE(iai.physical_quantity, iai.cantidad_snapshot)), 0)
+            FROM inventory_audit_item_smd iai
+            WHERE iai.audit_id = ial.audit_id AND iai.location = ial.location
+          ),
+          status = 'InProgress',
+          completed_at = NULL,
+          completed_by = NULL
+      WHERE ial.audit_id = ? AND ial.location = ?
+    `, [auditId, location]);
+
+    await connection.commit();
+    await checkLocationCompletion(auditId, location);
+
+    return res.json({
+      success: true,
+      message: createdInventory
+        ? 'Material nuevo dado de alta y contado'
+        : Math.abs(delta) >= 0.0001
+          ? 'Cantidad física aplicada al inventario'
+          : 'Cantidad física confirmada',
+      auditId,
+      location,
+      warehousingCode,
+      partNumber,
+      lotNumber,
+      expectedQuantity,
+      physicalQuantity,
+      quantityDifference: physicalQuantity - expectedQuantity,
+      stockBefore,
+      stockAfter,
+      createdInventory,
+      addedToAudit: isNewAuditItem
+    });
+  } catch (err) {
+    try {
+      await connection.rollback();
+    } catch (_) {
+      // Conservar el error original.
+    }
+    next(err);
+  } finally {
+    connection.release();
+  }
 }
 
 // ============================================
@@ -127,9 +1380,9 @@ const startAudit = async (req, res, next) => {
     const now = new Date();
     const auditCode = `AUD-${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}-${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`;
 
-    // Obtener todas las ubicaciones con inventario activo.
-    // inventario_lotes_smd es la fuente real del stock disponible.
-    const [locations] = await pool.query(`
+    // Obtener el inventario activo y combinarlo con el catálogo persistente.
+    // El catálogo incluye ubicaciones vacías descubiertas en auditorías previas.
+    const [inventoryLocations] = await pool.query(`
       SELECT
         ai.location,
         COUNT(*) as total_items,
@@ -138,6 +1391,38 @@ const startAudit = async (req, res, next) => {
       GROUP BY ai.location
       ORDER BY ai.location
     `);
+
+    const [catalogLocations] = await pool.query(`
+      SELECT location
+      FROM inventory_location_catalog_smd
+      WHERE active = 1
+      ORDER BY location
+    `);
+
+    const locationsByCode = new Map();
+    for (const row of catalogLocations) {
+      const location = String(row.location || '').trim();
+      if (location) {
+        locationsByCode.set(location, {
+          location,
+          total_items: 0,
+          total_qty: 0
+        });
+      }
+    }
+    for (const row of inventoryLocations) {
+      const location = String(row.location || '').trim();
+      if (location) {
+        locationsByCode.set(location, {
+          location,
+          total_items: Number(row.total_items || 0),
+          total_qty: Number(row.total_qty || 0)
+        });
+      }
+    }
+    const locations = [...locationsByCode.values()].sort((a, b) =>
+      a.location.localeCompare(b.location, undefined, { numeric: true })
+    );
 
     // Crear auditoria con resumen global (ubicaciones e items esperados)
     const [result] = await pool.query(`
@@ -165,18 +1450,48 @@ const startAudit = async (req, res, next) => {
       `, [auditId, loc.location, loc.total_items, loc.total_qty]);
     }
 
+    // Congelar todos los lotes incluidos. Sin este snapshot los materiales
+    // desaparecian de la auditoria en cuanto una salida llevaba su stock a 0.
+    await pool.query(`
+      INSERT INTO inventory_audit_item_smd (
+        audit_id,
+        warehousing_id,
+        warehousing_code,
+        location,
+        numero_parte_snapshot,
+        numero_lote_material_snapshot,
+        cantidad_snapshot,
+        especificacion_snapshot,
+        fecha_recibo_snapshot,
+        status
+      )
+      SELECT
+        ?,
+        ai.warehousing_id,
+        ai.codigo_material_recibido,
+        ai.location,
+        ai.numero_parte,
+        ai.numero_lote_material,
+        ai.cantidad_actual,
+        ai.especificacion,
+        ai.fecha_recibo,
+        'Pending'
+      FROM (${getAuditInventorySnapshotQuery()}) ai
+    `, [auditId]);
+
     // ========== NUEVO: Crear registros por número de parte (audit v2) ==========
     // Agrupar materiales por ubicacion + numero_parte para el flujo de confirmación
     const [partSummary] = await pool.query(`
       SELECT
-        ai.location,
-        ai.numero_parte,
+        iai.location,
+        iai.numero_parte_snapshot AS numero_parte,
         COUNT(*) as expected_items,
-        SUM(ai.cantidad_actual) as expected_qty
-      FROM (${getAuditInventorySnapshotQuery()}) ai
-      GROUP BY ai.location, ai.numero_parte
-      ORDER BY ai.location, ai.numero_parte
-    `);
+        SUM(iai.cantidad_snapshot) as expected_qty
+      FROM inventory_audit_item_smd iai
+      WHERE iai.audit_id = ?
+      GROUP BY iai.location, iai.numero_parte_snapshot
+      ORDER BY iai.location, iai.numero_parte_snapshot
+    `, [auditId]);
 
     // Insertar registros de partes
     for (const part of partSummary) {
@@ -243,113 +1558,53 @@ const endAudit = async (req, res, next) => {
     const [itemStats] = await connection.query(`
       SELECT 
         COUNT(CASE WHEN status = 'Found' THEN 1 END) as found_items,
-        COUNT(CASE WHEN status = 'Missing' THEN 1 END) as missing_items,
+        COUNT(CASE WHEN status IN ('Missing', 'ProcessedOut') THEN 1 END) as missing_items,
         COUNT(CASE WHEN status = 'Pending' THEN 1 END) as pending_items
       FROM inventory_audit_item_smd
       WHERE audit_id = ?
     `, [auditId]);
 
-    // Si hay discrepancias y se confirma, procesar salidas
-    // confirmacion -> crea Missing faltantes + aplica salida real
+    // La ruta confirm-missing genera las salidas en el momento. Al cerrar solo
+    // se procesan faltantes legacy que ya quedaron confirmados en una ubicacion
+    // Discrepancy; nunca se convierten ubicaciones pendientes en salida masiva.
     let processedCount = 0;
+    let processedQty = 0;
     if (confirmar_discrepancias) {
-      // Paso 1: Crear Missing para materiales que NO fueron encontrados
-      // Son materiales reales en inventario sin registro Found en audit_item
-
-      // Obtener todas las ubicaciones de esta auditoria (cubre todo el inventario activo)
-      const [locations] = await connection.query(`
-        SELECT location FROM inventory_audit_location_smd WHERE audit_id = ?
-      `, [auditId]);
-
-      for (const loc of locations) {
-        // Para cada ubicacion, encontrar materiales sin registro Found y crearles registro Missing
-        const [unscannedItems] = await connection.query(`
-          SELECT ai.warehousing_id, ai.codigo_material_recibido, ai.location
-          FROM (${getAuditInventorySnapshotQuery()}) ai
-          LEFT JOIN inventory_audit_item_smd iai ON iai.warehousing_id = ai.warehousing_id AND iai.audit_id = ?
-          WHERE ai.location = ?
-            AND (iai.id IS NULL OR iai.status != 'Found')
-        `, [auditId, loc.location]);
-
-        for (const item of unscannedItems) {
-          // Verificar si ya existe registro
-          const [existing] = await connection.query(`
-            SELECT id FROM inventory_audit_item_smd WHERE audit_id = ? AND warehousing_id = ?
-          `, [auditId, item.warehousing_id]);
-
-          if (existing.length === 0) {
-            // Crear registro Missing para marcar que el material no aparecio en conteo
-            await connection.query(`
-              INSERT INTO inventory_audit_item_smd (
-                audit_id, warehousing_id, warehousing_code, location, status, scanned_at, scanned_by
-              ) VALUES (?, ?, ?, ?, 'Missing', NOW(), ?)
-            `, [auditId, item.warehousing_id, item.codigo_material_recibido, item.location, usuario_fin || 'Sistema-NoEncontrado']);
-          } else {
-            // Actualizar a Missing si esta Pending (no escaneado)
-            await connection.query(`
-              UPDATE inventory_audit_item_smd SET status = 'Missing', scanned_at = NOW(), scanned_by = ?
-              WHERE id = ? AND status = 'Pending'
-            `, [usuario_fin || 'Sistema', existing[0].id]);
-          }
-        }
-      }
-
-      // Paso 2: Obtener TODOS los items Missing para dar salida
-      // Esto crea registros en control_material_salida_smd y marca el material como desecho/salida
       const [missingItems] = await connection.query(`
-        SELECT iai.*, ai.numero_parte, ai.numero_lote_material, ai.cantidad_actual, ai.especificacion
+        SELECT
+          iai.id AS audit_item_id,
+          iai.warehousing_id,
+          iai.warehousing_code,
+          ${AUDIT_ITEM_PART_EXPR} AS numero_parte,
+          ${AUDIT_ITEM_LOT_EXPR} AS numero_lote_material,
+          ${AUDIT_ITEM_SPEC_EXPR} AS especificacion
         FROM inventory_audit_item_smd iai
-        JOIN (${getAuditInventorySnapshotQuery()}) ai ON iai.warehousing_id = ai.warehousing_id
-        WHERE iai.audit_id = ? AND iai.status = 'Missing'
+        LEFT JOIN control_material_almacen_smd cma ON cma.id = iai.warehousing_id
+        JOIN inventory_audit_location_smd ial
+          ON ial.audit_id = iai.audit_id AND ial.location = iai.location
+        WHERE iai.audit_id = ?
+          AND iai.status = 'Missing'
+          AND ial.status = 'Discrepancy'
+        FOR UPDATE
       `, [auditId]);
-
-      const now = new Date();
-      const fechaSalida = now.toISOString().slice(0, 19).replace('T', ' ');
 
       for (const item of missingItems) {
-        // Crear salida por discrepancia de inventario
-        // Nota: depto_salida/proceso_salida quedan fijos para trazabilidad
-        await connection.query(`
-          INSERT INTO control_material_salida_smd (
-            codigo_material_recibido,
-            numero_parte,
-            numero_lote,
-            depto_salida,
-            proceso_salida,
-            cantidad_salida,
-            fecha_salida,
-            fecha_registro,
-            especificacion_material,
-            usuario_registro
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), ?, ?)
-        `, [
-          item.warehousing_code,
-          item.numero_parte,
-          item.numero_lote_material,
-          'AUDITORIA',
-          'DISCREPANCIA INVENTARIO',
-          item.cantidad_actual,
-          fechaSalida,
-          item.especificacion,
+        const outgoing = await createImmediateAuditOutgoing(
+          connection,
+          item,
           usuario_fin || 'Sistema'
-        ]);
+        );
 
-        // Marcar como tiene salida y desecho para excluirlo de inventario activo
-        // Esto asegura que no vuelva a entrar en futuras auditorias
-        await connection.query(`
-          UPDATE control_material_almacen_smd 
-          SET tiene_salida = 1, estado_desecho = 1
-          WHERE id = ?
-        `, [item.warehousing_id]);
-
-        // Actualizar item de auditoria a ProcessedOut para cerrar ciclo
         await connection.query(`
           UPDATE inventory_audit_item_smd 
           SET status = 'ProcessedOut', processed_at = NOW(), processed_by = ?
           WHERE id = ?
-        `, [usuario_fin, item.id]);
+        `, [usuario_fin || 'Sistema', item.audit_item_id]);
 
-        processedCount++;
+        if (outgoing.created) {
+          processedCount++;
+          processedQty += outgoing.quantity;
+        }
       }
     }
 
@@ -397,7 +1652,8 @@ const endAudit = async (req, res, next) => {
         discrepancyLocations: stats[0].discrepancy_locations,
         foundItems: itemStats[0].found_items || 0,
         missingItems: itemStats[0].missing_items || 0,
-        processedOut: processedCount
+        processedOut: processedCount,
+        processedQty
       }
     });
   } catch (err) {
@@ -437,7 +1693,7 @@ const getAuditLocations = async (req, res, next) => {
         (SELECT COUNT(*) FROM inventory_audit_item_smd iai 
          WHERE iai.audit_id = ial.audit_id 
          AND iai.location = ial.location 
-         AND iai.status = 'Missing') as missing_items
+         AND iai.status IN ('Missing', 'ProcessedOut')) as missing_items
       FROM inventory_audit_location_smd ial
       WHERE ial.audit_id = ?
       ORDER BY ial.location
@@ -470,8 +1726,8 @@ const getLocationItems = async (req, res, next) => {
 
     const auditId = active[0].id;
 
-    // Obtener materiales en esa ubicacion (estado de auditoria incluido)
-    // Si no existe registro en inventory_audit_item_smd, el status es Pending
+    // Obtener el snapshot de materiales de esa ubicacion. Las salidas ya
+    // procesadas siguen visibles con status ProcessedOut.
     const [items] = await pool.query(`
       SELECT 
         ai.warehousing_id as id,
@@ -481,12 +1737,15 @@ const getLocationItems = async (req, res, next) => {
         ai.cantidad_actual,
         ai.especificacion,
         ai.fecha_recibo,
-        COALESCE(iai.status, 'Pending') as audit_status,
-        iai.scanned_at,
-        iai.scanned_by
-      FROM (${getAuditInventorySnapshotQuery()}) ai
-      LEFT JOIN inventory_audit_item_smd iai ON iai.warehousing_id = ai.warehousing_id AND iai.audit_id = ?
-      WHERE ai.location = ?
+        ai.physical_quantity,
+        ai.physical_quantity_recorded_at,
+        ai.physical_quantity_recorded_by,
+        ai.is_new_inventory,
+        ai.audit_status,
+        ai.scanned_at,
+        ai.scanned_by
+      FROM (${getPersistedAuditItemsQuery()}) ai
+      WHERE ai.audit_id = ? AND ai.location = ?
       ORDER BY ai.codigo_material_recibido
     `, [auditId, location]);
 
@@ -510,7 +1769,7 @@ const scanLocation = async (req, res, next) => {
       return res.status(400).json({ error: 'Se requiere ubicación' });
     }
 
-    const normalizedLocation = String(location).trim();
+    const normalizedLocation = normalizeAuditLocation(location);
     // Buscar auditoría activa
     const [active] = await pool.query(`
       SELECT id FROM inventory_audit_smd WHERE status = 'InProgress' LIMIT 1
@@ -525,17 +1784,43 @@ const scanLocation = async (req, res, next) => {
 
     const auditId = active[0].id;
 
-    // Verificar que la ubicacion exista en inventory_audit_location_smd
-    const [loc] = await pool.query(`
+    // Cualquier QR válido pasa a formar parte del catálogo físico. Si estaba
+    // vacío o nunca apareció en inventario, quedará precargado en la próxima
+    // auditoría.
+    await pool.query(`
+      INSERT INTO inventory_location_catalog_smd (
+        location, active, source, created_at, last_seen_at
+      ) VALUES (?, 1, 'AuditScan', NOW(), NOW())
+      ON DUPLICATE KEY UPDATE active = 1, last_seen_at = NOW()
+    `, [normalizedLocation]);
+
+    // Crear la ubicación dentro de la auditoría si todavía no estaba en el
+    // snapshot. Esto permite verificar ubicaciones nuevas o físicamente vacías.
+    let [loc] = await pool.query(`
       SELECT * FROM inventory_audit_location_smd 
       WHERE audit_id = ? AND location = ?
     `, [auditId, normalizedLocation]);
 
+    let createdLocation = false;
     if (loc.length === 0) {
-      return res.status(404).json({
-        error: 'Ubicación no encontrada en la auditoría',
-        code: 'LOCATION_NOT_FOUND'
-      });
+      const [insertedLocation] = await pool.query(`
+        INSERT IGNORE INTO inventory_audit_location_smd (
+          audit_id, location, status, total_items, total_qty,
+          started_at, started_by
+        ) VALUES (?, ?, 'InProgress', 0, 0, NOW(), ?)
+      `, [auditId, normalizedLocation, usuario || 'Mobile']);
+      createdLocation = insertedLocation.affectedRows > 0;
+      if (createdLocation) {
+        await pool.query(`
+          UPDATE inventory_audit_smd
+          SET total_locations = total_locations + 1
+          WHERE id = ?
+        `, [auditId]);
+      }
+      [loc] = await pool.query(`
+        SELECT * FROM inventory_audit_location_smd
+        WHERE audit_id = ? AND location = ?
+      `, [auditId, normalizedLocation]);
     }
 
     // Marcar ubicacion como en progreso
@@ -557,10 +1842,9 @@ const scanLocation = async (req, res, next) => {
         ai.numero_lote_material,
         ai.cantidad_actual,
         ai.especificacion,
-        COALESCE(iai.status, 'Pending') as audit_status
-      FROM (${getAuditInventorySnapshotQuery()}) ai
-      LEFT JOIN inventory_audit_item_smd iai ON iai.warehousing_id = ai.warehousing_id AND iai.audit_id = ?
-      WHERE ai.location = ?
+        ai.audit_status
+      FROM (${getPersistedAuditItemsQuery()}) ai
+      WHERE ai.audit_id = ? AND ai.location = ?
       ORDER BY ai.codigo_material_recibido
     `, [auditId, normalizedLocation]);
 
@@ -581,6 +1865,8 @@ const scanLocation = async (req, res, next) => {
       pendingItems: items.filter(i => i.audit_status === 'Pending').length,
       scannedItems: items.filter(i => i.audit_status === 'Found').length
     };
+    response.createdLocation = createdLocation;
+    response.emptyLocation = items.length === 0;
 
     if (shouldReturnLocationSummary(req)) {
       const summary = await buildLocationSummaryPayload(auditId, normalizedLocation);
@@ -591,6 +1877,71 @@ const scanLocation = async (req, res, next) => {
     res.json(response);
   } catch (err) {
     next(err);
+  }
+};
+
+// POST /api/audit/reopen-location - Reabrir una ubicación cerrada.
+// Conserva el snapshot y reinicia sus estados para mantener trazabilidad.
+const reopenLocation = async (req, res, next) => {
+  const connection = await pool.getConnection();
+  try {
+    const normalizedLocation = String(req.body.location ?? '').trim();
+    const usuario = req.body.usuario || 'Mobile';
+    if (!normalizedLocation) {
+      return res.status(400).json({ error: 'Se requiere ubicación' });
+    }
+
+    await connection.beginTransaction();
+    const [active] = await connection.query(`
+      SELECT id FROM inventory_audit_smd
+      WHERE status = 'InProgress' LIMIT 1 FOR UPDATE
+    `);
+    if (active.length === 0) {
+      await connection.rollback();
+      return res.status(400).json({ error: 'No hay auditoría activa', code: 'NO_ACTIVE_AUDIT' });
+    }
+
+    const auditId = active[0].id;
+    const [locations] = await connection.query(`
+      SELECT id, status FROM inventory_audit_location_smd
+      WHERE audit_id = ? AND location = ? LIMIT 1 FOR UPDATE
+    `, [auditId, normalizedLocation]);
+    if (locations.length === 0) {
+      await connection.rollback();
+      return res.status(404).json({ error: 'Ubicación no encontrada en la auditoría', code: 'LOCATION_NOT_FOUND' });
+    }
+    if (!['Verified', 'Discrepancy'].includes(locations[0].status)) {
+      await connection.rollback();
+      return res.json({ success: false, error: 'La ubicación todavía no está cerrada', status: locations[0].status });
+    }
+
+    await connection.query(`
+      UPDATE inventory_audit_location_smd
+      SET status = 'InProgress', started_at = NOW(), started_by = ?,
+          completed_at = NULL, completed_by = NULL
+      WHERE id = ?
+    `, [usuario, locations[0].id]);
+    await connection.query(`
+      UPDATE inventory_audit_part_smd
+      SET status = 'Pending', confirmed_by = NULL, confirmed_at = NULL,
+          flagged_by = NULL, flagged_at = NULL,
+          scanned_items = 0, scanned_qty = 0
+      WHERE audit_id = ? AND location = ?
+    `, [auditId, normalizedLocation]);
+    await connection.query(`
+      UPDATE inventory_audit_item_smd
+      SET status = 'Pending', scanned_at = NULL, scanned_by = NULL,
+          processed_at = NULL, processed_by = NULL
+      WHERE audit_id = ? AND location = ?
+    `, [auditId, normalizedLocation]);
+
+    await connection.commit();
+    res.json({ success: true, auditId, location: normalizedLocation, status: 'InProgress' });
+  } catch (err) {
+    await connection.rollback();
+    next(err);
+  } finally {
+    connection.release();
   }
 };
 
@@ -615,15 +1966,28 @@ const scanItem = async (req, res, next) => {
 
     const auditId = active[0].id;
 
-    // Buscar el material desde el inventario consolidado.
-    const mat = await getAuditInventoryMaterialByCode(warehousing_code);
+    // Buscar el material desde el inventario consolidado. Si ya tuvo salida
+    // o nunca fue ingresado a SMD, recuperarlo/crearlo en la ubicación
+    // escaneada antes de registrarlo como encontrado.
+    let mat = await getAuditInventoryMaterialByCode(warehousing_code);
+    let automaticRecovery = null;
 
-    if (!mat) {
-      return res.json({
-        success: false,
-        error: 'Material no encontrado',
-        code: 'MATERIAL_NOT_FOUND'
-      });
+    if (
+      !mat
+      || Number(mat.tiene_salida || 0) === 1
+      || Number(mat.total_salida || 0) > 0
+    ) {
+      automaticRecovery = await recoverAuditMaterialForScan(
+        auditId,
+        warehousing_code,
+        location,
+        usuario
+      );
+
+      if (!automaticRecovery.success) {
+        return res.json(automaticRecovery);
+      }
+      mat = automaticRecovery.material;
     }
 
     mat.id = mat.warehousing_id;
@@ -709,10 +2073,14 @@ const scanItem = async (req, res, next) => {
 
     res.json({
       success: true,
-      message: 'Material verificado',
+      message: automaticRecovery?.automaticEntry
+        ? 'Material ingresado automáticamente y verificado'
+        : 'Material verificado',
       warehousingCode: warehousing_code,
       partNumber: mat.numero_parte,
       location: mat.ubicacion_salida,
+      automaticEntry: automaticRecovery?.automaticEntry === true,
+      inventoryAction: automaticRecovery?.action || 'none',
       locationComplete: isLocationComplete,
       locationStats: {
         total: locationStats[0].total,
@@ -748,7 +2116,11 @@ const markMissing = async (req, res, next) => {
     // Obtener datos del material desde el inventario consolidado.
     const mat = await getAuditInventoryMaterialByWarehousingId(warehousing_id);
 
-    if (!mat) {
+    if (
+      !mat
+      || Number(mat.tiene_salida || 0) === 1
+      || Number(mat.total_salida || 0) > 0
+    ) {
       return res.status(404).json({ error: 'Material no encontrado' });
     }
 
@@ -807,7 +2179,8 @@ const markMissing = async (req, res, next) => {
 // Cierra la ubicacion y marca pendientes como Missing automaticamente.
 const completeLocation = async (req, res, next) => {
   try {
-    const { location, usuario } = req.body;
+    const location = normalizeAuditLocation(req.body.location);
+    const usuario = req.body.usuario || req.body.completedBy || 'Mobile';
 
     if (!location) {
       return res.status(400).json({ error: 'Se requiere ubicación' });
@@ -824,14 +2197,12 @@ const completeLocation = async (req, res, next) => {
 
     const auditId = active[0].id;
 
-    // Obtener items pendientes de esta ubicacion
-    // Cualquier pendiente se considera Missing al cerrar ubicacion
+    // Obtener items pendientes del snapshot de esta ubicacion.
+    // Cualquier pendiente se considera Missing al cerrar ubicacion.
     const [pending] = await pool.query(`
-      SELECT ai.warehousing_id as id, ai.codigo_material_recibido
-      FROM (${getAuditInventorySnapshotQuery()}) ai
-      LEFT JOIN inventory_audit_item_smd iai ON iai.warehousing_id = ai.warehousing_id AND iai.audit_id = ?
-      WHERE ai.location = ?
-        AND (iai.id IS NULL OR iai.status = 'Pending')
+      SELECT warehousing_id AS id, warehousing_code AS codigo_material_recibido
+      FROM inventory_audit_item_smd
+      WHERE audit_id = ? AND location = ? AND status = 'Pending'
     `, [auditId, location]);
 
     // Marcar items pendientes como Missing
@@ -849,13 +2220,13 @@ const completeLocation = async (req, res, next) => {
             scanned_by = ?,
             notas = 'Marcado automáticamente al completar ubicación'
           WHERE id = ?
-        `, [usuario || 'Mobile', existingItem[0].id]);
+        `, [usuario, existingItem[0].id]);
       } else {
         await pool.query(`
           INSERT INTO inventory_audit_item_smd (
             audit_id, warehousing_id, warehousing_code, location, status, scanned_at, scanned_by, notas
           ) VALUES (?, ?, ?, ?, 'Missing', NOW(), ?, 'Marcado automáticamente al completar ubicación')
-        `, [auditId, item.id, item.codigo_material_recibido, location, usuario || 'Mobile']);
+        `, [auditId, item.id, item.codigo_material_recibido, location, usuario]);
       }
     }
 
@@ -867,7 +2238,7 @@ const completeLocation = async (req, res, next) => {
         completed_at = NOW(),
         completed_by = ?
       WHERE audit_id = ? AND location = ?
-    `, [hasMissing ? 'Discrepancy' : 'Verified', usuario || 'Mobile', auditId, location]);
+    `, [hasMissing ? 'Discrepancy' : 'Verified', usuario, auditId, location]);
 
     // Broadcast actualizacion (hoy no-op)
     broadcastAuditUpdate({
@@ -952,27 +2323,27 @@ const getAuditHistoryDetail = async (req, res, next) => {
         iai.status,
         iai.scanned_at,
         iai.scanned_by,
-        cma.numero_parte,
-        cma.cantidad_actual,
-        cma.numero_lote_material
+        ${AUDIT_ITEM_PART_EXPR} AS numero_parte,
+        ${AUDIT_ITEM_QTY_EXPR} AS cantidad_actual,
+        ${AUDIT_ITEM_LOT_EXPR} AS numero_lote_material
       FROM inventory_audit_item_smd iai
-      JOIN control_material_almacen_smd cma ON iai.warehousing_id = cma.id
+      LEFT JOIN control_material_almacen_smd cma ON iai.warehousing_id = cma.id
       WHERE iai.audit_id = ?
-      ORDER BY iai.location, cma.numero_parte
+      ORDER BY iai.location, numero_parte
     `, [id]);
 
     // Resumen por número de parte
     const [byPartNumber] = await pool.query(`
       SELECT 
-        cma.numero_parte,
+        ${AUDIT_ITEM_PART_EXPR} AS numero_parte,
         SUM(CASE WHEN iai.status = 'Found' THEN 1 ELSE 0 END) as found_count,
         SUM(CASE WHEN iai.status = 'Missing' THEN 1 ELSE 0 END) as missing_count,
         SUM(CASE WHEN iai.status = 'ProcessedOut' THEN 1 ELSE 0 END) as processed_count
       FROM inventory_audit_item_smd iai
-      JOIN control_material_almacen_smd cma ON iai.warehousing_id = cma.id
+      LEFT JOIN control_material_almacen_smd cma ON iai.warehousing_id = cma.id
       WHERE iai.audit_id = ?
-      GROUP BY cma.numero_parte
-      ORDER BY cma.numero_parte
+      GROUP BY ${AUDIT_ITEM_PART_EXPR}
+      ORDER BY numero_parte
     `, [id]);
 
     res.json({
@@ -1028,7 +2399,8 @@ const getAuditSummary = async (req, res, next) => {
         (SELECT COUNT(*) FROM inventory_audit_item_smd iai 
          WHERE iai.audit_id = ial.audit_id AND iai.location = ial.location AND iai.status = 'Found') as found_count,
         (SELECT COUNT(*) FROM inventory_audit_item_smd iai 
-         WHERE iai.audit_id = ial.audit_id AND iai.location = ial.location AND iai.status = 'Missing') as missing_count
+         WHERE iai.audit_id = ial.audit_id AND iai.location = ial.location
+           AND iai.status IN ('Missing', 'ProcessedOut')) as missing_count
       FROM inventory_audit_location_smd ial
       WHERE ial.audit_id = ?
       ORDER BY 
@@ -1067,34 +2439,34 @@ const compareAudits = async (req, res, next) => {
     // Hacer JOIN con control_material_almacen_smd para obtener numero_parte y cantidad
     const [items1] = await pool.query(`
       SELECT 
-        cma.numero_parte,
+        ${AUDIT_ITEM_PART_EXPR} AS numero_parte,
         COUNT(*) as total_items,
         SUM(CASE WHEN iai.status = 'Found' THEN 1 ELSE 0 END) as found_items,
-        SUM(CASE WHEN iai.status = 'Missing' THEN 1 ELSE 0 END) as missing_items,
-        SUM(cma.cantidad_actual) as total_qty,
-        SUM(CASE WHEN iai.status = 'Found' THEN cma.cantidad_actual ELSE 0 END) as qty_found,
-        SUM(CASE WHEN iai.status = 'Missing' THEN cma.cantidad_actual ELSE 0 END) as qty_missing
+        SUM(CASE WHEN iai.status IN ('Missing', 'ProcessedOut') THEN 1 ELSE 0 END) as missing_items,
+        SUM(${AUDIT_ITEM_QTY_EXPR}) as total_qty,
+        SUM(CASE WHEN iai.status = 'Found' THEN ${AUDIT_ITEM_QTY_EXPR} ELSE 0 END) as qty_found,
+        SUM(CASE WHEN iai.status IN ('Missing', 'ProcessedOut') THEN ${AUDIT_ITEM_QTY_EXPR} ELSE 0 END) as qty_missing
       FROM inventory_audit_item_smd iai
-      JOIN control_material_almacen_smd cma ON iai.warehousing_id = cma.id
+      LEFT JOIN control_material_almacen_smd cma ON iai.warehousing_id = cma.id
       WHERE iai.audit_id = ?
-      GROUP BY cma.numero_parte
-      ORDER BY cma.numero_parte
+      GROUP BY ${AUDIT_ITEM_PART_EXPR}
+      ORDER BY numero_parte
     `, [audit1]);
 
     const [items2] = await pool.query(`
       SELECT 
-        cma.numero_parte,
+        ${AUDIT_ITEM_PART_EXPR} AS numero_parte,
         COUNT(*) as total_items,
         SUM(CASE WHEN iai.status = 'Found' THEN 1 ELSE 0 END) as found_items,
-        SUM(CASE WHEN iai.status = 'Missing' THEN 1 ELSE 0 END) as missing_items,
-        SUM(cma.cantidad_actual) as total_qty,
-        SUM(CASE WHEN iai.status = 'Found' THEN cma.cantidad_actual ELSE 0 END) as qty_found,
-        SUM(CASE WHEN iai.status = 'Missing' THEN cma.cantidad_actual ELSE 0 END) as qty_missing
+        SUM(CASE WHEN iai.status IN ('Missing', 'ProcessedOut') THEN 1 ELSE 0 END) as missing_items,
+        SUM(${AUDIT_ITEM_QTY_EXPR}) as total_qty,
+        SUM(CASE WHEN iai.status = 'Found' THEN ${AUDIT_ITEM_QTY_EXPR} ELSE 0 END) as qty_found,
+        SUM(CASE WHEN iai.status IN ('Missing', 'ProcessedOut') THEN ${AUDIT_ITEM_QTY_EXPR} ELSE 0 END) as qty_missing
       FROM inventory_audit_item_smd iai
-      JOIN control_material_almacen_smd cma ON iai.warehousing_id = cma.id
+      LEFT JOIN control_material_almacen_smd cma ON iai.warehousing_id = cma.id
       WHERE iai.audit_id = ?
-      GROUP BY cma.numero_parte
-      ORDER BY cma.numero_parte
+      GROUP BY ${AUDIT_ITEM_PART_EXPR}
+      ORDER BY numero_parte
     `, [audit2]);
 
     // Crear mapa de items de auditoría 1 (solo por numero_parte)
@@ -1179,6 +2551,67 @@ const compareAudits = async (req, res, next) => {
 // AUDIT V2 - Flujo por número de parte
 // ============================================
 
+async function enrichAuditPartSummary(auditId, location, parts) {
+  const [locationRows] = await pool.query(`
+    SELECT status FROM inventory_audit_location_smd
+    WHERE audit_id = ? AND location = ? LIMIT 1
+  `, [auditId, location]);
+
+  const [lotRows] = await pool.query(`
+    SELECT
+      ai.numero_parte,
+      ai.numero_lote_material AS numero_lote,
+      SUM(ai.cantidad_actual) AS stock_actual
+    FROM (${getAuditInventorySnapshotQuery()}) ai
+    WHERE ai.location = ?
+    GROUP BY ai.numero_parte, ai.numero_lote_material
+    ORDER BY ai.numero_parte, ai.numero_lote_material
+  `, [location]);
+
+  const [physicalRows] = await pool.query(`
+    SELECT
+      numero_parte_snapshot AS numero_parte,
+      COUNT(CASE WHEN physical_quantity IS NOT NULL THEN 1 END) AS physical_items,
+      COALESCE(SUM(
+        CASE WHEN physical_quantity IS NOT NULL THEN physical_quantity ELSE 0 END
+      ), 0) AS physical_qty,
+      COALESCE(SUM(
+        CASE WHEN physical_quantity IS NOT NULL
+          THEN physical_quantity - COALESCE(cantidad_snapshot, 0)
+          ELSE 0
+        END
+      ), 0) AS quantity_difference,
+      COALESCE(SUM(is_new_inventory), 0) AS new_items
+    FROM inventory_audit_item_smd
+    WHERE audit_id = ? AND location = ?
+    GROUP BY numero_parte_snapshot
+  `, [auditId, location]);
+  const physicalByPart = new Map(
+    physicalRows.map(row => [String(row.numero_parte || ''), row])
+  );
+
+  const lotsByPart = new Map();
+  for (const lot of lotRows) {
+    if (!lotsByPart.has(lot.numero_parte)) {
+      lotsByPart.set(lot.numero_parte, []);
+    }
+    lotsByPart.get(lot.numero_parte).push({
+      numero_lote: lot.numero_lote,
+      stock_actual: Number(lot.stock_actual || 0)
+    });
+  }
+  for (const part of parts) {
+    part.lotes = lotsByPart.get(part.numero_parte) || [];
+    const physical = physicalByPart.get(String(part.numero_parte || ''));
+    part.physical_items = Number(physical?.physical_items || 0);
+    part.physical_qty = Number(physical?.physical_qty || 0);
+    part.quantity_difference = Number(physical?.quantity_difference || 0);
+    part.new_items = Number(physical?.new_items || 0);
+  }
+
+  return locationRows[0]?.status || 'Pending';
+}
+
 // GET /api/audit/location-summary - Resumen de partes por ubicación
 // Devuelve lista de partes con cantidades esperadas y status
 async function buildLocationSummaryPayload(auditId, location) {
@@ -1208,11 +2641,11 @@ async function buildLocationSummaryPayload(auditId, location) {
         ai.numero_parte,
         COUNT(*) as expected_items,
         SUM(ai.cantidad_actual) as expected_qty
-      FROM (${getAuditInventorySnapshotQuery()}) ai
-      WHERE ai.location = ?
+      FROM (${getPersistedAuditItemsQuery()}) ai
+      WHERE ai.audit_id = ? AND ai.location = ?
       GROUP BY ai.numero_parte
       ORDER BY ai.numero_parte
-    `, [normalizedLocation]);
+    `, [auditId, normalizedLocation]);
 
     if (summary.length > 0) {
       for (const part of summary) {
@@ -1245,6 +2678,11 @@ async function buildLocationSummaryPayload(auditId, location) {
     }
   }
 
+  const locationStatus = await enrichAuditPartSummary(
+    auditId,
+    normalizedLocation,
+    parts
+  );
   const total = parts.length;
   const confirmed = parts.filter(p => ['Ok', 'VerifiedByScan', 'MissingConfirmed'].includes(p.status)).length;
   const mismatch = parts.filter(p => p.status === 'Mismatch').length;
@@ -1255,6 +2693,7 @@ async function buildLocationSummaryPayload(auditId, location) {
     location: normalizedLocation,
     auditId,
     parts,
+    locationStatus,
     progress: {
       total,
       confirmed,
@@ -1324,11 +2763,11 @@ const getLocationSummary = async (req, res, next) => {
           ai.numero_parte,
           COUNT(*) as expected_items,
           SUM(ai.cantidad_actual) as expected_qty
-        FROM (${getAuditInventorySnapshotQuery()}) ai
-        WHERE ai.location = ?
+        FROM (${getPersistedAuditItemsQuery()}) ai
+        WHERE ai.audit_id = ? AND ai.location = ?
         GROUP BY ai.numero_parte
         ORDER BY ai.numero_parte
-      `, [normalizedLocation]);
+      `, [auditId, normalizedLocation]);
 
       if (summary.length > 0) {
         for (const part of summary) {
@@ -1362,6 +2801,12 @@ const getLocationSummary = async (req, res, next) => {
     }
 
 
+    const locationStatus = await enrichAuditPartSummary(
+      auditId,
+      normalizedLocation,
+      parts
+    );
+
     // Calcular progreso
     const total = parts.length;
     const confirmed = parts.filter(p => ['Ok', 'VerifiedByScan', 'MissingConfirmed'].includes(p.status)).length;
@@ -1373,6 +2818,7 @@ const getLocationSummary = async (req, res, next) => {
       location: normalizedLocation,
       auditId,
       parts,
+      locationStatus,
       progress: {
         total,
         confirmed,
@@ -1410,7 +2856,9 @@ const confirmPart = async (req, res, next) => {
     // Actualizar status de la parte a Ok
     const [result] = await pool.query(`
       UPDATE inventory_audit_part_smd 
-      SET status = 'Ok', confirmed_by = ?, confirmed_at = NOW()
+      SET status = 'Ok', confirmed_by = ?, confirmed_at = NOW(),
+          scanned_items = expected_items,
+          scanned_qty = expected_qty
       WHERE audit_id = ? AND location = ? AND numero_parte = ? AND status = 'Pending'
     `, [usuario || 'Mobile', auditId, normalizedLocation, numero_parte]);
 
@@ -1424,9 +2872,9 @@ const confirmPart = async (req, res, next) => {
     // Crear registros Found en inventory_audit_item_smd para todas las etiquetas de esta parte
     const [items] = await pool.query(`
       SELECT ai.warehousing_id as id, ai.codigo_material_recibido, ai.location as ubicacion_salida
-      FROM (${getAuditInventorySnapshotQuery()}) ai
-      WHERE ai.location = ? AND ai.numero_parte = ?
-    `, [normalizedLocation, numero_parte]);
+      FROM (${getPersistedAuditItemsQuery()}) ai
+      WHERE ai.audit_id = ? AND ai.location = ? AND ai.numero_parte = ?
+    `, [auditId, normalizedLocation, numero_parte]);
 
     for (const item of items) {
       // Insertar o actualizar como Found
@@ -1515,9 +2963,10 @@ const flagMismatch = async (req, res, next) => {
 
     await pool.query(`
       UPDATE inventory_audit_item_smd iai
-      JOIN control_material_almacen_smd cma ON iai.warehousing_id = cma.id
+      LEFT JOIN control_material_almacen_smd cma ON iai.warehousing_id = cma.id
       SET iai.status = 'Pending', iai.scanned_at = NULL, iai.scanned_by = NULL
-      WHERE iai.audit_id = ? AND iai.location = ? AND cma.numero_parte = ?
+      WHERE iai.audit_id = ? AND iai.location = ?
+        AND ${AUDIT_ITEM_PART_EXPR} = ?
         AND iai.status IN ('Found', 'Missing')
     `, [auditId, normalizedLocation, numero_parte]);
 
@@ -1546,9 +2995,10 @@ const scanPartItem = async (req, res, next) => {
 
     const normalizedLocation = String(location ?? '').trim();
     const normalizedCode = String(warehousing_code ?? '').trim();
+    const normalizedPart = String(numero_parte ?? '').trim();
 
-    if (!normalizedLocation || !normalizedCode) {
-      return res.status(400).json({ error: 'Se requiere ubicación y código de material' });
+    if (!normalizedLocation || !normalizedCode || !normalizedPart) {
+      return res.status(400).json({ error: 'Se requiere ubicación, número de parte y código de material' });
     }
 
     // Buscar auditoría activa
@@ -1562,32 +3012,12 @@ const scanPartItem = async (req, res, next) => {
 
     const auditId = active[0].id;
 
-    // Buscar el material en el inventario consolidado.
-    const mat = await getAuditInventoryMaterialByCode(normalizedCode);
-
-    if (!mat) {
-      return res.json({ success: false, error: 'Material no encontrado', code: 'MATERIAL_NOT_FOUND' });
-    }
-
-    mat.id = mat.warehousing_id;
-    mat.ubicacion_salida = mat.location;
-
-    // Verificar ubicaci??n
-    const matLocation = String(mat.ubicacion_salida ?? '').trim();
-
-    if (matLocation !== normalizedLocation) {
-      return res.json({
-        success: false,
-        error: `El material est?? en ${matLocation}, no en ${normalizedLocation}`,
-        code: 'WRONG_LOCATION'
-      });
-    }
-
-    // Verificar que la parte esté en Mismatch
+    // Validar la parte seleccionada antes de cualquier recuperación de
+    // inventario, para que un código de otra parte no genere una entrada.
     const [partRecord] = await pool.query(`
       SELECT id, status FROM inventory_audit_part_smd
       WHERE audit_id = ? AND location = ? AND numero_parte = ?
-    `, [auditId, normalizedLocation, mat.numero_parte]);
+    `, [auditId, normalizedLocation, normalizedPart]);
 
     if (partRecord.length === 0) {
       return res.json({ success: false, error: 'No se encontró la parte en la auditoría' });
@@ -1598,6 +3028,52 @@ const scanPartItem = async (req, res, next) => {
         success: false,
         error: 'Solo se pueden escanear etiquetas de partes marcadas como discrepancia',
         code: 'PART_NOT_MISMATCH'
+      });
+    }
+
+    // Buscar el material en el inventario consolidado. Los códigos con salida
+    // o todavía no ingresados a SMD se recuperan en esta ubicación.
+    let mat = await getAuditInventoryMaterialByCode(normalizedCode);
+    let automaticRecovery = null;
+
+    if (
+      !mat
+      || Number(mat.tiene_salida || 0) === 1
+      || Number(mat.total_salida || 0) > 0
+    ) {
+      automaticRecovery = await recoverAuditMaterialForScan(
+        auditId,
+        normalizedCode,
+        normalizedLocation,
+        usuario,
+        normalizedPart
+      );
+
+      if (!automaticRecovery.success) {
+        return res.json(automaticRecovery);
+      }
+      mat = automaticRecovery.material;
+    }
+
+    mat.id = mat.warehousing_id;
+    mat.ubicacion_salida = mat.location;
+
+    if (String(mat.numero_parte || '').trim() !== normalizedPart) {
+      return res.json({
+        success: false,
+        error: `El material pertenece a la parte ${mat.numero_parte}, no a ${normalizedPart}`,
+        code: 'WRONG_PART'
+      });
+    }
+
+    // Verificar ubicaci??n
+    const matLocation = String(mat.ubicacion_salida ?? '').trim();
+
+    if (matLocation !== normalizedLocation) {
+      return res.json({
+        success: false,
+        error: `El material est?? en ${matLocation}, no en ${normalizedLocation}`,
+        code: 'WRONG_LOCATION'
       });
     }
 
@@ -1639,9 +3115,13 @@ const scanPartItem = async (req, res, next) => {
 
     const response = {
       success: true,
-      message: 'Material escaneado',
+      message: automaticRecovery?.automaticEntry
+        ? 'Material ingresado automáticamente y escaneado'
+        : 'Material escaneado',
       warehousingCode: normalizedCode,
       partNumber: mat.numero_parte,
+      automaticEntry: automaticRecovery?.automaticEntry === true,
+      inventoryAction: automaticRecovery?.action || 'none',
       progress: {
         scanned: updatedPart[0].scanned_items,
         expected: updatedPart[0].expected_items
@@ -1664,6 +3144,161 @@ const scanPartItem = async (req, res, next) => {
   }
 };
 
+// POST /api/audit/reopen-part - Reabrir una parte sin eliminar su snapshot.
+const reopenPart = async (req, res, next) => {
+  const connection = await pool.getConnection();
+  try {
+    const normalizedLocation = String(req.body.location ?? '').trim();
+    const normalizedPart = String(req.body.numero_parte ?? '').trim();
+    const usuario = req.body.usuario || 'Mobile';
+    if (!normalizedLocation || !normalizedPart) {
+      return res.status(400).json({ error: 'Se requiere ubicación y número de parte' });
+    }
+
+    await connection.beginTransaction();
+    const [active] = await connection.query(`
+      SELECT id FROM inventory_audit_smd
+      WHERE status = 'InProgress' LIMIT 1 FOR UPDATE
+    `);
+    if (active.length === 0) {
+      await connection.rollback();
+      return res.status(400).json({ error: 'No hay auditoría activa', code: 'NO_ACTIVE_AUDIT' });
+    }
+
+    const auditId = active[0].id;
+    const [parts] = await connection.query(`
+      SELECT id, status FROM inventory_audit_part_smd
+      WHERE audit_id = ? AND location = ? AND numero_parte = ?
+      LIMIT 1 FOR UPDATE
+    `, [auditId, normalizedLocation, normalizedPart]);
+    if (parts.length === 0) {
+      await connection.rollback();
+      return res.status(404).json({ error: 'Parte no encontrada en la auditoría', code: 'PART_NOT_FOUND' });
+    }
+    if (parts[0].status === 'Pending') {
+      await connection.rollback();
+      return res.json({ success: false, error: 'La parte ya está pendiente', status: 'Pending' });
+    }
+
+    await connection.query(`
+      UPDATE inventory_audit_part_smd
+      SET status = 'Pending', confirmed_by = NULL, confirmed_at = NULL,
+          flagged_by = NULL, flagged_at = NULL,
+          scanned_items = 0, scanned_qty = 0
+      WHERE id = ?
+    `, [parts[0].id]);
+    await connection.query(`
+      UPDATE inventory_audit_location_smd
+      SET status = 'InProgress', started_at = NOW(), started_by = ?,
+          completed_at = NULL, completed_by = NULL
+      WHERE audit_id = ? AND location = ?
+    `, [usuario, auditId, normalizedLocation]);
+    await connection.query(`
+      UPDATE inventory_audit_item_smd iai
+      LEFT JOIN control_material_almacen_smd cma ON cma.id = iai.warehousing_id
+      SET iai.status = 'Pending', iai.scanned_at = NULL, iai.scanned_by = NULL,
+          iai.processed_at = NULL, iai.processed_by = NULL
+      WHERE iai.audit_id = ? AND iai.location = ?
+        AND ${AUDIT_ITEM_PART_EXPR} = ?
+    `, [auditId, normalizedLocation, normalizedPart]);
+
+    await connection.commit();
+    res.json({
+      success: true,
+      auditId,
+      location: normalizedLocation,
+      numero_parte: normalizedPart,
+      previousStatus: parts[0].status,
+      newStatus: 'Pending'
+    });
+  } catch (err) {
+    await connection.rollback();
+    next(err);
+  } finally {
+    connection.release();
+  }
+};
+
+// POST /api/audit/undo-mismatch - Cancelar la discrepancia o confirmar OK.
+const undoMismatch = async (req, res, next) => {
+  const connection = await pool.getConnection();
+  try {
+    const normalizedLocation = String(req.body.location ?? '').trim();
+    const normalizedPart = String(req.body.numero_parte ?? '').trim();
+    const usuario = req.body.usuario || 'Mobile';
+    const confirmOk = req.body.confirm_ok === true || Number(req.body.confirm_ok) === 1;
+    if (!normalizedLocation || !normalizedPart) {
+      return res.status(400).json({ error: 'Se requiere ubicación y número de parte' });
+    }
+
+    await connection.beginTransaction();
+    const [active] = await connection.query(`
+      SELECT id FROM inventory_audit_smd
+      WHERE status = 'InProgress' LIMIT 1 FOR UPDATE
+    `);
+    if (active.length === 0) {
+      await connection.rollback();
+      return res.status(400).json({ error: 'No hay auditoría activa', code: 'NO_ACTIVE_AUDIT' });
+    }
+
+    const auditId = active[0].id;
+    const [parts] = await connection.query(`
+      SELECT id, status FROM inventory_audit_part_smd
+      WHERE audit_id = ? AND location = ? AND numero_parte = ?
+      LIMIT 1 FOR UPDATE
+    `, [auditId, normalizedLocation, normalizedPart]);
+    if (parts.length === 0 || parts[0].status !== 'Mismatch') {
+      await connection.rollback();
+      return res.json({ success: false, error: 'La parte no está en discrepancia' });
+    }
+
+    if (confirmOk) {
+      await connection.query(`
+        UPDATE inventory_audit_part_smd
+        SET status = 'Ok', confirmed_by = ?, confirmed_at = NOW(),
+            scanned_items = expected_items, scanned_qty = expected_qty
+        WHERE id = ?
+      `, [usuario, parts[0].id]);
+      await connection.query(`
+        UPDATE inventory_audit_item_smd iai
+        LEFT JOIN control_material_almacen_smd cma ON cma.id = iai.warehousing_id
+        SET iai.status = 'Found', iai.scanned_at = NOW(), iai.scanned_by = ?,
+            iai.processed_at = NULL, iai.processed_by = NULL
+        WHERE iai.audit_id = ? AND iai.location = ?
+          AND ${AUDIT_ITEM_PART_EXPR} = ?
+      `, [usuario, auditId, normalizedLocation, normalizedPart]);
+    } else {
+      await connection.query(`
+        UPDATE inventory_audit_part_smd
+        SET status = 'Pending', flagged_by = NULL, flagged_at = NULL,
+            scanned_items = 0, scanned_qty = 0
+        WHERE id = ?
+      `, [parts[0].id]);
+      await connection.query(`
+        UPDATE inventory_audit_item_smd iai
+        LEFT JOIN control_material_almacen_smd cma ON cma.id = iai.warehousing_id
+        SET iai.status = 'Pending', iai.scanned_at = NULL, iai.scanned_by = NULL,
+            iai.processed_at = NULL, iai.processed_by = NULL
+        WHERE iai.audit_id = ? AND iai.location = ?
+          AND ${AUDIT_ITEM_PART_EXPR} = ?
+      `, [auditId, normalizedLocation, normalizedPart]);
+    }
+
+    await connection.commit();
+    await checkLocationCompletion(auditId, normalizedLocation);
+    res.json({
+      success: true,
+      numero_parte: normalizedPart,
+      newStatus: confirmOk ? 'Ok' : 'Pending'
+    });
+  } catch (err) {
+    await connection.rollback();
+    next(err);
+  } finally {
+    connection.release();
+  }
+};
+
 // POST /api/audit/confirm-missing - Confirmar faltantes de una parte en Mismatch
 // Crea salida inmediata para items faltantes (no espera a cierre de auditoría)
 const confirmMissing = async (req, res, next) => {
@@ -1671,9 +3306,10 @@ const confirmMissing = async (req, res, next) => {
 
   try {
     const { location, numero_parte, usuario } = req.body;
+    const normalizedLocation = String(location ?? '').trim();
+    const normalizedPart = String(numero_parte ?? '').trim();
 
-    if (!location || !numero_parte) {
-      connection.release();
+    if (!normalizedLocation || !normalizedPart) {
       return res.status(400).json({ error: 'Se requiere ubicación y número de parte' });
     }
 
@@ -1683,7 +3319,6 @@ const confirmMissing = async (req, res, next) => {
     `);
 
     if (active.length === 0) {
-      connection.release();
       return res.status(400).json({ error: 'No hay auditoría activa' });
     }
 
@@ -1694,79 +3329,69 @@ const confirmMissing = async (req, res, next) => {
       SELECT id, status, expected_items, scanned_items
       FROM inventory_audit_part_smd
       WHERE audit_id = ? AND location = ? AND numero_parte = ?
-    `, [auditId, location, numero_parte]);
+    `, [auditId, normalizedLocation, normalizedPart]);
 
     if (partRecord.length === 0) {
-      connection.release();
       return res.json({ success: false, error: 'No se encontró la parte' });
     }
 
     if (partRecord[0].status !== 'Mismatch') {
-      connection.release();
       return res.json({ success: false, error: 'La parte no está en estado Mismatch' });
     }
 
     await connection.beginTransaction();
 
-    // Marcar como Missing los items no escaneados de esta parte
-    // Incluir datos adicionales para crear salida inmediata
+    // El snapshot define que etiquetas pertenecen a la auditoria; el stock
+    // actual del lote define la cantidad exacta que se debe retirar ahora.
     const [unscanned] = await connection.query(`
-      SELECT ai.warehousing_id as id, ai.codigo_material_recibido, ai.numero_lote_material, ai.cantidad_actual, ai.especificacion
-      FROM (${getAuditInventorySnapshotQuery()}) ai
-      LEFT JOIN inventory_audit_item_smd iai ON iai.warehousing_id = ai.warehousing_id AND iai.audit_id = ?
-      WHERE ai.location = ? AND ai.numero_parte = ?
-        AND (iai.id IS NULL OR iai.status != 'Found')
-    `, [auditId, location, numero_parte]);
+      SELECT
+        iai.id AS audit_item_id,
+        iai.warehousing_id,
+        iai.warehousing_code,
+        ${AUDIT_ITEM_PART_EXPR} AS numero_parte,
+        ${AUDIT_ITEM_LOT_EXPR} AS numero_lote_material,
+        ${AUDIT_ITEM_SPEC_EXPR} AS especificacion
+      FROM inventory_audit_item_smd iai
+      LEFT JOIN control_material_almacen_smd cma ON cma.id = iai.warehousing_id
+      WHERE iai.audit_id = ?
+        AND iai.location = ?
+        AND ${AUDIT_ITEM_PART_EXPR} = ?
+        AND iai.status NOT IN ('Found', 'ProcessedOut')
+      FOR UPDATE
+    `, [auditId, normalizedLocation, normalizedPart]);
 
-    const now = new Date();
-    const fechaSalida = now.toISOString().slice(0, 19).replace('T', ' ');
     let processedOut = 0;
+    let processedQty = 0;
 
     for (const item of unscanned) {
-      // 1. Registrar/actualizar item de auditoría
-      const [existing] = await connection.query(`
-        SELECT id FROM inventory_audit_item_smd WHERE audit_id = ? AND warehousing_id = ?
-      `, [auditId, item.id]);
-
-      if (existing.length === 0) {
-        await connection.query(`
-          INSERT INTO inventory_audit_item_smd (
-            audit_id, warehousing_id, warehousing_code, location, status, scanned_at, scanned_by, notas, processed_at, processed_by
-          ) VALUES (?, ?, ?, ?, 'ProcessedOut', NOW(), ?, 'Faltante confirmado - salida creada inmediatamente', NOW(), ?)
-        `, [auditId, item.id, item.codigo_material_recibido, location, usuario || 'Mobile', usuario || 'Mobile']);
-      } else {
-        await connection.query(`
-          UPDATE inventory_audit_item_smd
-          SET status = 'ProcessedOut', scanned_at = NOW(), scanned_by = ?, processed_at = NOW(), processed_by = ?
-          WHERE id = ?
-        `, [usuario || 'Mobile', usuario || 'Mobile', existing[0].id]);
-      }
-
-      // 2. Crear salida en control_material_salida_smd
-      await connection.query(`
-        INSERT INTO control_material_salida_smd (
-          codigo_material_recibido, numero_parte, numero_lote,
-          depto_salida, proceso_salida, cantidad_salida,
-          fecha_salida, fecha_registro, especificacion_material, usuario_registro
-        ) VALUES (?, ?, ?, 'AUDITORIA', 'DISCREPANCIA INVENTARIO', ?, ?, NOW(), ?, ?)
-      `, [
-        item.codigo_material_recibido,
-        numero_parte,
-        item.numero_lote_material,
-        item.cantidad_actual,
-        fechaSalida,
-        item.especificacion,
+      const outgoing = await createImmediateAuditOutgoing(
+        connection,
+        item,
         usuario || 'Mobile'
+      );
+
+      await connection.query(`
+        UPDATE inventory_audit_item_smd
+        SET status = 'ProcessedOut',
+            scanned_at = NOW(),
+            scanned_by = ?,
+            processed_at = NOW(),
+            processed_by = ?,
+            notas = ?
+        WHERE id = ?
+      `, [
+        usuario || 'Mobile',
+        usuario || 'Mobile',
+        outgoing.created
+          ? 'Faltante confirmado - salida creada inmediatamente'
+          : 'Faltante confirmado - el lote ya no tenia stock',
+        item.audit_item_id
       ]);
 
-      // 3. Marcar material como salida/desecho
-      await connection.query(`
-        UPDATE control_material_almacen_smd
-        SET tiene_salida = 1, estado_desecho = 1
-        WHERE id = ?
-      `, [item.id]);
-
-      processedOut++;
+      if (outgoing.created) {
+        processedOut++;
+        processedQty += outgoing.quantity;
+      }
     }
 
     // Status final: MissingConfirmed si hay faltantes, o VerifiedByScan si todo fue encontrado
@@ -1781,22 +3406,23 @@ const confirmMissing = async (req, res, next) => {
     await connection.commit();
 
     // Verificar si todas las partes de la ubicación están confirmadas
-    await checkLocationCompletion(auditId, location);
+    await checkLocationCompletion(auditId, normalizedLocation);
 
     const response = {
       success: true,
       message: unscanned.length > 0
         ? `Faltantes confirmados - ${processedOut} salidas creadas`
         : 'Parte verificada por escaneo',
-      numero_parte,
+      numero_parte: normalizedPart,
       missingItems: unscanned.length,
       processedOut,
+      processedQty,
       status: finalStatus,
       requiresApproval: false
     };
 
     if (shouldReturnLocationSummary(req)) {
-      const summary = await buildLocationSummaryPayload(auditId, location);
+      const summary = await buildLocationSummaryPayload(auditId, normalizedLocation);
       response.parts = summary.parts;
       response.progress = summary.progress;
     }
@@ -1817,6 +3443,18 @@ async function checkLocationCompletion(auditId, location) {
     WHERE audit_id = ? AND location = ?
   `, [auditId, location]);
 
+  const [[physicalStats]] = await pool.query(`
+    SELECT COUNT(*) AS discrepancy_count
+    FROM inventory_audit_item_smd
+    WHERE audit_id = ?
+      AND location = ?
+      AND physical_quantity IS NOT NULL
+      AND (
+        is_new_inventory = 1
+        OR ABS(physical_quantity - COALESCE(cantidad_snapshot, 0)) >= 0.0001
+      )
+  `, [auditId, location]);
+
   // Ok, VerifiedByScan y MissingConfirmed cuentan como procesados
   const allDone = parts.every(p => ['Ok', 'VerifiedByScan', 'MissingConfirmed'].includes(p.status));
   const hasMissing = parts.some(p => p.status === 'MissingConfirmed');
@@ -1825,7 +3463,7 @@ async function checkLocationCompletion(auditId, location) {
     // Si hay faltantes confirmados, marca como Discrepancy
     // De lo contrario, Verified
     let locationStatus = 'Verified';
-    if (hasMissing) {
+    if (hasMissing || Number(physicalStats?.discrepancy_count || 0) > 0) {
       locationStatus = 'Discrepancy';
     }
 
@@ -2100,7 +3738,9 @@ module.exports = {
   getAuditLocations,
   getLocationItems,
   scanLocation,
+  reopenLocation,
   scanItem,
+  registerPhysicalItem,
   markMissing,
   completeLocation,
   getAuditHistory,
@@ -2112,6 +3752,8 @@ module.exports = {
   confirmPart,
   flagMismatch,
   scanPartItem,
+  reopenPart,
+  undoMismatch,
   confirmMissing,
   // Aprobación de discrepancias (PC)
   getPendingApprovals,

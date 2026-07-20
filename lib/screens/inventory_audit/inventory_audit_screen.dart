@@ -825,6 +825,16 @@ class _InventoryAuditScreenState extends State<InventoryAuditScreen>
                                         style: const TextStyle(
                                             fontSize: 11,
                                             color: Colors.white54)),
+                                    if (item['physical_quantity'] != null)
+                                      Text(
+                                        '${tr('audit_physical_quantity')}: ${item['physical_quantity']}'
+                                        '${item['is_new_inventory'] == 1 ? ' (${tr('audit_new_items')})' : ''}',
+                                        style: const TextStyle(
+                                          fontSize: 11,
+                                          color: Colors.orangeAccent,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
                                   ]),
                               trailing: Container(
                                 padding: const EdgeInsets.symmetric(

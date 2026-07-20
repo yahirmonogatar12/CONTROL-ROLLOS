@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:dropdown_button2/dropdown_button2.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:material_warehousing_flutter/core/constants/pcb_areas.dart';
 import 'package:material_warehousing_flutter/core/localization/app_translations.dart';
 import 'package:material_warehousing_flutter/core/services/api_service.dart';
 import 'package:material_warehousing_flutter/core/services/auth_service.dart';
@@ -41,7 +42,7 @@ class _MobilePcbExitScreenState extends State<MobilePcbExitScreen> {
   final FocusNode _scanFocusNode = FocusNode();
 
   String _selectedProceso = 'SMD';
-  String _selectedArea = 'INVENTARIO';
+  String _selectedArea = PcbAreas.inventory;
   String _tipoMovimiento = 'SALIDA';
   DateTime _inventoryDate = DateTime.now();
   bool _isLoading = false;
@@ -49,7 +50,7 @@ class _MobilePcbExitScreenState extends State<MobilePcbExitScreen> {
   bool _statusIsError = false;
 
   static const List<String> _procesos = ['SMD', 'IMD', 'ASSY'];
-  static const List<String> _areas = ['INVENTARIO', 'REPARACION'];
+  static const List<String> _areas = PcbAreas.values;
 
   String tr(String key) => widget.languageProvider.tr(key);
 
@@ -305,7 +306,7 @@ class _MobilePcbExitScreenState extends State<MobilePcbExitScreen> {
                                   DropdownMenuItem<Map<String, dynamic>>(
                                 value: option,
                                 child: Text(
-                                  '${option['area']} / ${option['proceso']} - ${tr('pcb_available_stock')}: ${option['available_stock']}',
+                                  '${PcbAreas.label(option['area'])} / ${option['proceso']} - ${tr('pcb_available_stock')}: ${option['available_stock']}',
                                   overflow: TextOverflow.ellipsis,
                                 ),
                               ),
@@ -326,7 +327,7 @@ class _MobilePcbExitScreenState extends State<MobilePcbExitScreen> {
                     if (autoArea.isNotEmpty || autoProceso.isNotEmpty) ...[
                       const SizedBox(height: 6),
                       Text(
-                        '${tr('pcb_auto_area_process')}: $autoArea / $autoProceso',
+                        '${tr('pcb_auto_area_process')}: ${PcbAreas.label(autoArea)} / $autoProceso',
                         style: const TextStyle(
                             color: Colors.cyanAccent, fontSize: 13),
                       ),
@@ -585,6 +586,7 @@ class _MobilePcbExitScreenState extends State<MobilePcbExitScreen> {
             label: tr('pcb_area'),
             value: _selectedArea,
             items: _areas,
+            itemLabel: PcbAreas.label,
             onChanged: (val) {
               if (val != null) {
                 setState(() => _selectedArea = val);
@@ -644,6 +646,7 @@ class _MobilePcbExitScreenState extends State<MobilePcbExitScreen> {
     required String? value,
     required List<String> items,
     required ValueChanged<String?> onChanged,
+    String Function(String)? itemLabel,
   }) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -659,7 +662,8 @@ class _MobilePcbExitScreenState extends State<MobilePcbExitScreen> {
           items: items
               .map((v) => DropdownMenuItem(
                     value: v,
-                    child: Text(v, style: const TextStyle(fontSize: 14)),
+                    child: Text(itemLabel?.call(v) ?? v,
+                        style: const TextStyle(fontSize: 14)),
                   ))
               .toList(),
           onChanged: onChanged,

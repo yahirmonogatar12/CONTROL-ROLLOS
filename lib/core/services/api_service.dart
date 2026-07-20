@@ -1077,6 +1077,51 @@ class ApiService {
     }
   }
 
+  static Future<Map<String, dynamic>> adjustInventoryLot({
+    required int warehousingId,
+    required String codigoMaterialRecibido,
+    required num targetStock,
+    required String reason,
+    String? usuarioRegistro,
+    int? usuarioRegistroId,
+  }) async {
+    try {
+      final response = await http.post(
+        Uri.parse('$baseUrl/inventory/adjust'),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode({
+          'warehousing_id': warehousingId,
+          'codigo_material_recibido': codigoMaterialRecibido,
+          'target_stock': targetStock,
+          'reason': reason,
+          'usuario_registro': usuarioRegistro,
+          'usuario_registro_id': usuarioRegistroId,
+        }),
+      );
+
+      Map<String, dynamic> body = {};
+      if (response.body.isNotEmpty) {
+        final decoded = json.decode(response.body);
+        if (decoded is Map) {
+          body = Map<String, dynamic>.from(decoded);
+        }
+      }
+
+      if (response.statusCode == 201) {
+        return body;
+      }
+
+      return {
+        'success': false,
+        'error': body['error'] ?? 'Error ${response.statusCode}',
+        if (body['code'] != null) 'code': body['code'],
+      };
+    } catch (e) {
+      print('Error en adjustInventoryLot: $e');
+      return {'success': false, 'error': e.toString()};
+    }
+  }
+
   static Future<List<Map<String, dynamic>>> searchInventoryMobile(
       String query) async {
     try {
@@ -3041,6 +3086,59 @@ class ApiService {
 
   // POST - Escanear material (operador movil)
   // El backend valida ubicacion y evita escaneo duplicado.
+  static Future<Map<String, dynamic>> reopenAuditLocation({
+    required String location,
+    required int userId,
+  }) async {
+    try {
+      final response = await http.post(
+        Uri.parse('$baseUrl/audit/reopen-location'),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode({'location': location, 'usuario': userId}),
+      );
+      final body = json.decode(response.body);
+      if (response.statusCode == 200 && body['success'] != false) {
+        return {'success': true, 'data': body};
+      }
+      return {
+        'success': false,
+        'error': body['error'] ?? 'Error al reabrir ubicación'
+      };
+    } catch (e) {
+      print('Error en reopenAuditLocation: $e');
+      return {'success': false, 'error': e.toString()};
+    }
+  }
+
+  static Future<Map<String, dynamic>> reopenAuditPart({
+    required String location,
+    required String numeroParte,
+    required int userId,
+  }) async {
+    try {
+      final response = await http.post(
+        Uri.parse('$baseUrl/audit/reopen-part'),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode({
+          'location': location,
+          'numero_parte': numeroParte,
+          'usuario': userId,
+        }),
+      );
+      final body = json.decode(response.body);
+      if (response.statusCode == 200 && body['success'] != false) {
+        return {'success': true, 'data': body};
+      }
+      return {
+        'success': false,
+        'error': body['error'] ?? 'Error al reabrir parte'
+      };
+    } catch (e) {
+      print('Error en reopenAuditPart: $e');
+      return {'success': false, 'error': e.toString()};
+    }
+  }
+
   static Future<Map<String, dynamic>> auditScanItem({
     required int auditId,
     required String location,
@@ -3075,6 +3173,54 @@ class ApiService {
       };
     } catch (e) {
       print('Error en auditScanItem: $e');
+      return {'success': false, 'error': e.toString()};
+    }
+  }
+
+  // POST - Registrar el conteo físico de una etiqueta durante la auditoría.
+  // Si el material no existe, el backend lo da de alta con parte/lote; si ya
+  // existe, ajusta inventario a la cantidad física capturada.
+  static Future<Map<String, dynamic>> registerAuditPhysicalItem({
+    required String location,
+    required String warehousingCode,
+    required double physicalQuantity,
+    required int userId,
+    String? numeroParte,
+    String? numeroLote,
+    String? especificacion,
+    String? unidadMedida,
+  }) async {
+    try {
+      final response = await http.post(
+        Uri.parse('$baseUrl/audit/physical-item'),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode({
+          'location': location,
+          'warehousing_code': warehousingCode,
+          'physical_quantity': physicalQuantity,
+          'usuario': userId,
+          'usuario_id': userId,
+          if (numeroParte != null && numeroParte.trim().isNotEmpty)
+            'numero_parte': numeroParte.trim(),
+          if (numeroLote != null && numeroLote.trim().isNotEmpty)
+            'numero_lote': numeroLote.trim(),
+          if (especificacion != null && especificacion.trim().isNotEmpty)
+            'especificacion': especificacion.trim(),
+          if (unidadMedida != null && unidadMedida.trim().isNotEmpty)
+            'unidad_medida': unidadMedida.trim(),
+        }),
+      );
+      final body = json.decode(response.body);
+      if (response.statusCode == 200 && body['success'] == true) {
+        return {'success': true, 'data': body};
+      }
+      return {
+        'success': false,
+        'code': body['code'],
+        'error': body['error'] ?? 'Error al registrar cantidad física',
+      };
+    } catch (e) {
+      print('Error en registerAuditPhysicalItem: $e');
       return {'success': false, 'error': e.toString()};
     }
   }
@@ -3308,6 +3454,7 @@ class ApiService {
   // POST - Escanear etiqueta individual de una parte en Mismatch
   static Future<Map<String, dynamic>> scanAuditPartItem({
     required String location,
+    required String numeroParte,
     required String warehousingCode,
     required int userId,
   }) async {
@@ -3317,6 +3464,7 @@ class ApiService {
         headers: {'Content-Type': 'application/json'},
         body: json.encode({
           'location': location,
+          'numero_parte': numeroParte,
           'warehousing_code': warehousingCode,
           'usuario': userId,
           'return_summary': 1,
@@ -3344,6 +3492,37 @@ class ApiService {
   }
 
   // POST - Confirmar faltantes de una parte en Mismatch
+  static Future<Map<String, dynamic>> undoAuditMismatch({
+    required String location,
+    required String numeroParte,
+    required int userId,
+    bool confirmOk = false,
+  }) async {
+    try {
+      final response = await http.post(
+        Uri.parse('$baseUrl/audit/undo-mismatch'),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode({
+          'location': location,
+          'numero_parte': numeroParte,
+          'usuario': userId,
+          'confirm_ok': confirmOk,
+        }),
+      );
+      final body = json.decode(response.body);
+      if (response.statusCode == 200 && body['success'] != false) {
+        return {'success': true, 'data': body};
+      }
+      return {
+        'success': false,
+        'error': body['error'] ?? 'Error al deshacer discrepancia'
+      };
+    } catch (e) {
+      print('Error en undoAuditMismatch: $e');
+      return {'success': false, 'error': e.toString()};
+    }
+  }
+
   static Future<Map<String, dynamic>> confirmAuditMissing({
     required String location,
     required String numeroParte,
@@ -4200,7 +4379,7 @@ class ApiService {
   }
 
   // POST - Registrar escaneo de PCB (ENTRADA, SALIDA o SCRAP)
-  // area: INVENTARIO | REPARACION
+  // area: INVENTARIO | INVENTARIO_REPARACION | REPARACION
   // proceso: SMD | IMD | ASSY
   static Future<Map<String, dynamic>> scanPcbInventory({
     required String scannedCode,
@@ -4258,7 +4437,7 @@ class ApiService {
       } else {
         return {
           'success': false,
-          'message': body['message'] ?? 'Error desconocido',
+          'message': body['message'] ?? body['error'] ?? 'Error desconocido',
           'code': body['code'] ?? 'UNKNOWN',
           'statusCode': response.statusCode,
           ...body,
@@ -4540,6 +4719,273 @@ class ApiService {
       return {'success': false, 'data': [], 'count': 0};
     } catch (e) {
       return {'success': false, 'data': [], 'count': 0};
+    }
+  }
+
+  static Future<Map<String, dynamic>> getScrapMotivos(
+      {bool includeInactive = false}) async {
+    try {
+      String url = '$baseUrl/scrap-motivos?includeInactive=$includeInactive';
+      final response = await http.get(Uri.parse(url));
+      if (response.statusCode == 200) {
+        return json.decode(response.body);
+      }
+      return {'success': false, 'data': [], 'total': 0};
+    } catch (e) {
+      return {'success': false, 'data': [], 'total': 0};
+    }
+  }
+
+  // POST - Crear motivo de scrap
+  static Future<Map<String, dynamic>> createScrapMotivo({
+    required String motivo,
+    String? usuario,
+  }) async {
+    try {
+      final response = await http.post(
+        Uri.parse('$baseUrl/scrap-motivos'),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode({
+          'motivo': motivo,
+          'usuario': usuario,
+        }),
+      );
+      final body = json.decode(response.body);
+      if (response.statusCode == 200 && body['success'] == true) {
+        return body;
+      }
+      return {
+        'success': false,
+        'message': body['message'] ?? 'Error desconocido',
+        'code': body['code'] ?? 'UNKNOWN',
+      };
+    } catch (e) {
+      return {'success': false, 'message': 'Error de conexion: $e'};
+    }
+  }
+
+  // PUT - Actualizar motivo de scrap
+  static Future<Map<String, dynamic>> updateScrapMotivo({
+    required int id,
+    String? motivo,
+    bool? activo,
+    String? usuario,
+  }) async {
+    try {
+      final body = <String, dynamic>{};
+      if (motivo != null) body['motivo'] = motivo;
+      if (activo != null) body['activo'] = activo;
+      if (usuario != null) body['usuario'] = usuario;
+
+      final response = await http.put(
+        Uri.parse('$baseUrl/scrap-motivos/$id'),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode(body),
+      );
+      final respBody = json.decode(response.body);
+      if (response.statusCode == 200 && respBody['success'] == true) {
+        return respBody;
+      }
+      return {
+        'success': false,
+        'message': respBody['message'] ?? 'Error desconocido',
+        'code': respBody['code'] ?? 'UNKNOWN',
+      };
+    } catch (e) {
+      return {'success': false, 'message': 'Error de conexion: $e'};
+    }
+  }
+
+  // DELETE - Desactivar motivo de scrap
+  static Future<Map<String, dynamic>> deleteScrapMotivo(int id,
+      {String? usuario}) async {
+    try {
+      final response = await http.delete(
+        Uri.parse('$baseUrl/scrap-motivos/$id?usuario=${usuario ?? ''}'),
+      );
+      return json.decode(response.body);
+    } catch (e) {
+      return {'success': false, 'message': 'Error de conexion: $e'};
+    }
+  }
+
+  // ============================================
+  // SCRAP RECORDS
+  // ============================================
+
+  // GET - Lookup raw_barcode por QR escaneado.
+  // Respuesta: { success, found, raw_barcode, source }
+  static Future<Map<String, dynamic>> lookupRawBarcode(String codigo) async {
+    try {
+      final code = codigo.trim();
+      if (code.isEmpty) {
+        return {'success': false, 'found': false, 'raw_barcode': null};
+      }
+      final response = await http.get(
+        Uri.parse(
+            '$baseUrl/scrap/lookup-raw-barcode?codigo=${Uri.encodeQueryComponent(code)}'),
+      );
+      if (response.statusCode != 200) {
+        return {'success': false, 'found': false, 'raw_barcode': null};
+      }
+      final body = json.decode(response.body);
+      return {
+        'success': body['success'] == true,
+        'found': body['found'] == true,
+        'raw_barcode': body['raw_barcode'],
+        'source': body['source'],
+      };
+    } catch (_) {
+      return {'success': false, 'found': false, 'raw_barcode': null};
+    }
+  }
+
+  // POST - Registrar escaneo de scrap
+  static Future<Map<String, dynamic>> scanScrap({
+    required String scannedCode,
+    required String area,
+    required String proceso,
+    required int motivoScrapId,
+    String? comentarios,
+    String? usuario,
+    int cantidad = 1,
+    String? rawBarcode,
+  }) async {
+    try {
+      final response = await http.post(
+        Uri.parse('$baseUrl/scrap/scan'),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode({
+          'scanned_code': scannedCode,
+          'area': area,
+          'proceso': proceso,
+          'motivo_scrap_id': motivoScrapId,
+          'comentarios': comentarios,
+          'usuario': usuario,
+          'cantidad': cantidad,
+          'raw_barcode': rawBarcode,
+        }),
+      );
+      final body = json.decode(response.body);
+      if (response.statusCode == 200 && body['success'] == true) {
+        return body;
+      }
+      return {
+        'success': false,
+        'message': body['message'] ?? 'Error desconocido',
+        'code': body['code'] ?? 'UNKNOWN',
+        'statusCode': response.statusCode,
+      };
+    } catch (e) {
+      return {
+        'success': false,
+        'message': 'Error de conexion: $e',
+        'code': 'CONNECTION_ERROR'
+      };
+    }
+  }
+
+  // GET - Historial de registros de scrap
+  static Future<Map<String, dynamic>> getScrapRecords({
+    required String fechaInicio,
+    required String fechaFin,
+    String? area,
+    int limit = 5000,
+  }) async {
+    try {
+      String url =
+          '$baseUrl/scrap/records?fecha_inicio=$fechaInicio&fecha_fin=$fechaFin&limit=$limit';
+      if (area != null && area.isNotEmpty) {
+        url += '&area=$area';
+      }
+      final response = await http.get(Uri.parse(url));
+      if (response.statusCode == 200) {
+        return json.decode(response.body);
+      }
+      return {'success': false, 'data': [], 'count': 0};
+    } catch (e) {
+      return {'success': false, 'data': [], 'count': 0};
+    }
+  }
+
+  // PUT - Actualizar registro historico de scrap
+  static Future<Map<String, dynamic>> updateScrapRecord({
+    required int id,
+    required String scannedCode,
+    required String area,
+    required String proceso,
+    required int motivoScrapId,
+    String? comentarios,
+    required int cantidad,
+    required String editReason,
+    required int editedByUserId,
+    required String editedByName,
+    String? rawBarcode,
+  }) async {
+    try {
+      final response = await http.put(
+        Uri.parse('$baseUrl/scrap/record/$id'),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode({
+          'scanned_code': scannedCode,
+          'area': area,
+          'proceso': proceso,
+          'motivo_scrap_id': motivoScrapId,
+          'comentarios': comentarios,
+          'cantidad': cantidad,
+          'raw_barcode': rawBarcode,
+          'edit_reason': editReason,
+          'edited_by_user_id': editedByUserId,
+          'edited_by_name': editedByName,
+        }),
+      );
+      final body = json.decode(response.body);
+      if (response.statusCode == 200 && body['success'] == true) {
+        return body;
+      }
+      return {
+        'success': false,
+        'message': body['message'] ?? 'Error desconocido',
+        'code': body['code'] ?? 'UNKNOWN',
+        'statusCode': response.statusCode,
+      };
+    } catch (e) {
+      return {
+        'success': false,
+        'message': 'Error de conexion: $e',
+        'code': 'CONNECTION_ERROR'
+      };
+    }
+  }
+
+  // DELETE - Eliminar registro de scrap (deshacer)
+  static Future<Map<String, dynamic>> deleteScrapRecord(int id) async {
+    try {
+      final response = await http.delete(
+        Uri.parse('$baseUrl/scrap/record/$id'),
+      );
+      return json.decode(response.body);
+    } catch (e) {
+      return {'success': false, 'message': 'Error de conexion: $e'};
+    }
+  }
+
+  // GET - Autocompletado de PCBs desde tabla raw
+  static Future<List<Map<String, dynamic>>> autocompleteScrap(
+      String query, String area) async {
+    try {
+      if (query.length < 3) return [];
+      final response = await http.get(
+        Uri.parse(
+            '$baseUrl/scrap/autocomplete?q=${Uri.encodeQueryComponent(query)}&area=${Uri.encodeQueryComponent(area)}'),
+      );
+      if (response.statusCode == 200) {
+        final body = json.decode(response.body);
+        return (body['data'] as List?)?.cast<Map<String, dynamic>>() ?? [];
+      }
+      return [];
+    } catch (e) {
+      return [];
     }
   }
 }

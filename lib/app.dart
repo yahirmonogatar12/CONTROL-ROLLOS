@@ -1,9 +1,9 @@
-import 'dart:async';
+import 'dart:async' show Timer;
+
 import 'package:flutter/material.dart';
 import 'package:material_warehousing_flutter/core/localization/app_translations.dart';
 import 'package:material_warehousing_flutter/core/services/auth_service.dart';
 import 'package:material_warehousing_flutter/core/services/backend_service.dart';
-import 'package:material_warehousing_flutter/core/services/update_service.dart';
 import 'package:material_warehousing_flutter/core/utils/platform_utils.dart';
 import 'package:material_warehousing_flutter/screens/launcher/launcher_screen.dart';
 import 'package:material_warehousing_flutter/screens/login/login_screen.dart';
@@ -91,10 +91,6 @@ class _MesTabsAppState extends State<MesTabsApp> {
     });
     // Iniciar timer de verificación de expiración
     _startSessionExpirationTimer();
-    // Verificar actualizaciones después del login (solo desktop)
-    if (PlatformUtils.isDesktop) {
-      _checkForUpdates();
-    }
   }
   
   /// Iniciar timer que verifica expiración de sesión cada hora
@@ -127,22 +123,6 @@ class _MesTabsAppState extends State<MesTabsApp> {
     }
   }
   
-  /// Verificar si hay actualizaciones disponibles
-  Future<void> _checkForUpdates() async {
-    // Esperar un momento para que la pantalla principal se cargue
-    await Future.delayed(const Duration(seconds: 2));
-    
-    final updateInfo = await UpdateService.checkForUpdates();
-    
-    if (updateInfo != null && updateInfo.updateAvailable && mounted) {
-      // Obtener el contexto actual
-      final context = this.context;
-      if (context.mounted) {
-        await UpdateService.showUpdateDialog(context, updateInfo);
-      }
-    }
-  }
-
   void _handleLogout() async {
     _stopSessionExpirationTimer();
     await AuthService.logout();

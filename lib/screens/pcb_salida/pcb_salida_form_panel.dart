@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:material_warehousing_flutter/core/constants/pcb_areas.dart';
 import 'package:material_warehousing_flutter/core/localization/app_translations.dart';
 import 'package:material_warehousing_flutter/core/theme/app_colors.dart';
 import 'package:material_warehousing_flutter/core/widgets/field_decoration.dart';
@@ -43,7 +44,7 @@ class PcbSalidaFormPanelState extends State<PcbSalidaFormPanel>
   final FocusNode _scanFocusNode = FocusNode();
 
   String _selectedProceso = 'SMD';
-  String _selectedArea = 'INVENTARIO';
+  String _selectedArea = PcbAreas.inventory;
   String _tipoMovimiento = 'SALIDA'; // SALIDA or SCRAP
   DateTime _inventoryDate = DateTime.now();
   bool _isLoading = false;
@@ -52,7 +53,7 @@ class PcbSalidaFormPanelState extends State<PcbSalidaFormPanel>
   List<int> _lastInsertedIds = [];
 
   static const List<String> _procesos = ['SMD', 'IMD', 'ASSY'];
-  static const List<String> _areas = ['INVENTARIO', 'REPARACION'];
+  static const List<String> _areas = PcbAreas.values;
 
   String tr(String key) => widget.languageProvider.tr(key);
 
@@ -313,7 +314,7 @@ class PcbSalidaFormPanelState extends State<PcbSalidaFormPanel>
                                   DropdownMenuItem<Map<String, dynamic>>(
                                 value: option,
                                 child: Text(
-                                  '${option['area']} / ${option['proceso']} - ${tr('pcb_available_stock')}: ${option['available_stock']}',
+                                  '${PcbAreas.label(option['area'])} / ${option['proceso']} - ${tr('pcb_available_stock')}: ${option['available_stock']}',
                                   overflow: TextOverflow.ellipsis,
                                 ),
                               ),
@@ -333,7 +334,7 @@ class PcbSalidaFormPanelState extends State<PcbSalidaFormPanel>
                     if (autoArea.isNotEmpty || autoProceso.isNotEmpty) ...[
                       const SizedBox(height: 6),
                       Text(
-                        '${tr('pcb_auto_area_process')}: $autoArea / $autoProceso',
+                        '${tr('pcb_auto_area_process')}: ${PcbAreas.label(autoArea)} / $autoProceso',
                         style:
                             const TextStyle(color: Colors.cyan, fontSize: 13),
                       ),
