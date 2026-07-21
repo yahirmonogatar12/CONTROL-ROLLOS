@@ -1,11 +1,11 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:excel/excel.dart' as xl;
 import 'package:intl/intl.dart';
 import 'package:material_warehousing_flutter/core/localization/app_translations.dart';
 import 'package:material_warehousing_flutter/core/theme/app_colors.dart';
 import 'package:material_warehousing_flutter/core/services/api_service.dart';
+import 'package:material_warehousing_flutter/core/services/file_opener.dart';
 import 'package:material_warehousing_flutter/core/services/auth_service.dart';
 import 'package:material_warehousing_flutter/core/widgets/grid_footer.dart';
 
@@ -17,7 +17,7 @@ class RequirementsGridPanel extends StatefulWidget {
   final Function(Map<String, dynamic>?)? onRequirementSelected;
   final VoidCallback? onCreateNew;
   final VoidCallback? onEdit;
-  
+
   const RequirementsGridPanel({
     super.key,
     required this.languageProvider,
@@ -35,7 +35,7 @@ class RequirementsGridPanelState extends State<RequirementsGridPanel> {
   List<Map<String, dynamic>> _filteredData = [];
   bool _isLoading = true;
   int _selectedIndex = -1;
-  
+
   // Filtros
   String? _filterArea;
   String? _filterStatus;
@@ -44,7 +44,7 @@ class RequirementsGridPanelState extends State<RequirementsGridPanel> {
   DateTime? _fechaFin;
   bool _showPendingOnly = true; // Por defecto mostrar solo pendientes
   final TextEditingController _searchController = TextEditingController();
-  
+
   // Áreas disponibles
   List<String> _areas = [];
 
@@ -59,13 +59,13 @@ class RequirementsGridPanelState extends State<RequirementsGridPanel> {
     _loadAreas();
     loadData();
   }
-  
+
   @override
   void dispose() {
     _searchController.dispose();
     super.dispose();
   }
-  
+
   Future<void> _loadAreas() async {
     try {
       final areas = await ApiService.getRequirementAreas();
@@ -74,19 +74,21 @@ class RequirementsGridPanelState extends State<RequirementsGridPanel> {
       }
     } catch (e) {
       // Usar áreas por defecto si falla
-      setState(() => _areas = ['SMD', 'Assy', 'Molding', 'Pre-Assy', 'Empaque', 'Rework']);
+      setState(() =>
+          _areas = ['SMD', 'Assy', 'Molding', 'Pre-Assy', 'Empaque', 'Rework']);
     }
   }
-  
+
   Future<void> loadData() async {
     setState(() => _isLoading = true);
-    
+
     try {
       final dateFormat = DateFormat('yyyy-MM-dd');
       final data = await ApiService.getRequirements(
         area: _filterArea,
         status: _filterStatus,
-        fechaInicio: _fechaInicio != null ? dateFormat.format(_fechaInicio!) : null,
+        fechaInicio:
+            _fechaInicio != null ? dateFormat.format(_fechaInicio!) : null,
         fechaFin: _fechaFin != null ? dateFormat.format(_fechaFin!) : null,
         pendingOnly: _showPendingOnly,
       );
@@ -101,48 +103,61 @@ class RequirementsGridPanelState extends State<RequirementsGridPanel> {
       if (mounted) {
         setState(() => _isLoading = false);
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error loading data: $e'), backgroundColor: Colors.red),
+          SnackBar(
+              content: Text('Error loading data: $e'),
+              backgroundColor: Colors.red),
         );
       }
     }
   }
-  
+
   void _applyFilters() {
     var result = List<Map<String, dynamic>>.from(_data);
-    
+
     // Aplicar búsqueda
     if (_searchText.isNotEmpty) {
       result = result.where((row) {
-        return row.values.any((value) => 
-          value?.toString().toLowerCase().contains(_searchText.toLowerCase()) ?? false
-        );
+        return row.values.any((value) =>
+            value
+                ?.toString()
+                .toLowerCase()
+                .contains(_searchText.toLowerCase()) ??
+            false);
       }).toList();
     }
-    
+
     _filteredData = result;
     _selectedIndex = -1;
   }
-  
+
   void _onSearch(String value) {
     setState(() {
       _searchText = value;
       _applyFilters();
     });
   }
-  
+
   Future<void> _exportToExcel() async {
     try {
       final excel = xl.Excel.createExcel();
       final sheet = excel['Requirements'];
-      
-      final headers = [tr('code'), tr('target_area'), tr('required_date'), 
-                       tr('status'), tr('priority'), tr('items'), tr('created_by')];
-      
+
+      final headers = [
+        tr('code'),
+        tr('target_area'),
+        tr('required_date'),
+        tr('status'),
+        tr('priority'),
+        tr('items'),
+        tr('created_by')
+      ];
+
       for (var i = 0; i < headers.length; i++) {
-        sheet.cell(xl.CellIndex.indexByColumnRow(columnIndex: i, rowIndex: 0)).value = 
-          xl.TextCellValue(headers[i]);
+        sheet
+            .cell(xl.CellIndex.indexByColumnRow(columnIndex: i, rowIndex: 0))
+            .value = xl.TextCellValue(headers[i]);
       }
-      
+
       for (var rowIdx = 0; rowIdx < _filteredData.length; rowIdx++) {
         final row = _filteredData[rowIdx];
         final values = [
@@ -154,31 +169,40 @@ class RequirementsGridPanelState extends State<RequirementsGridPanel> {
           row['total_items']?.toString() ?? '0',
           row['creado_por'] ?? '',
         ];
-        
+
         for (var colIdx = 0; colIdx < values.length; colIdx++) {
-          sheet.cell(xl.CellIndex.indexByColumnRow(columnIndex: colIdx, rowIndex: rowIdx + 1)).value = 
-            xl.TextCellValue(values[colIdx]);
+          sheet
+              .cell(xl.CellIndex.indexByColumnRow(
+                  columnIndex: colIdx, rowIndex: rowIdx + 1))
+              .value = xl.TextCellValue(values[colIdx]);
         }
       }
-      
+
       final bytes = excel.encode();
       if (bytes != null) {
-        final timestamp = DateTime.now().toString().replaceAll(':', '-').split('.')[0];
+        final timestamp =
+            DateTime.now().toString().replaceAll(':', '-').split('.')[0];
         final fileName = 'Requirements_$timestamp.xlsx';
-        final downloadsDir = Directory('${Platform.environment['USERPROFILE']}\\Downloads');
-        final file = File('${downloadsDir.path}\\$fileName');
+        final downloadsDir =
+            Directory('${Platform.environment['USERPROFILE']}\\Downloads');
+        final filePath = '${downloadsDir.path}\\$fileName';
+        final file = File(filePath);
         await file.writeAsBytes(bytes);
-        
+        await FileOpener.openInDefaultApp(filePath);
+
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('${tr('exported_to')}: $fileName'), backgroundColor: Colors.green),
+            SnackBar(
+                content: Text('${tr('exported_to')}: $fileName'),
+                backgroundColor: Colors.green),
           );
         }
       }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Export error: $e'), backgroundColor: Colors.red),
+          SnackBar(
+              content: Text('Export error: $e'), backgroundColor: Colors.red),
         );
       }
     }
@@ -198,13 +222,14 @@ class RequirementsGridPanelState extends State<RequirementsGridPanel> {
           Expanded(child: _buildDataRows()),
           // Footer
           GridFooter(
-            text: '${tr('total_rows')}: ${_filteredData.length}${_data.length != _filteredData.length ? ' / ${_data.length}' : ''}',
+            text:
+                '${tr('total_rows')}: ${_filteredData.length}${_data.length != _filteredData.length ? ' / ${_data.length}' : ''}',
           ),
         ],
       ),
     );
   }
-  
+
   Widget _buildToolbar() {
     return Container(
       height: 36,
@@ -223,8 +248,7 @@ class RequirementsGridPanelState extends State<RequirementsGridPanel> {
               color: Colors.teal,
               onPressed: widget.onCreateNew,
             ),
-          if (AuthService.canWriteRequirements)
-            const SizedBox(width: 8),
+          if (AuthService.canWriteRequirements) const SizedBox(width: 8),
           // Refrescar
           _buildToolbarButton(
             icon: Icons.refresh,
@@ -254,20 +278,24 @@ class RequirementsGridPanelState extends State<RequirementsGridPanel> {
             child: DropdownButtonHideUnderline(
               child: DropdownButton<String>(
                 value: _filterArea,
-                hint: Text(tr('all_areas'), style: const TextStyle(color: Colors.white54, fontSize: 10)),
+                hint: Text(tr('all_areas'),
+                    style:
+                        const TextStyle(color: Colors.white54, fontSize: 10)),
                 isExpanded: true,
                 dropdownColor: AppColors.panelBackground,
                 style: const TextStyle(color: Colors.white, fontSize: 10),
-                icon: const Icon(Icons.arrow_drop_down, size: 16, color: Colors.white54),
+                icon: const Icon(Icons.arrow_drop_down,
+                    size: 16, color: Colors.white54),
                 items: [
                   DropdownMenuItem<String>(
                     value: null,
-                    child: Text(tr('all_areas'), style: const TextStyle(fontSize: 10)),
+                    child: Text(tr('all_areas'),
+                        style: const TextStyle(fontSize: 10)),
                   ),
                   ..._areas.map((area) => DropdownMenuItem<String>(
-                    value: area,
-                    child: Text(area, style: const TextStyle(fontSize: 10)),
-                  )),
+                        value: area,
+                        child: Text(area, style: const TextStyle(fontSize: 10)),
+                      )),
                 ],
                 onChanged: (value) {
                   setState(() => _filterArea = value);
@@ -290,21 +318,36 @@ class RequirementsGridPanelState extends State<RequirementsGridPanel> {
             child: DropdownButtonHideUnderline(
               child: DropdownButton<String>(
                 value: _filterStatus,
-                hint: Text(tr('all_status'), style: const TextStyle(color: Colors.white54, fontSize: 10)),
+                hint: Text(tr('all_status'),
+                    style:
+                        const TextStyle(color: Colors.white54, fontSize: 10)),
                 isExpanded: true,
                 dropdownColor: AppColors.panelBackground,
                 style: const TextStyle(color: Colors.white, fontSize: 10),
-                icon: const Icon(Icons.arrow_drop_down, size: 16, color: Colors.white54),
+                icon: const Icon(Icons.arrow_drop_down,
+                    size: 16, color: Colors.white54),
                 items: [
                   DropdownMenuItem<String>(
                     value: null,
-                    child: Text(tr('all_status'), style: const TextStyle(fontSize: 10)),
+                    child: Text(tr('all_status'),
+                        style: const TextStyle(fontSize: 10)),
                   ),
-                  const DropdownMenuItem<String>(value: 'Pendiente', child: Text('Pendiente', style: TextStyle(fontSize: 10))),
-                  const DropdownMenuItem<String>(value: 'En Preparación', child: Text('En Preparación', style: TextStyle(fontSize: 10))),
-                  const DropdownMenuItem<String>(value: 'Listo', child: Text('Listo', style: TextStyle(fontSize: 10))),
-                  const DropdownMenuItem<String>(value: 'Entregado', child: Text('Entregado', style: TextStyle(fontSize: 10))),
-                  const DropdownMenuItem<String>(value: 'Cancelado', child: Text('Cancelado', style: TextStyle(fontSize: 10))),
+                  const DropdownMenuItem<String>(
+                      value: 'Pendiente',
+                      child: Text('Pendiente', style: TextStyle(fontSize: 10))),
+                  const DropdownMenuItem<String>(
+                      value: 'En Preparación',
+                      child: Text('En Preparación',
+                          style: TextStyle(fontSize: 10))),
+                  const DropdownMenuItem<String>(
+                      value: 'Listo',
+                      child: Text('Listo', style: TextStyle(fontSize: 10))),
+                  const DropdownMenuItem<String>(
+                      value: 'Entregado',
+                      child: Text('Entregado', style: TextStyle(fontSize: 10))),
+                  const DropdownMenuItem<String>(
+                      value: 'Cancelado',
+                      child: Text('Cancelado', style: TextStyle(fontSize: 10))),
                 ],
                 onChanged: (value) {
                   setState(() => _filterStatus = value);
@@ -319,10 +362,12 @@ class RequirementsGridPanelState extends State<RequirementsGridPanel> {
             label: tr('from'),
             date: _fechaInicio,
             onTap: () => _selectDate(isStart: true),
-            onClear: _fechaInicio != null ? () {
-              setState(() => _fechaInicio = null);
-              loadData();
-            } : null,
+            onClear: _fechaInicio != null
+                ? () {
+                    setState(() => _fechaInicio = null);
+                    loadData();
+                  }
+                : null,
           ),
           const SizedBox(width: 4),
           // Filtro de fecha fin
@@ -330,10 +375,12 @@ class RequirementsGridPanelState extends State<RequirementsGridPanel> {
             label: tr('to'),
             date: _fechaFin,
             onTap: () => _selectDate(isStart: false),
-            onClear: _fechaFin != null ? () {
-              setState(() => _fechaFin = null);
-              loadData();
-            } : null,
+            onClear: _fechaFin != null
+                ? () {
+                    setState(() => _fechaFin = null);
+                    loadData();
+                  }
+                : null,
           ),
           const SizedBox(width: 8),
           // Toggle: Solo pendientes / Todos
@@ -369,7 +416,8 @@ class RequirementsGridPanelState extends State<RequirementsGridPanel> {
                     style: const TextStyle(fontSize: 10, color: Colors.white),
                     decoration: InputDecoration(
                       hintText: tr('search'),
-                      hintStyle: const TextStyle(color: Colors.white38, fontSize: 10),
+                      hintStyle:
+                          const TextStyle(color: Colors.white38, fontSize: 10),
                       border: InputBorder.none,
                       isDense: true,
                       contentPadding: EdgeInsets.zero,
@@ -384,7 +432,7 @@ class RequirementsGridPanelState extends State<RequirementsGridPanel> {
       ),
     );
   }
-  
+
   Widget _buildToolbarButton({
     required IconData icon,
     required String label,
@@ -399,9 +447,9 @@ class RequirementsGridPanelState extends State<RequirementsGridPanel> {
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
           decoration: BoxDecoration(
-            color: color.withOpacity(0.2),
+            color: color.withValues(alpha: 0.2),
             borderRadius: BorderRadius.circular(4),
-            border: Border.all(color: color.withOpacity(0.5)),
+            border: Border.all(color: color.withValues(alpha: 0.5)),
           ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
@@ -415,7 +463,7 @@ class RequirementsGridPanelState extends State<RequirementsGridPanel> {
       ),
     );
   }
-  
+
   Widget _buildToggleButton({
     required bool isActive,
     required String activeLabel,
@@ -427,7 +475,7 @@ class RequirementsGridPanelState extends State<RequirementsGridPanel> {
     final color = isActive ? Colors.amber : Colors.grey;
     final label = isActive ? activeLabel : inactiveLabel;
     final icon = isActive ? activeIcon : inactiveIcon;
-    
+
     return Tooltip(
       message: isActive ? tr('click_to_show_all') : tr('click_to_show_pending'),
       child: Material(
@@ -438,9 +486,9 @@ class RequirementsGridPanelState extends State<RequirementsGridPanel> {
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
             decoration: BoxDecoration(
-              color: color.withOpacity(0.2),
+              color: color.withValues(alpha: 0.2),
               borderRadius: BorderRadius.circular(4),
-              border: Border.all(color: color.withOpacity(0.5)),
+              border: Border.all(color: color.withValues(alpha: 0.5)),
             ),
             child: Row(
               mainAxisSize: MainAxisSize.min,
@@ -455,7 +503,7 @@ class RequirementsGridPanelState extends State<RequirementsGridPanel> {
       ),
     );
   }
-  
+
   Widget _buildDateFilter({
     required String label,
     DateTime? date,
@@ -469,18 +517,24 @@ class RequirementsGridPanelState extends State<RequirementsGridPanel> {
         height: 24,
         padding: const EdgeInsets.symmetric(horizontal: 6),
         decoration: BoxDecoration(
-          color: date != null ? Colors.teal.withOpacity(0.2) : AppColors.gridBackground,
+          color: date != null
+              ? Colors.teal.withValues(alpha: 0.2)
+              : AppColors.gridBackground,
           borderRadius: BorderRadius.circular(4),
-          border: Border.all(color: date != null ? Colors.teal : AppColors.border),
+          border:
+              Border.all(color: date != null ? Colors.teal : AppColors.border),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.calendar_today, size: 10, color: date != null ? Colors.teal : Colors.white54),
+            Icon(Icons.calendar_today,
+                size: 10, color: date != null ? Colors.teal : Colors.white54),
             const SizedBox(width: 4),
             Text(
               date != null ? dateFormat.format(date) : label,
-              style: TextStyle(fontSize: 10, color: date != null ? Colors.teal : Colors.white54),
+              style: TextStyle(
+                  fontSize: 10,
+                  color: date != null ? Colors.teal : Colors.white54),
             ),
             if (onClear != null) ...[
               const SizedBox(width: 4),
@@ -494,9 +548,11 @@ class RequirementsGridPanelState extends State<RequirementsGridPanel> {
       ),
     );
   }
-  
+
   Future<void> _selectDate({required bool isStart}) async {
-    final initialDate = isStart ? (_fechaInicio ?? DateTime.now()) : (_fechaFin ?? DateTime.now());
+    final initialDate = isStart
+        ? (_fechaInicio ?? DateTime.now())
+        : (_fechaFin ?? DateTime.now());
     final result = await showDatePicker(
       context: context,
       initialDate: initialDate,
@@ -516,7 +572,7 @@ class RequirementsGridPanelState extends State<RequirementsGridPanel> {
         );
       },
     );
-    
+
     if (result != null) {
       setState(() {
         if (isStart) {
@@ -528,7 +584,7 @@ class RequirementsGridPanelState extends State<RequirementsGridPanel> {
       loadData();
     }
   }
-  
+
   Widget _buildHeader() {
     return Container(
       height: 28,
@@ -549,49 +605,54 @@ class RequirementsGridPanelState extends State<RequirementsGridPanel> {
       ),
     );
   }
-  
+
   Widget _buildHeaderCell(String text, {int flex = 1}) {
     return Expanded(
       flex: flex,
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 6),
         decoration: const BoxDecoration(
-          border: Border(right: BorderSide(color: AppColors.border, width: 0.5)),
+          border:
+              Border(right: BorderSide(color: AppColors.border, width: 0.5)),
         ),
         child: Text(
           text,
-          style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: Colors.white),
+          style: const TextStyle(
+              fontSize: 10, fontWeight: FontWeight.w600, color: Colors.white),
           overflow: TextOverflow.ellipsis,
         ),
       ),
     );
   }
-  
+
   Widget _buildDataRows() {
     if (_isLoading) {
       return const Center(child: CircularProgressIndicator(color: Colors.teal));
     }
-    
+
     if (_filteredData.isEmpty) {
       return Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(Icons.assignment_outlined, size: 48, color: Colors.white.withOpacity(0.1)),
+            Icon(Icons.assignment_outlined,
+                size: 48, color: Colors.white.withValues(alpha: 0.1)),
             const SizedBox(height: 8),
-            Text(tr('no_data'), style: TextStyle(color: Colors.white.withOpacity(0.3), fontSize: 12)),
+            Text(tr('no_data'),
+                style: TextStyle(
+                    color: Colors.white.withValues(alpha: 0.3), fontSize: 12)),
           ],
         ),
       );
     }
-    
+
     return ListView.builder(
       itemCount: _filteredData.length,
       itemBuilder: (context, index) {
         final row = _filteredData[index];
         final isSelected = index == _selectedIndex;
         final isEven = index % 2 == 0;
-        
+
         return GestureDetector(
           onTap: () {
             setState(() => _selectedIndex = isSelected ? -1 : index);
@@ -608,18 +669,23 @@ class RequirementsGridPanelState extends State<RequirementsGridPanel> {
             height: 26,
             decoration: BoxDecoration(
               color: isSelected
-                ? AppColors.gridSelectedRow
-                : isEven ? AppColors.gridBackground : AppColors.gridRowAlt,
+                  ? AppColors.gridSelectedRow
+                  : isEven
+                      ? AppColors.gridBackground
+                      : AppColors.gridRowAlt,
               border: Border(
                 bottom: const BorderSide(color: AppColors.border, width: 0.5),
-                left: isSelected 
-                  ? const BorderSide(color: Colors.teal, width: 3) 
-                  : BorderSide.none,
+                left: isSelected
+                    ? const BorderSide(color: Colors.teal, width: 3)
+                    : BorderSide.none,
               ),
             ),
             child: Row(
               children: [
-                _buildCodeCell(row['codigo_requerimiento'] ?? 'REQ-${row['id']?.toString() ?? ''}', flex: 3),
+                _buildCodeCell(
+                    row['codigo_requerimiento'] ??
+                        'REQ-${row['id']?.toString() ?? ''}',
+                    flex: 3),
                 _buildDataCell(row['area_destino'] ?? '', flex: 2),
                 _buildDataCell(_formatDate(row['fecha_requerida']), flex: 2),
                 _buildStatusCell(row['status'] ?? 'Pendiente', flex: 2),
@@ -633,7 +699,7 @@ class RequirementsGridPanelState extends State<RequirementsGridPanel> {
       },
     );
   }
-  
+
   Widget _buildDataCell(String text, {int flex = 1}) {
     return Expanded(
       flex: flex,
@@ -641,7 +707,8 @@ class RequirementsGridPanelState extends State<RequirementsGridPanel> {
         padding: const EdgeInsets.symmetric(horizontal: 6),
         alignment: Alignment.centerLeft,
         decoration: const BoxDecoration(
-          border: Border(right: BorderSide(color: AppColors.border, width: 0.5)),
+          border:
+              Border(right: BorderSide(color: AppColors.border, width: 0.5)),
         ),
         child: Text(
           text,
@@ -651,7 +718,7 @@ class RequirementsGridPanelState extends State<RequirementsGridPanel> {
       ),
     );
   }
-  
+
   Widget _buildCodeCell(String code, {int flex = 1}) {
     return Expanded(
       flex: flex,
@@ -659,40 +726,54 @@ class RequirementsGridPanelState extends State<RequirementsGridPanel> {
         padding: const EdgeInsets.symmetric(horizontal: 6),
         alignment: Alignment.centerLeft,
         decoration: const BoxDecoration(
-          border: Border(right: BorderSide(color: AppColors.border, width: 0.5)),
+          border:
+              Border(right: BorderSide(color: AppColors.border, width: 0.5)),
         ),
         child: Text(
           code,
-          style: const TextStyle(fontSize: 10, color: Colors.teal, fontWeight: FontWeight.w600),
+          style: const TextStyle(
+              fontSize: 10, color: Colors.teal, fontWeight: FontWeight.w600),
           overflow: TextOverflow.ellipsis,
         ),
       ),
     );
   }
-  
+
   Widget _buildStatusCell(String status, {int flex = 1}) {
     Color color;
     switch (status) {
-      case 'Pendiente': color = Colors.orange; break;
-      case 'En Preparación': color = Colors.blue; break;
-      case 'Listo': color = Colors.green; break;
-      case 'Entregado': color = Colors.teal; break;
-      case 'Cancelado': color = Colors.red; break;
-      default: color = Colors.grey;
+      case 'Pendiente':
+        color = Colors.orange;
+        break;
+      case 'En Preparación':
+        color = Colors.blue;
+        break;
+      case 'Listo':
+        color = Colors.green;
+        break;
+      case 'Entregado':
+        color = Colors.teal;
+        break;
+      case 'Cancelado':
+        color = Colors.red;
+        break;
+      default:
+        color = Colors.grey;
     }
-    
+
     return Expanded(
       flex: flex,
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 6),
         alignment: Alignment.centerLeft,
         decoration: const BoxDecoration(
-          border: Border(right: BorderSide(color: AppColors.border, width: 0.5)),
+          border:
+              Border(right: BorderSide(color: AppColors.border, width: 0.5)),
         ),
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
           decoration: BoxDecoration(
-            color: color.withOpacity(0.2),
+            color: color.withValues(alpha: 0.2),
             borderRadius: BorderRadius.circular(3),
           ),
           child: Text(status, style: TextStyle(fontSize: 9, color: color)),
@@ -700,38 +781,52 @@ class RequirementsGridPanelState extends State<RequirementsGridPanel> {
       ),
     );
   }
-  
+
   Widget _buildPriorityCell(String priority, {int flex = 1}) {
     Color color;
     IconData icon;
     switch (priority) {
-      case 'Crítico': color = Colors.red; icon = Icons.priority_high; break;
-      case 'Urgente': color = Colors.orange; icon = Icons.warning; break;
-      default: color = Colors.grey; icon = Icons.remove;
+      case 'Crítico':
+        color = Colors.red;
+        icon = Icons.priority_high;
+        break;
+      case 'Urgente':
+        color = Colors.orange;
+        icon = Icons.warning;
+        break;
+      default:
+        color = Colors.grey;
+        icon = Icons.remove;
     }
-    
+
     return Expanded(
       flex: flex,
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 6),
         alignment: Alignment.centerLeft,
         decoration: const BoxDecoration(
-          border: Border(right: BorderSide(color: AppColors.border, width: 0.5)),
+          border:
+              Border(right: BorderSide(color: AppColors.border, width: 0.5)),
         ),
         child: priority == 'Normal'
-          ? Text(priority, style: const TextStyle(fontSize: 10, color: Colors.white54))
-          : Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(icon, size: 10, color: color),
-                const SizedBox(width: 2),
-                Text(priority, style: TextStyle(fontSize: 9, color: color, fontWeight: FontWeight.bold)),
-              ],
-            ),
+            ? Text(priority,
+                style: const TextStyle(fontSize: 10, color: Colors.white54))
+            : Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(icon, size: 10, color: color),
+                  const SizedBox(width: 2),
+                  Text(priority,
+                      style: TextStyle(
+                          fontSize: 9,
+                          color: color,
+                          fontWeight: FontWeight.bold)),
+                ],
+              ),
       ),
     );
   }
-  
+
   String _formatDate(dynamic date) {
     if (date == null) return '-';
     try {

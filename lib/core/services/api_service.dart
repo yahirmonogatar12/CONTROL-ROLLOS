@@ -444,8 +444,9 @@ class ApiService {
   static Future<Map<String, dynamic>?> getMaterialByCode(
       String materialCode) async {
     try {
+      final encodedMaterialCode = Uri.encodeComponent(materialCode);
       final response = await http
-          .get(Uri.parse('$baseUrl/materiales/by-code/$materialCode'));
+          .get(Uri.parse('$baseUrl/materiales/by-code/$encodedMaterialCode'));
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
         return data as Map<String, dynamic>?;
@@ -3887,6 +3888,7 @@ class ApiService {
     String? fechaFin,
     String? prioridad,
     bool pendingOnly = false,
+    bool throwOnError = false,
   }) async {
     try {
       String url = '$baseUrl/requirements?';
@@ -3902,9 +3904,14 @@ class ApiService {
         final List<dynamic> data = json.decode(response.body);
         return data.cast<Map<String, dynamic>>();
       }
+      if (throwOnError) {
+        throw Exception(
+            'Error ${response.statusCode} al cargar requerimientos');
+      }
       return [];
     } catch (e) {
       print('Error en getRequirements: $e');
+      if (throwOnError) rethrow;
       return [];
     }
   }
@@ -3973,19 +3980,43 @@ class ApiService {
     }
   }
 
-  // POST - Crear requerimiento
-  static Future<bool> createRequirement(Map<String, dynamic> data) async {
+  // POST - Crear requerimiento y devolver el ID/código generado.
+  static Future<Map<String, dynamic>> createRequirementDetailed(
+      Map<String, dynamic> data) async {
     try {
       final response = await http.post(
         Uri.parse('$baseUrl/requirements'),
         headers: {'Content-Type': 'application/json'},
         body: json.encode(data),
       );
-      return response.statusCode == 201;
+      Map<String, dynamic> body = {};
+      try {
+        final decoded = json.decode(response.body);
+        if (decoded is Map<String, dynamic>) body = decoded;
+      } catch (_) {}
+
+      if (response.statusCode == 201) {
+        return {
+          ...body,
+          'success': true,
+        };
+      }
+
+      return {
+        'success': false,
+        'error': body['error'] ?? 'Error ${response.statusCode}',
+        'details': body['details'],
+      };
     } catch (e) {
-      print('Error en createRequirement: $e');
-      return false;
+      print('Error en createRequirementDetailed: $e');
+      return {'success': false, 'error': e.toString()};
     }
+  }
+
+  // Compatibilidad con las pantallas de escritorio existentes.
+  static Future<bool> createRequirement(Map<String, dynamic> data) async {
+    final result = await createRequirementDetailed(data);
+    return result['success'] == true;
   }
 
   // PUT - Actualizar requerimiento
@@ -4005,18 +4036,35 @@ class ApiService {
   }
 
   // DELETE - Cancelar requerimiento
-  static Future<bool> cancelRequirement(int id, String? canceladoPor) async {
+  static Future<Map<String, dynamic>> cancelRequirementDetailed(
+      int id, String? canceladoPor) async {
     try {
       final response = await http.delete(
         Uri.parse('$baseUrl/requirements/$id'),
         headers: {'Content-Type': 'application/json'},
         body: json.encode({'actualizado_por': canceladoPor}),
       );
-      return response.statusCode == 200;
+      Map<String, dynamic> body = {};
+      try {
+        final decoded = json.decode(response.body);
+        if (decoded is Map<String, dynamic>) body = decoded;
+      } catch (_) {}
+
+      return {
+        ...body,
+        'success': response.statusCode == 200,
+        if (response.statusCode != 200)
+          'error': body['error'] ?? 'Error ${response.statusCode}',
+      };
     } catch (e) {
       print('Error en cancelRequirement: $e');
-      return false;
+      return {'success': false, 'error': e.toString()};
     }
+  }
+
+  static Future<bool> cancelRequirement(int id, String? canceladoPor) async {
+    final result = await cancelRequirementDetailed(id, canceladoPor);
+    return result['success'] == true;
   }
 
   // GET - Items de un requerimiento
@@ -4037,7 +4085,7 @@ class ApiService {
   }
 
   // POST - Agregar items a requerimiento
-  static Future<bool> addRequirementItems(
+  static Future<Map<String, dynamic>> addRequirementItemsDetailed(
       int requirementId, List<Map<String, dynamic>> items) async {
     try {
       final response = await http.post(
@@ -4045,11 +4093,28 @@ class ApiService {
         headers: {'Content-Type': 'application/json'},
         body: json.encode({'items': items}),
       );
-      return response.statusCode == 200;
+      Map<String, dynamic> body = {};
+      try {
+        final decoded = json.decode(response.body);
+        if (decoded is Map<String, dynamic>) body = decoded;
+      } catch (_) {}
+
+      return {
+        ...body,
+        'success': response.statusCode == 200,
+        if (response.statusCode != 200)
+          'error': body['error'] ?? 'Error ${response.statusCode}',
+      };
     } catch (e) {
       print('Error en addRequirementItems: $e');
-      return false;
+      return {'success': false, 'error': e.toString()};
     }
+  }
+
+  static Future<bool> addRequirementItems(
+      int requirementId, List<Map<String, dynamic>> items) async {
+    final result = await addRequirementItemsDetailed(requirementId, items);
+    return result['success'] == true;
   }
 
   // PUT - Actualizar item

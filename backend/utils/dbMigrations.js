@@ -1374,8 +1374,14 @@ async function createRequirementsTables() {
         
         -- Cantidades
         cantidad_requerida INT NOT NULL,
+        cantidad_estandarizada INT NULL DEFAULT NULL,
+        cantidad_unidades INT NULL DEFAULT NULL,
+        unidad_empaque VARCHAR(50) NULL DEFAULT NULL,
         cantidad_preparada INT DEFAULT 0,
         cantidad_entregada INT DEFAULT 0,
+
+        -- Punto donde debe entregarse el material
+        ubicacion_destino VARCHAR(100) NULL DEFAULT NULL,
         
         -- Estado del item
         status ENUM('Pendiente', 'Parcial', 'Preparado', 'Entregado') DEFAULT 'Pendiente',
@@ -1403,6 +1409,27 @@ async function createRequirementsTables() {
     } catch (e) {
       // La columna ya puede existir
     }
+
+    await addColumnIfNotExists(
+      'material_requirement_items',
+      'cantidad_estandarizada',
+      'INT NULL DEFAULT NULL AFTER cantidad_requerida'
+    );
+    await addColumnIfNotExists(
+      'material_requirement_items',
+      'cantidad_unidades',
+      'INT NULL DEFAULT NULL AFTER cantidad_estandarizada'
+    );
+    await addColumnIfNotExists(
+      'material_requirement_items',
+      'unidad_empaque',
+      'VARCHAR(50) NULL DEFAULT NULL AFTER cantidad_unidades'
+    );
+    await addColumnIfNotExists(
+      'material_requirement_items',
+      'ubicacion_destino',
+      'VARCHAR(100) NULL DEFAULT NULL AFTER cantidad_entregada'
+    );
 
     console.log('✓ Tablas de requerimientos de material verificadas/creadas');
   } catch (err) {

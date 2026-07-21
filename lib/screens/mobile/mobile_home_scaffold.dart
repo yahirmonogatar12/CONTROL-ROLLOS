@@ -11,6 +11,7 @@ import 'package:material_warehousing_flutter/screens/mobile/mobile_reentry_scree
 import 'package:material_warehousing_flutter/screens/mobile/mobile_return_screen.dart';
 import 'package:material_warehousing_flutter/screens/mobile/mobile_audit_screen.dart';
 import 'package:material_warehousing_flutter/screens/mobile/mobile_smt_requests_screen.dart';
+import 'package:material_warehousing_flutter/screens/mobile/mobile_material_requirements_screen.dart';
 import 'package:material_warehousing_flutter/screens/mobile/mobile_pcb_entry_screen.dart';
 import 'package:material_warehousing_flutter/screens/mobile/mobile_pcb_exit_screen.dart';
 import 'package:material_warehousing_flutter/screens/mobile/mobile_pcb_inventory_screen.dart';
@@ -151,6 +152,15 @@ class _MobileHomeScaffoldState extends State<MobileHomeScaffold> {
           builder: () => MobileSMTRequestsScreen(
               languageProvider: widget.languageProvider),
           isAllowed: () => AuthService.canViewSMTRequests,
+        ),
+        _TabDef(
+          index: 10,
+          icon: Icons.assignment_outlined,
+          label: 'Req.',
+          title: 'Requerimientos',
+          builder: () => MobileMaterialRequirementsScreen(
+              languageProvider: widget.languageProvider),
+          isAllowed: () => AuthService.canViewRequirements,
         ),
         _TabDef(
           index: 6,

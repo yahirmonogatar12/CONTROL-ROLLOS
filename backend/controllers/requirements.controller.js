@@ -4,6 +4,14 @@
  */
 
 const { pool } = require('../config/database');
+const {
+    validateRequirementPayload,
+    validateRequirementItems,
+    normalizeRequirementItemQuantity,
+    canAppendRequirementItems,
+    canCancelRequirement
+} = require('../utils/requirementsValidation');
+const { attachPendingInvoiceData } = require('../services/pendingInvoiceService');
 
 // Áreas disponibles (constantes)
 const AVAILABLE_AREAS = [
@@ -156,9 +164,11 @@ exports.getById = async (req, res, next) => {
       ORDER BY mri.id
     `, [id]);
 
+        const itemsWithPendingInvoices = await attachPendingInvoiceData(items);
+
         res.json({
             ...requirements[0],
-            items
+            items: itemsWithPendingInvoices
         });
     } catch (err) {
         next(err);
@@ -167,6 +177,7 @@ exports.getById = async (req, res, next) => {
 
 // POST /api/requirements - Crear nuevo requerimiento
 exports.create = async (req, res, next) => {
+    let connection;
     try {
         const {
             area_destino,
@@ -179,17 +190,22 @@ exports.create = async (req, res, next) => {
             items
         } = req.body;
 
-        if (!area_destino || !fecha_requerida || !creado_por) {
+        const validationErrors = validateRequirementPayload(req.body);
+        if (validationErrors.length > 0) {
             return res.status(400).json({
-                error: 'Campos requeridos: area_destino, fecha_requerida, creado_por'
+                error: validationErrors[0],
+                details: validationErrors
             });
         }
 
+        connection = await pool.getConnection();
+        await connection.beginTransaction();
+
         // Generar código de requerimiento (REQ-YYYYMMDD-###)
-        const codigoRequerimiento = await generateRequirementCode();
+        const codigoRequerimiento = await generateRequirementCode(connection);
 
         // Crear requerimiento
-        const [result] = await pool.query(`
+        const [result] = await connection.query(`
       INSERT INTO material_requirements 
         (codigo_requerimiento, area_destino, modelo, fecha_requerida, turno, prioridad, notas, creado_por)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -209,19 +225,28 @@ exports.create = async (req, res, next) => {
         // Agregar items si vienen incluidos
         if (items && Array.isArray(items) && items.length > 0) {
             for (const item of items) {
-                await pool.query(`
-          INSERT INTO material_requirement_items 
-            (requirement_id, numero_parte, descripcion, cantidad_requerida, notas)
-          VALUES (?, ?, ?, ?, ?)
+                const quantities = normalizeRequirementItemQuantity(item);
+                await connection.query(`
+          INSERT INTO material_requirement_items
+            (requirement_id, numero_parte, descripcion, cantidad_requerida,
+             cantidad_estandarizada, cantidad_unidades, unidad_empaque,
+             ubicacion_destino, notas)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         `, [
                     requirementId,
                     item.numero_parte,
                     item.descripcion || null,
-                    item.cantidad_requerida || 0,
+                    quantities.cantidadRequerida,
+                    quantities.cantidadEstandarizada,
+                    quantities.cantidadUnidades,
+                    quantities.unidadEmpaque,
+                    quantities.ubicacionDestino,
                     item.notas || null
                 ]);
             }
         }
+
+        await connection.commit();
 
         res.status(201).json({
             success: true,
@@ -230,18 +255,27 @@ exports.create = async (req, res, next) => {
             message: 'Requerimiento creado exitosamente'
         });
     } catch (err) {
+        if (connection) {
+            try {
+                await connection.rollback();
+            } catch (rollbackError) {
+                console.error('Error revirtiendo requerimiento:', rollbackError.message);
+            }
+        }
         next(err);
+    } finally {
+        connection?.release();
     }
 };
 
 // Helper: Generar código de requerimiento único (REQ-YYYYMMDD-###)
-async function generateRequirementCode() {
+async function generateRequirementCode(executor = pool) {
     const today = new Date();
     const dateStr = today.toISOString().slice(0, 10).replace(/-/g, ''); // YYYYMMDD
     const prefix = `REQ-${dateStr}-`;
 
     // Buscar el último número del día
-    const [rows] = await pool.query(`
+    const [rows] = await executor.query(`
       SELECT codigo_requerimiento 
       FROM material_requirements 
       WHERE codigo_requerimiento LIKE ?
@@ -342,20 +376,56 @@ exports.update = async (req, res, next) => {
 
 // DELETE /api/requirements/:id - Cancelar requerimiento
 exports.cancel = async (req, res, next) => {
+    let connection;
+    let transactionActive = false;
     try {
         const { id } = req.params;
-        const { actualizado_por } = req.body;
+        const { actualizado_por } = req.body || {};
 
-        await pool.query(
+        connection = await pool.getConnection();
+        await connection.beginTransaction();
+        transactionActive = true;
+
+        const [requirements] = await connection.query(
+            'SELECT status FROM material_requirements WHERE id = ? FOR UPDATE',
+            [id]
+        );
+
+        if (requirements.length === 0) {
+            await connection.rollback();
+            transactionActive = false;
+            return res.status(404).json({ error: 'Requerimiento no encontrado' });
+        }
+
+        if (!canCancelRequirement(requirements[0].status)) {
+            await connection.rollback();
+            transactionActive = false;
+            return res.status(409).json({
+                error: `No se puede cancelar un requerimiento con estado ${requirements[0].status}`
+            });
+        }
+
+        await connection.query(
             `UPDATE material_requirements 
        SET status = 'Cancelado', actualizado_por = ?
        WHERE id = ?`,
             [actualizado_por || null, id]
         );
 
+        await connection.commit();
+        transactionActive = false;
         res.json({ success: true, message: 'Requerimiento cancelado' });
     } catch (err) {
+        if (transactionActive) {
+            try {
+                await connection.rollback();
+            } catch (rollbackError) {
+                console.error('Error revirtiendo cancelación:', rollbackError.message);
+            }
+        }
         next(err);
+    } finally {
+        connection?.release();
     }
 };
 
@@ -391,7 +461,7 @@ exports.getItems = async (req, res, next) => {
       ORDER BY mri.id
     `, [id]);
 
-        res.json(items);
+        res.json(await attachPendingInvoiceData(items));
     } catch (err) {
         next(err);
     }
@@ -399,34 +469,83 @@ exports.getItems = async (req, res, next) => {
 
 // POST /api/requirements/:id/items - Agregar items a un requerimiento
 exports.addItems = async (req, res, next) => {
+    let connection;
+    let transactionActive = false;
     try {
         const { id } = req.params;
-        const { items } = req.body;
+        const { items } = req.body || {};
 
         if (!items || !Array.isArray(items) || items.length === 0) {
             return res.status(400).json({ error: 'Se requiere un array de items' });
         }
 
+        const validationErrors = validateRequirementItems(items);
+        if (validationErrors.length > 0) {
+            return res.status(400).json({
+                error: validationErrors[0],
+                details: validationErrors
+            });
+        }
+
+        connection = await pool.getConnection();
+        await connection.beginTransaction();
+        transactionActive = true;
+
+        const [requirements] = await connection.query(
+            'SELECT status FROM material_requirements WHERE id = ? FOR UPDATE',
+            [id]
+        );
+
+        if (requirements.length === 0) {
+            await connection.rollback();
+            transactionActive = false;
+            return res.status(404).json({ error: 'Requerimiento no encontrado' });
+        }
+
+        if (!canAppendRequirementItems(requirements[0].status)) {
+            await connection.rollback();
+            transactionActive = false;
+            return res.status(409).json({
+                error: 'Sólo se pueden agregar materiales a requerimientos Pendientes',
+                status: requirements[0].status
+            });
+        }
+
         for (const item of items) {
-            await pool.query(`
-        INSERT INTO material_requirement_items 
-          (requirement_id, numero_parte, descripcion, cantidad_requerida, notas)
-        VALUES (?, ?, ?, ?, ?)
+            const quantities = normalizeRequirementItemQuantity(item);
+            await connection.query(`
+        INSERT INTO material_requirement_items
+          (requirement_id, numero_parte, descripcion, cantidad_requerida,
+           cantidad_estandarizada, cantidad_unidades, unidad_empaque,
+           ubicacion_destino, notas)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `, [
                 id,
                 item.numero_parte,
                 item.descripcion || null,
-                item.cantidad_requerida || 0,
+                quantities.cantidadRequerida,
+                quantities.cantidadEstandarizada,
+                quantities.cantidadUnidades,
+                quantities.unidadEmpaque,
+                quantities.ubicacionDestino,
                 item.notas || null
             ]);
         }
 
-        // NOTE: Status should NOT change here. It only changes to 'En Preparación' 
-        // when outgoing starts (linkOutgoing) - see updateRequirementStatus()
-
+        await connection.commit();
+        transactionActive = false;
         res.json({ success: true, message: `${items.length} items agregados` });
     } catch (err) {
+        if (transactionActive) {
+            try {
+                await connection.rollback();
+            } catch (rollbackError) {
+                console.error('Error revirtiendo materiales agregados:', rollbackError.message);
+            }
+        }
         next(err);
+    } finally {
+        connection?.release();
     }
 };
 
@@ -436,6 +555,10 @@ exports.updateItem = async (req, res, next) => {
         const { id, itemId } = req.params;
         const {
             cantidad_requerida,
+            cantidad_estandarizada,
+            cantidad_unidades,
+            unidad_empaque,
+            ubicacion_destino,
             cantidad_preparada,
             cantidad_entregada,
             status,
@@ -446,7 +569,54 @@ exports.updateItem = async (req, res, next) => {
         const updates = [];
         const params = [];
 
-        if (cantidad_requerida !== undefined) { updates.push('cantidad_requerida = ?'); params.push(cantidad_requerida); }
+        if (cantidad_estandarizada !== undefined || cantidad_unidades !== undefined) {
+            const [currentItems] = await pool.query(
+                `SELECT cantidad_requerida, cantidad_estandarizada, cantidad_unidades
+                 FROM material_requirement_items
+                 WHERE id = ? AND requirement_id = ?`,
+                [itemId, id]
+            );
+            if (currentItems.length === 0) {
+                return res.status(404).json({ error: 'Item no encontrado' });
+            }
+
+            const quantities = normalizeRequirementItemQuantity({
+                cantidad_requerida: cantidad_requerida !== undefined
+                    ? cantidad_requerida
+                    : currentItems[0].cantidad_requerida,
+                cantidad_estandarizada: cantidad_estandarizada !== undefined
+                    ? cantidad_estandarizada
+                    : currentItems[0].cantidad_estandarizada,
+                cantidad_unidades: cantidad_unidades !== undefined
+                    ? cantidad_unidades
+                    : currentItems[0].cantidad_unidades
+            });
+            const hasStandardQuantity = quantities.cantidadEstandarizada !== null;
+            const hasUnits = quantities.cantidadUnidades !== null;
+            if (hasStandardQuantity !== hasUnits) {
+                return res.status(400).json({
+                    error: 'Cantidad por empaque y unidades deben capturarse juntas'
+                });
+            }
+            if (!Number.isInteger(quantities.cantidadRequerida) || quantities.cantidadRequerida <= 0) {
+                return res.status(400).json({ error: 'Empaque y unidades deben ser enteros mayores que cero' });
+            }
+            updates.push('cantidad_requerida = ?', 'cantidad_estandarizada = ?', 'cantidad_unidades = ?');
+            params.push(
+                quantities.cantidadRequerida,
+                quantities.cantidadEstandarizada,
+                quantities.cantidadUnidades
+            );
+        } else if (cantidad_requerida !== undefined) {
+            const quantity = Number(cantidad_requerida);
+            if (!Number.isInteger(quantity) || quantity <= 0) {
+                return res.status(400).json({ error: 'La cantidad debe ser un entero mayor que cero' });
+            }
+            updates.push('cantidad_requerida = ?');
+            params.push(quantity);
+        }
+        if (unidad_empaque !== undefined) { updates.push('unidad_empaque = ?'); params.push(String(unidad_empaque || '').trim() || null); }
+        if (ubicacion_destino !== undefined) { updates.push('ubicacion_destino = ?'); params.push(String(ubicacion_destino || '').trim() || null); }
         if (cantidad_preparada !== undefined) { updates.push('cantidad_preparada = ?'); params.push(cantidad_preparada); }
         if (cantidad_entregada !== undefined) { updates.push('cantidad_entregada = ?'); params.push(cantidad_entregada); }
         if (status !== undefined) { updates.push('status = ?'); params.push(status); }

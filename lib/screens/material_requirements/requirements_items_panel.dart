@@ -7,7 +7,19 @@ import 'package:material_warehousing_flutter/core/localization/app_translations.
 import 'package:material_warehousing_flutter/core/theme/app_colors.dart';
 import 'package:material_warehousing_flutter/core/services/api_service.dart';
 import 'package:material_warehousing_flutter/core/services/auth_service.dart';
+import 'package:material_warehousing_flutter/core/services/file_opener.dart';
 import 'package:material_warehousing_flutter/core/widgets/grid_footer.dart';
+
+int _asRequirementInt(dynamic value) {
+  if (value is int) return value;
+  if (value is num) return value.toInt();
+  return int.tryParse(value?.toString() ?? '') ?? 0;
+}
+
+int? _parsePositiveRequirementInt(dynamic value) {
+  final parsed = int.tryParse(value?.toString().trim() ?? '');
+  return parsed != null && parsed > 0 ? parsed : null;
+}
 
 // ============================================
 // Requirements Items Panel - Detalle de Items
@@ -16,7 +28,7 @@ class RequirementsItemsPanel extends StatefulWidget {
   final LanguageProvider languageProvider;
   final Map<String, dynamic>? requirement;
   final VoidCallback? onItemsChanged;
-  
+
   const RequirementsItemsPanel({
     super.key,
     required this.languageProvider,
@@ -36,6 +48,10 @@ class RequirementsItemsPanelState extends State<RequirementsItemsPanel> {
 
   String tr(String key) => widget.languageProvider.tr(key);
 
+  bool get _canModifyRequirement =>
+      AuthService.canWriteRequirements &&
+      widget.requirement?['status']?.toString() == 'Pendiente';
+
   @override
   void initState() {
     super.initState();
@@ -43,7 +59,7 @@ class RequirementsItemsPanelState extends State<RequirementsItemsPanel> {
       loadItems(widget.requirement!['id']);
     }
   }
-  
+
   @override
   void didUpdateWidget(RequirementsItemsPanel oldWidget) {
     super.didUpdateWidget(oldWidget);
@@ -58,7 +74,7 @@ class RequirementsItemsPanelState extends State<RequirementsItemsPanel> {
       }
     }
   }
-  
+
   Future<void> loadItems(int? requirementId) async {
     if (requirementId == null) {
       setState(() {
@@ -67,9 +83,9 @@ class RequirementsItemsPanelState extends State<RequirementsItemsPanel> {
       });
       return;
     }
-    
+
     setState(() => _isLoading = true);
-    
+
     try {
       final items = await ApiService.getRequirementItems(requirementId);
       if (mounted) {
@@ -89,13 +105,11 @@ class RequirementsItemsPanelState extends State<RequirementsItemsPanel> {
       }
     }
   }
-  
+
   /// Eliminar items seleccionados (solo el creador puede eliminar)
   Future<void> _deleteSelectedItems() async {
     if (widget.requirement == null || _selectedItems.isEmpty) return;
-    
-    final creador = widget.requirement!['creado_por']?.toString() ?? '';
-    
+
     // Mostrar diálogo de confirmación
     final confirmed = await showDialog<bool>(
       context: context,
@@ -105,7 +119,8 @@ class RequirementsItemsPanelState extends State<RequirementsItemsPanel> {
           children: [
             const Icon(Icons.warning_amber, color: Colors.orange, size: 24),
             const SizedBox(width: 8),
-            Text(tr('confirm_delete'), style: const TextStyle(color: Colors.white, fontSize: 14)),
+            Text(tr('confirm_delete'),
+                style: const TextStyle(color: Colors.white, fontSize: 14)),
           ],
         ),
         content: Column(
@@ -114,7 +129,8 @@ class RequirementsItemsPanelState extends State<RequirementsItemsPanel> {
           children: [
             Text(
               '${tr('items_to_delete')}: ${_selectedItems.length}',
-              style: const TextStyle(color: Colors.red, fontSize: 12, fontWeight: FontWeight.bold),
+              style: const TextStyle(
+                  color: Colors.red, fontSize: 12, fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 8),
             Text(
@@ -126,7 +142,8 @@ class RequirementsItemsPanelState extends State<RequirementsItemsPanel> {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
-            child: Text(tr('cancel'), style: const TextStyle(color: Colors.white54)),
+            child: Text(tr('cancel'),
+                style: const TextStyle(color: Colors.white54)),
           ),
           ElevatedButton(
             onPressed: () => Navigator.pop(context, true),
@@ -136,24 +153,24 @@ class RequirementsItemsPanelState extends State<RequirementsItemsPanel> {
         ],
       ),
     );
-    
+
     if (confirmed != true) return;
-    
+
     // Obtener usuario actual
     final currentUser = AuthService.currentUser?.nombreCompleto ?? '';
-    
+
     // Llamar API para eliminar
     final result = await ApiService.removeMultipleRequirementItems(
       widget.requirement!['id'],
       _selectedItems.toList(),
       currentUser,
     );
-    
+
     if (result['success'] == true) {
       setState(() => _selectedItems.clear());
       loadItems(widget.requirement!['id']);
       widget.onItemsChanged?.call();
-      
+
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -165,9 +182,9 @@ class RequirementsItemsPanelState extends State<RequirementsItemsPanel> {
     } else {
       if (mounted) {
         final errorMsg = result['error'] ?? 'Error';
-        final creadorMsg = result['creador'] != null 
-          ? '\n${tr('created_by')}: ${result['creador']}'
-          : '';
+        final creadorMsg = result['creador'] != null
+            ? '\n${tr('created_by')}: ${result['creador']}'
+            : '';
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('$errorMsg$creadorMsg'),
@@ -178,22 +195,28 @@ class RequirementsItemsPanelState extends State<RequirementsItemsPanel> {
       }
     }
   }
-  
+
   Future<void> _addMaterial() async {
     if (widget.requirement == null) return;
-    
+
     // Mostrar diálogo para agregar material
     final result = await showDialog<Map<String, dynamic>>(
       context: context,
-      builder: (context) => _AddMaterialDialog(languageProvider: widget.languageProvider),
+      builder: (context) =>
+          _AddMaterialDialog(languageProvider: widget.languageProvider),
     );
-    
+
     if (result != null) {
       try {
-        await ApiService.addRequirementItems(
+        final response = await ApiService.addRequirementItemsDetailed(
           widget.requirement!['id'],
           [result],
         );
+        if (response['success'] != true) {
+          throw Exception(
+            response['error']?.toString() ?? 'No se pudo agregar el material',
+          );
+        }
         loadItems(widget.requirement!['id']);
         widget.onItemsChanged?.call();
       } catch (e) {
@@ -205,22 +228,24 @@ class RequirementsItemsPanelState extends State<RequirementsItemsPanel> {
       }
     }
   }
-  
+
   Future<void> _importFromBom() async {
     if (widget.requirement == null) return;
-    
+
     // Mostrar diálogo para seleccionar modelo
     final result = await showDialog<Map<String, dynamic>>(
       context: context,
-      builder: (context) => _ImportBomDialog(languageProvider: widget.languageProvider),
+      builder: (context) =>
+          _ImportBomDialog(languageProvider: widget.languageProvider),
     );
-    
+
     if (result != null && result['items'] != null) {
       try {
-        await ApiService.addRequirementItems(
+        final added = await ApiService.addRequirementItems(
           widget.requirement!['id'],
           List<Map<String, dynamic>>.from(result['items']),
         );
+        if (!added) throw Exception('No se pudieron importar los materiales');
         loadItems(widget.requirement!['id']);
         widget.onItemsChanged?.call();
       } catch (e) {
@@ -232,86 +257,116 @@ class RequirementsItemsPanelState extends State<RequirementsItemsPanel> {
       }
     }
   }
-  
-  /// Paste items from clipboard (Excel format: PartNumber TAB Spec TAB Qty)
+
+  /// Excel: NParte TAB SPEC TAB cantidad, o NParte TAB SPEC TAB empaque TAB unidades.
   Future<void> _pasteFromClipboard() async {
     if (widget.requirement == null) return;
-    
+
     try {
       final clipboardData = await Clipboard.getData(Clipboard.kTextPlain);
-      if (clipboardData == null || clipboardData.text == null || clipboardData.text!.isEmpty) {
+      if (clipboardData == null ||
+          clipboardData.text == null ||
+          clipboardData.text!.isEmpty) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text(tr('clipboard_empty')), backgroundColor: Colors.orange),
+            SnackBar(
+                content: Text(tr('clipboard_empty')),
+                backgroundColor: Colors.orange),
           );
         }
         return;
       }
-      
+
       final text = clipboardData.text!;
-      final lines = text.split(RegExp(r'[\r\n]+')).where((line) => line.trim().isNotEmpty).toList();
-      
+      final lines = text
+          .split(RegExp(r'[\r\n]+'))
+          .where((line) => line.trim().isNotEmpty)
+          .toList();
+
       if (lines.isEmpty) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text(tr('no_data_to_paste')), backgroundColor: Colors.orange),
+            SnackBar(
+                content: Text(tr('no_data_to_paste')),
+                backgroundColor: Colors.orange),
           );
         }
         return;
       }
-      
+
       final items = <Map<String, dynamic>>[];
       final partNumbers = <String>{};
-      
+
       for (final line in lines) {
         // Split by tab (Excel copies with tabs)
         final parts = line.split('\t');
-        
+
         if (parts.isEmpty) continue;
-        
-        // Parse: PartNumber, Spec, Qty
+
+        // Parse: NParte, SPEC, cantidad directa; o empaque y unidades.
         final partNumber = parts.isNotEmpty ? parts[0].trim() : '';
         final spec = parts.length > 1 ? parts[1].trim() : '';
-        // Parse quantity - remove commas and convert to int
-        final qtyStr = parts.length > 2 ? parts[2].trim().replaceAll(',', '').replaceAll(' ', '') : '1';
-        final qty = int.tryParse(qtyStr) ?? 1;
-        
+        final standardQuantity = parts.length > 2
+            ? _parsePositiveRequirementInt(
+                parts[2].replaceAll(',', '').replaceAll(' ', ''),
+              )
+            : null;
+        final units = parts.length > 3
+            ? _parsePositiveRequirementInt(
+                parts[3].replaceAll(',', '').replaceAll(' ', ''),
+              )
+            : null;
+        final usesUnits = standardQuantity != null && units != null;
+        final qty =
+            usesUnits ? standardQuantity * units : standardQuantity ?? 1;
+
         if (partNumber.isNotEmpty) {
           partNumbers.add(partNumber);
-          items.add({
+          final item = <String, dynamic>{
             'numero_parte': partNumber,
             'descripcion': spec,
             'cantidad_requerida': qty,
             'ubicacion': '', // Will be filled after location lookup
-          });
+          };
+          if (usesUnits) {
+            item['cantidad_estandarizada'] = standardQuantity;
+            item['cantidad_unidades'] = units;
+            item['unidad_empaque'] = standardQuantity.toString();
+          }
+          items.add(item);
         }
       }
-      
+
       if (items.isEmpty) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text(tr('no_valid_items')), backgroundColor: Colors.orange),
+            SnackBar(
+                content: Text(tr('no_valid_items')),
+                backgroundColor: Colors.orange),
           );
         }
         return;
       }
-      
+
       // Fetch locations for all part numbers
-      final locations = await ApiService.getLocationsByPartNumbers(partNumbers.toList());
-      
+      final locations =
+          await ApiService.getLocationsByPartNumbers(partNumbers.toList());
+
       // Update items with locations
       for (final item in items) {
         final pn = item['numero_parte']?.toString() ?? '';
         final locationList = locations[pn] ?? [];
-        item['ubicacion'] = locationList.isNotEmpty ? locationList.join(', ') : '-';
+        item['ubicacion'] =
+            locationList.isNotEmpty ? locationList.join(', ') : '-';
       }
-      
+
       // Show confirmation dialog
       final confirmed = await showDialog<bool>(
         context: context,
         builder: (context) => AlertDialog(
           backgroundColor: AppColors.panelBackground,
-          title: Text(tr('confirm_paste'), style: const TextStyle(color: Colors.white, fontSize: 14)),
+          title: Text(tr('confirm_paste'),
+              style: const TextStyle(color: Colors.white, fontSize: 14)),
           content: SizedBox(
             width: 550,
             height: 350,
@@ -320,15 +375,20 @@ class RequirementsItemsPanelState extends State<RequirementsItemsPanel> {
               children: [
                 Text(
                   '${tr('items_to_add')}: ${items.length}',
-                  style: const TextStyle(color: Colors.teal, fontSize: 12, fontWeight: FontWeight.bold),
+                  style: const TextStyle(
+                      color: Colors.teal,
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold),
                 ),
                 const SizedBox(height: 8),
                 // Header row
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                   decoration: BoxDecoration(
                     color: AppColors.gridHeader,
-                    borderRadius: const BorderRadius.vertical(top: Radius.circular(4)),
+                    borderRadius:
+                        const BorderRadius.vertical(top: Radius.circular(4)),
                   ),
                   child: Row(
                     children: [
@@ -336,28 +396,40 @@ class RequirementsItemsPanelState extends State<RequirementsItemsPanel> {
                         flex: 2,
                         child: Text(
                           tr('part_number'),
-                          style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold),
+                          style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 10,
+                              fontWeight: FontWeight.bold),
                         ),
                       ),
                       Expanded(
                         flex: 2,
                         child: Text(
                           tr('description'),
-                          style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold),
+                          style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 10,
+                              fontWeight: FontWeight.bold),
                         ),
                       ),
                       Expanded(
                         flex: 2,
                         child: Text(
                           tr('location'),
-                          style: const TextStyle(color: Colors.amber, fontSize: 10, fontWeight: FontWeight.bold),
+                          style: const TextStyle(
+                              color: Colors.amber,
+                              fontSize: 10,
+                              fontWeight: FontWeight.bold),
                         ),
                       ),
                       SizedBox(
                         width: 60,
                         child: Text(
                           tr('quantity'),
-                          style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold),
+                          style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 10,
+                              fontWeight: FontWeight.bold),
                           textAlign: TextAlign.right,
                         ),
                       ),
@@ -368,18 +440,25 @@ class RequirementsItemsPanelState extends State<RequirementsItemsPanel> {
                   child: Container(
                     decoration: BoxDecoration(
                       color: AppColors.gridBackground,
-                      borderRadius: const BorderRadius.vertical(bottom: Radius.circular(4)),
+                      borderRadius: const BorderRadius.vertical(
+                          bottom: Radius.circular(4)),
                       border: Border.all(color: AppColors.border),
                     ),
                     child: ListView.builder(
                       itemCount: items.length,
                       itemBuilder: (context, index) {
                         final item = items[index];
-                        final hasLocation = item['ubicacion'] != null && item['ubicacion'] != '-' && item['ubicacion'].toString().isNotEmpty;
+                        final hasLocation = item['ubicacion'] != null &&
+                            item['ubicacion'] != '-' &&
+                            item['ubicacion'].toString().isNotEmpty;
                         return Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 8, vertical: 4),
                           decoration: BoxDecoration(
-                            border: Border(bottom: BorderSide(color: AppColors.border.withOpacity(0.5))),
+                            border: Border(
+                                bottom: BorderSide(
+                                    color: AppColors.border
+                                        .withValues(alpha: 0.5))),
                           ),
                           child: Row(
                             children: [
@@ -387,7 +466,8 @@ class RequirementsItemsPanelState extends State<RequirementsItemsPanel> {
                                 flex: 2,
                                 child: Text(
                                   item['numero_parte'] ?? '',
-                                  style: const TextStyle(color: Colors.white, fontSize: 10),
+                                  style: const TextStyle(
+                                      color: Colors.white, fontSize: 10),
                                   overflow: TextOverflow.ellipsis,
                                 ),
                               ),
@@ -395,7 +475,8 @@ class RequirementsItemsPanelState extends State<RequirementsItemsPanel> {
                                 flex: 2,
                                 child: Text(
                                   item['descripcion'] ?? '',
-                                  style: const TextStyle(color: Colors.white54, fontSize: 10),
+                                  style: const TextStyle(
+                                      color: Colors.white54, fontSize: 10),
                                   overflow: TextOverflow.ellipsis,
                                 ),
                               ),
@@ -404,9 +485,12 @@ class RequirementsItemsPanelState extends State<RequirementsItemsPanel> {
                                 child: Text(
                                   item['ubicacion'] ?? '-',
                                   style: TextStyle(
-                                    color: hasLocation ? Colors.amber : Colors.red,
+                                    color:
+                                        hasLocation ? Colors.amber : Colors.red,
                                     fontSize: 10,
-                                    fontWeight: hasLocation ? FontWeight.bold : FontWeight.normal,
+                                    fontWeight: hasLocation
+                                        ? FontWeight.bold
+                                        : FontWeight.normal,
                                   ),
                                   overflow: TextOverflow.ellipsis,
                                 ),
@@ -415,7 +499,8 @@ class RequirementsItemsPanelState extends State<RequirementsItemsPanel> {
                                 width: 60,
                                 child: Text(
                                   '${item['cantidad_requerida']}',
-                                  style: const TextStyle(color: Colors.teal, fontSize: 10),
+                                  style: const TextStyle(
+                                      color: Colors.teal, fontSize: 10),
                                   textAlign: TextAlign.right,
                                 ),
                               ),
@@ -432,7 +517,8 @@ class RequirementsItemsPanelState extends State<RequirementsItemsPanel> {
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(context, false),
-              child: Text(tr('cancel'), style: const TextStyle(color: Colors.white54)),
+              child: Text(tr('cancel'),
+                  style: const TextStyle(color: Colors.white54)),
             ),
             ElevatedButton(
               onPressed: () => Navigator.pop(context, true),
@@ -442,7 +528,7 @@ class RequirementsItemsPanelState extends State<RequirementsItemsPanel> {
           ],
         ),
       );
-      
+
       if (confirmed == true) {
         // Show loading dialog
         showDialog(
@@ -463,16 +549,18 @@ class RequirementsItemsPanelState extends State<RequirementsItemsPanel> {
             ),
           ),
         );
-        
+
         try {
-          await ApiService.addRequirementItems(widget.requirement!['id'], items);
-          
+          final added = await ApiService.addRequirementItems(
+              widget.requirement!['id'], items);
+          if (!added) throw Exception('No se pudieron agregar los materiales');
+
           // Close loading dialog
           if (mounted) Navigator.pop(context);
-          
+
           loadItems(widget.requirement!['id']);
           widget.onItemsChanged?.call();
-          
+
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
@@ -495,16 +583,28 @@ class RequirementsItemsPanelState extends State<RequirementsItemsPanel> {
       }
     }
   }
-  
-  Future<void> _updateItemQty(Map<String, dynamic> item, String field, int newValue) async {
+
+  Future<void> _updateItemQty(
+      Map<String, dynamic> item, String field, int newValue) async {
     if (widget.requirement == null) return;
-    
+
     try {
-      await ApiService.updateRequirementItem(
+      final payload = <String, dynamic>{field: newValue};
+      if (field == 'cantidad_requerida') {
+        payload.addAll({
+          'cantidad_estandarizada': null,
+          'cantidad_unidades': null,
+          'unidad_empaque': null,
+        });
+      }
+      final updated = await ApiService.updateRequirementItem(
         widget.requirement!['id'],
         item['id'],
-        {field: newValue},
+        payload,
       );
+      if (!updated) {
+        throw Exception('No se pudo actualizar la cantidad');
+      }
       loadItems(widget.requirement!['id']);
       widget.onItemsChanged?.call();
     } catch (e) {
@@ -519,68 +619,132 @@ class RequirementsItemsPanelState extends State<RequirementsItemsPanel> {
   /// Export items to Excel with file picker
   Future<void> _exportToExcel() async {
     if (_items.isEmpty || widget.requirement == null) return;
-    
+
     try {
       // Show file picker to select save location
       final result = await FilePicker.platform.saveFile(
         dialogTitle: tr('save_excel_file'),
-        fileName: 'Requirement_${widget.requirement!['codigo_requerimiento'] ?? widget.requirement!['id']}.xlsx',
+        fileName:
+            'Requirement_${widget.requirement!['codigo_requerimiento'] ?? widget.requirement!['id']}.xlsx',
         type: FileType.custom,
         allowedExtensions: ['xlsx'],
       );
-      
+
       if (result == null) return; // User cancelled
-      
+
       final excel = xl.Excel.createExcel();
       final sheet = excel['Requirements'];
-      
+
       // Header info
-      sheet.cell(xl.CellIndex.indexByColumnRow(columnIndex: 0, rowIndex: 0)).value = 
-        xl.TextCellValue('${tr('requirement')}: ${widget.requirement!['codigo_requerimiento'] ?? 'REQ-${widget.requirement!['id']}'}');
-      sheet.cell(xl.CellIndex.indexByColumnRow(columnIndex: 0, rowIndex: 1)).value = 
-        xl.TextCellValue('${tr('target_area')}: ${widget.requirement!['area_destino'] ?? '-'}');
-      sheet.cell(xl.CellIndex.indexByColumnRow(columnIndex: 0, rowIndex: 2)).value = 
-        xl.TextCellValue('${tr('required_date')}: ${widget.requirement!['fecha_requerida'] ?? '-'}');
-      sheet.cell(xl.CellIndex.indexByColumnRow(columnIndex: 0, rowIndex: 3)).value = 
-        xl.TextCellValue('${tr('exported')}: ${DateTime.now().toString().split('.')[0]}');
-      
+      sheet
+              .cell(xl.CellIndex.indexByColumnRow(columnIndex: 0, rowIndex: 0))
+              .value =
+          xl.TextCellValue(
+              '${tr('requirement')}: ${widget.requirement!['codigo_requerimiento'] ?? 'REQ-${widget.requirement!['id']}'}');
+      sheet
+              .cell(xl.CellIndex.indexByColumnRow(columnIndex: 0, rowIndex: 1))
+              .value =
+          xl.TextCellValue(
+              '${tr('target_area')}: ${widget.requirement!['area_destino'] ?? '-'}');
+      sheet
+              .cell(xl.CellIndex.indexByColumnRow(columnIndex: 0, rowIndex: 2))
+              .value =
+          xl.TextCellValue(
+              '${tr('required_date')}: ${widget.requirement!['fecha_requerida'] ?? '-'}');
+      sheet
+              .cell(xl.CellIndex.indexByColumnRow(columnIndex: 0, rowIndex: 3))
+              .value =
+          xl.TextCellValue(
+              '${tr('exported')}: ${DateTime.now().toString().split('.')[0]}');
+
       // Column headers (row 5)
-      final headers = [tr('part_number'), tr('description'), tr('qty_required'), tr('qty_prepared'), tr('qty_delivered'), tr('status'), tr('location')];
+      final headers = [
+        tr('part_number'),
+        tr('description'),
+        'Cant. por empaque',
+        'Unidades',
+        tr('qty_required'),
+        tr('qty_prepared'),
+        tr('qty_delivered'),
+        tr('status'),
+        tr('location'),
+        'Ubicación entrega',
+      ];
       for (var i = 0; i < headers.length; i++) {
-        sheet.cell(xl.CellIndex.indexByColumnRow(columnIndex: i, rowIndex: 5)).value = 
-          xl.TextCellValue(headers[i]);
+        sheet
+            .cell(xl.CellIndex.indexByColumnRow(columnIndex: i, rowIndex: 5))
+            .value = xl.TextCellValue(headers[i]);
       }
-      
+
       // Data rows
       for (var rowIdx = 0; rowIdx < _items.length; rowIdx++) {
         final item = _items[rowIdx];
-        sheet.cell(xl.CellIndex.indexByColumnRow(columnIndex: 0, rowIndex: rowIdx + 6)).value = 
-          xl.TextCellValue(item['numero_parte']?.toString() ?? '');
-        sheet.cell(xl.CellIndex.indexByColumnRow(columnIndex: 1, rowIndex: rowIdx + 6)).value = 
-          xl.TextCellValue(item['descripcion']?.toString() ?? item['especificacion_material']?.toString() ?? '-');
-        sheet.cell(xl.CellIndex.indexByColumnRow(columnIndex: 2, rowIndex: rowIdx + 6)).value = 
-          xl.IntCellValue(item['cantidad_requerida'] ?? 0);
-        sheet.cell(xl.CellIndex.indexByColumnRow(columnIndex: 3, rowIndex: rowIdx + 6)).value = 
-          xl.IntCellValue(item['cantidad_preparada'] ?? 0);
-        sheet.cell(xl.CellIndex.indexByColumnRow(columnIndex: 4, rowIndex: rowIdx + 6)).value = 
-          xl.IntCellValue(item['cantidad_entregada'] ?? 0);
-        sheet.cell(xl.CellIndex.indexByColumnRow(columnIndex: 5, rowIndex: rowIdx + 6)).value = 
-          xl.TextCellValue(item['status']?.toString() ?? 'Pendiente');
-        sheet.cell(xl.CellIndex.indexByColumnRow(columnIndex: 6, rowIndex: rowIdx + 6)).value = 
-          xl.TextCellValue(item['ubicaciones_disponibles']?.toString() ?? '-');
+        sheet
+            .cell(xl.CellIndex.indexByColumnRow(
+                columnIndex: 0, rowIndex: rowIdx + 6))
+            .value = xl.TextCellValue(item['numero_parte']?.toString() ?? '');
+        sheet
+                .cell(xl.CellIndex.indexByColumnRow(
+                    columnIndex: 1, rowIndex: rowIdx + 6))
+                .value =
+            xl.TextCellValue(item['descripcion']?.toString() ??
+                item['especificacion_material']?.toString() ??
+                '-');
+        sheet
+                .cell(xl.CellIndex.indexByColumnRow(
+                    columnIndex: 2, rowIndex: rowIdx + 6))
+                .value =
+            xl.IntCellValue(_asRequirementInt(item['cantidad_estandarizada']));
+        sheet
+                .cell(xl.CellIndex.indexByColumnRow(
+                    columnIndex: 3, rowIndex: rowIdx + 6))
+                .value =
+            xl.IntCellValue(_asRequirementInt(item['cantidad_unidades']));
+        sheet
+                .cell(xl.CellIndex.indexByColumnRow(
+                    columnIndex: 4, rowIndex: rowIdx + 6))
+                .value =
+            xl.IntCellValue(_asRequirementInt(item['cantidad_requerida']));
+        sheet
+                .cell(xl.CellIndex.indexByColumnRow(
+                    columnIndex: 5, rowIndex: rowIdx + 6))
+                .value =
+            xl.IntCellValue(_asRequirementInt(item['cantidad_preparada']));
+        sheet
+                .cell(xl.CellIndex.indexByColumnRow(
+                    columnIndex: 6, rowIndex: rowIdx + 6))
+                .value =
+            xl.IntCellValue(_asRequirementInt(item['cantidad_entregada']));
+        sheet
+                .cell(xl.CellIndex.indexByColumnRow(
+                    columnIndex: 7, rowIndex: rowIdx + 6))
+                .value =
+            xl.TextCellValue(item['status']?.toString() ?? 'Pendiente');
+        sheet
+                .cell(xl.CellIndex.indexByColumnRow(
+                    columnIndex: 8, rowIndex: rowIdx + 6))
+                .value =
+            xl.TextCellValue(
+                item['ubicaciones_disponibles']?.toString() ?? '-');
+        sheet
+                .cell(xl.CellIndex.indexByColumnRow(
+                    columnIndex: 9, rowIndex: rowIdx + 6))
+                .value =
+            xl.TextCellValue(item['ubicacion_destino']?.toString() ?? '-');
       }
-      
+
       // Remove default sheet
       if (excel.tables.containsKey('Sheet1')) {
         excel.delete('Sheet1');
       }
-      
+
       // Save file
       final bytes = excel.encode();
       if (bytes != null) {
         final file = File(result);
         await file.writeAsBytes(bytes);
-        
+        await FileOpener.openInDefaultApp(result);
+
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
@@ -593,7 +757,8 @@ class RequirementsItemsPanelState extends State<RequirementsItemsPanel> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Export error: $e'), backgroundColor: Colors.red),
+          SnackBar(
+              content: Text('Export error: $e'), backgroundColor: Colors.red),
         );
       }
     }
@@ -619,10 +784,10 @@ class RequirementsItemsPanelState extends State<RequirementsItemsPanel> {
       ),
     );
   }
-  
+
   Widget _buildToolbar() {
     final hasRequirement = widget.requirement != null;
-    
+
     return Container(
       height: 32,
       padding: const EdgeInsets.symmetric(horizontal: 8),
@@ -635,14 +800,15 @@ class RequirementsItemsPanelState extends State<RequirementsItemsPanel> {
           const Icon(Icons.list_alt, size: 14, color: Colors.teal),
           const SizedBox(width: 8),
           Text(
-            hasRequirement 
-              ? '${tr('items')} - #${widget.requirement!['id']}'
-              : tr('items'),
-            style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w600),
+            hasRequirement
+                ? '${tr('items')} - #${widget.requirement!['id']}'
+                : tr('items'),
+            style: const TextStyle(
+                color: Colors.white, fontSize: 11, fontWeight: FontWeight.w600),
           ),
           const Spacer(),
           if (hasRequirement) ...[
-            if (AuthService.canWriteRequirements) ...[
+            if (_canModifyRequirement) ...[
               _buildToolbarButton(
                 icon: Icons.add,
                 label: tr('add_material'),
@@ -671,7 +837,7 @@ class RequirementsItemsPanelState extends State<RequirementsItemsPanel> {
               color: AppColors.buttonExcel,
               onPressed: _items.isNotEmpty ? _exportToExcel : null,
             ),
-            if (_selectedItems.isNotEmpty && AuthService.canWriteRequirements) ...[
+            if (_selectedItems.isNotEmpty && _canModifyRequirement) ...[
               const SizedBox(width: 8),
               _buildToolbarButton(
                 icon: Icons.delete_sweep,
@@ -685,7 +851,7 @@ class RequirementsItemsPanelState extends State<RequirementsItemsPanel> {
       ),
     );
   }
-  
+
   Widget _buildToolbarButton({
     required IconData icon,
     required String label,
@@ -700,9 +866,9 @@ class RequirementsItemsPanelState extends State<RequirementsItemsPanel> {
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
           decoration: BoxDecoration(
-            color: color.withOpacity(0.2),
+            color: color.withValues(alpha: 0.2),
             borderRadius: BorderRadius.circular(4),
-            border: Border.all(color: color.withOpacity(0.5)),
+            border: Border.all(color: color.withValues(alpha: 0.5)),
           ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
@@ -716,9 +882,10 @@ class RequirementsItemsPanelState extends State<RequirementsItemsPanel> {
       ),
     );
   }
-  
+
   Widget _buildHeader() {
-    final allSelected = _items.isNotEmpty && _selectedItems.length == _items.length;
+    final allSelected =
+        _items.isNotEmpty && _selectedItems.length == _items.length;
     return Container(
       height: 26,
       decoration: const BoxDecoration(
@@ -736,7 +903,8 @@ class RequirementsItemsPanelState extends State<RequirementsItemsPanel> {
               onChanged: (value) {
                 setState(() {
                   if (value == true) {
-                    _selectedItems = _items.map((item) => item['id'] as int).toSet();
+                    _selectedItems =
+                        _items.map((item) => item['id'] as int).toSet();
                   } else {
                     _selectedItems.clear();
                   }
@@ -756,59 +924,67 @@ class RequirementsItemsPanelState extends State<RequirementsItemsPanel> {
           _buildHeaderCell(tr('qty_delivered'), flex: 1),
           _buildHeaderCell(tr('status'), flex: 2),
           _buildHeaderCell(tr('location'), flex: 2),
+          _buildHeaderCell('Ubicación entrega', flex: 2),
         ],
       ),
     );
   }
-  
+
   Widget _buildHeaderCell(String text, {int flex = 1}) {
     return Expanded(
       flex: flex,
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 6),
         decoration: const BoxDecoration(
-          border: Border(right: BorderSide(color: AppColors.border, width: 0.5)),
+          border:
+              Border(right: BorderSide(color: AppColors.border, width: 0.5)),
         ),
         child: Text(
           text,
-          style: const TextStyle(fontSize: 9, fontWeight: FontWeight.w600, color: Colors.white),
+          style: const TextStyle(
+              fontSize: 9, fontWeight: FontWeight.w600, color: Colors.white),
           overflow: TextOverflow.ellipsis,
         ),
       ),
     );
   }
-  
+
   Widget _buildDataRows() {
     if (widget.requirement == null) {
       return Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(Icons.touch_app, size: 32, color: Colors.white.withOpacity(0.1)),
+            Icon(Icons.touch_app,
+                size: 32, color: Colors.white.withValues(alpha: 0.1)),
             const SizedBox(height: 8),
             Text(
               tr('select_requirement_to_view_items'),
-              style: TextStyle(color: Colors.white.withOpacity(0.3), fontSize: 11),
+              style: TextStyle(
+                  color: Colors.white.withValues(alpha: 0.3), fontSize: 11),
             ),
           ],
         ),
       );
     }
-    
+
     if (_isLoading) {
       return const Center(child: CircularProgressIndicator(color: Colors.teal));
     }
-    
+
     if (_items.isEmpty) {
       return Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(Icons.inventory_2_outlined, size: 32, color: Colors.white.withOpacity(0.1)),
+            Icon(Icons.inventory_2_outlined,
+                size: 32, color: Colors.white.withValues(alpha: 0.1)),
             const SizedBox(height: 8),
-            Text(tr('no_items'), style: TextStyle(color: Colors.white.withOpacity(0.3), fontSize: 11)),
+            Text(tr('no_items'),
+                style: TextStyle(
+                    color: Colors.white.withValues(alpha: 0.3), fontSize: 11)),
             const SizedBox(height: 12),
-            if (AuthService.canWriteRequirements)
+            if (_canModifyRequirement)
               Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
@@ -831,7 +1007,7 @@ class RequirementsItemsPanelState extends State<RequirementsItemsPanel> {
         ),
       );
     }
-    
+
     return ListView.builder(
       itemCount: _items.length,
       itemBuilder: (context, index) {
@@ -840,27 +1016,29 @@ class RequirementsItemsPanelState extends State<RequirementsItemsPanel> {
         final isSelected = index == _selectedIndex;
         final isChecked = _selectedItems.contains(itemId);
         final isEven = index % 2 == 0;
-        
+
         // Calcular progreso
         final qtyReq = item['cantidad_requerida'] ?? 0;
         final qtyDel = item['cantidad_entregada'] ?? 0;
         final progress = qtyReq > 0 ? (qtyDel / qtyReq).clamp(0.0, 1.0) : 0.0;
-        
+
         return GestureDetector(
           onTap: () => setState(() => _selectedIndex = isSelected ? -1 : index),
           child: Container(
             height: 26,
             decoration: BoxDecoration(
-              color: isChecked 
-                ? Colors.red.withOpacity(0.15)
-                : isSelected
-                  ? AppColors.gridSelectedRow
-                  : isEven ? AppColors.gridBackground : AppColors.gridRowAlt,
+              color: isChecked
+                  ? Colors.red.withValues(alpha: 0.15)
+                  : isSelected
+                      ? AppColors.gridSelectedRow
+                      : isEven
+                          ? AppColors.gridBackground
+                          : AppColors.gridRowAlt,
               border: Border(
                 bottom: const BorderSide(color: AppColors.border, width: 0.5),
-                left: isSelected 
-                  ? const BorderSide(color: Colors.teal, width: 3) 
-                  : BorderSide.none,
+                left: isSelected
+                    ? const BorderSide(color: Colors.teal, width: 3)
+                    : BorderSide.none,
               ),
             ),
             child: Row(
@@ -887,12 +1065,22 @@ class RequirementsItemsPanelState extends State<RequirementsItemsPanel> {
                   ),
                 ),
                 _buildDataCell(item['numero_parte'] ?? '', flex: 2),
-                _buildDataCell(item['descripcion'] ?? item['especificacion_material'] ?? '-', flex: 3),
-                _buildQtyCell(item, 'cantidad_requerida', flex: 1, editable: true),
+                _buildDataCell(
+                    item['descripcion'] ??
+                        item['especificacion_material'] ??
+                        '-',
+                    flex: 3),
+                _buildQtyCell(item, 'cantidad_requerida',
+                    flex: 1, editable: true),
                 _buildDataCell('${item['cantidad_preparada'] ?? 0}', flex: 1),
                 _buildDataCell('${item['cantidad_entregada'] ?? 0}', flex: 1),
-                _buildStatusCell(item['status'] ?? 'Pendiente', progress, flex: 2),
-                _buildLocationCell(item['ubicaciones_disponibles']?.toString() ?? '-', flex: 2),
+                _buildStatusCell(item['status'] ?? 'Pendiente', progress,
+                    flex: 2),
+                _buildLocationCell(
+                    item['ubicaciones_disponibles']?.toString() ?? '-',
+                    flex: 2,
+                    pendingInvoice: _pendingInvoiceNotice(item)),
+                _buildDeliveryLocationCell(item, flex: 2),
               ],
             ),
           ),
@@ -900,7 +1088,7 @@ class RequirementsItemsPanelState extends State<RequirementsItemsPanel> {
       },
     );
   }
-  
+
   Widget _buildDataCell(String text, {int flex = 1}) {
     return Expanded(
       flex: flex,
@@ -908,7 +1096,8 @@ class RequirementsItemsPanelState extends State<RequirementsItemsPanel> {
         padding: const EdgeInsets.symmetric(horizontal: 6),
         alignment: Alignment.centerLeft,
         decoration: const BoxDecoration(
-          border: Border(right: BorderSide(color: AppColors.border, width: 0.5)),
+          border:
+              Border(right: BorderSide(color: AppColors.border, width: 0.5)),
         ),
         child: Text(
           text,
@@ -918,52 +1107,88 @@ class RequirementsItemsPanelState extends State<RequirementsItemsPanel> {
       ),
     );
   }
-  
-  Widget _buildQtyCell(Map<String, dynamic> item, String field, {int flex = 1, bool editable = false}) {
+
+  Widget _buildQtyCell(Map<String, dynamic> item, String field,
+      {int flex = 1, bool editable = false}) {
     final value = item[field] ?? 0;
-    
+    final standard = _parsePositiveRequirementInt(
+      item['cantidad_estandarizada'],
+    );
+    final units = _parsePositiveRequirementInt(item['cantidad_unidades']);
+    final quantityText = standard != null && units != null
+        ? '$value ($standard×$units)'
+        : '$value';
+
     return Expanded(
       flex: flex,
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 6),
         alignment: Alignment.centerLeft,
         decoration: const BoxDecoration(
-          border: Border(right: BorderSide(color: AppColors.border, width: 0.5)),
+          border:
+              Border(right: BorderSide(color: AppColors.border, width: 0.5)),
         ),
         child: editable
-          ? InkWell(
-              onTap: () => _showEditQtyDialog(item, field, value),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text('$value', style: const TextStyle(fontSize: 9, color: Colors.white)),
-                  const SizedBox(width: 2),
-                  const Icon(Icons.edit, size: 8, color: Colors.white38),
-                ],
-              ),
-            )
-          : Text('$value', style: const TextStyle(fontSize: 9, color: Colors.white)),
+            ? Tooltip(
+                message: standard != null && units != null
+                    ? '$standard por empaque × $units unidades = $value'
+                    : 'Cantidad requerida: $value',
+                child: InkWell(
+                  onTap: _canModifyRequirement
+                      ? () => _showEditQtyDialog(item, field, value)
+                      : null,
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Flexible(
+                        child: Text(
+                          quantityText,
+                          style:
+                              const TextStyle(fontSize: 9, color: Colors.white),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      if (_canModifyRequirement) ...[
+                        const SizedBox(width: 2),
+                        const Icon(Icons.edit, size: 8, color: Colors.white38),
+                      ],
+                    ],
+                  ),
+                ),
+              )
+            : Text('$value',
+                style: const TextStyle(fontSize: 9, color: Colors.white)),
       ),
     );
   }
-  
+
   Widget _buildStatusCell(String status, double progress, {int flex = 1}) {
     Color color;
     switch (status) {
-      case 'Pendiente': color = Colors.orange; break;
-      case 'Parcial': color = Colors.blue; break;
-      case 'Preparado': color = Colors.cyan; break;
-      case 'Entregado': color = Colors.green; break;
-      default: color = Colors.grey;
+      case 'Pendiente':
+        color = Colors.orange;
+        break;
+      case 'Parcial':
+        color = Colors.blue;
+        break;
+      case 'Preparado':
+        color = Colors.cyan;
+        break;
+      case 'Entregado':
+        color = Colors.green;
+        break;
+      default:
+        color = Colors.grey;
     }
-    
+
     return Expanded(
       flex: flex,
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 6),
         alignment: Alignment.centerLeft,
         decoration: const BoxDecoration(
-          border: Border(right: BorderSide(color: AppColors.border, width: 0.5)),
+          border:
+              Border(right: BorderSide(color: AppColors.border, width: 0.5)),
         ),
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -972,7 +1197,7 @@ class RequirementsItemsPanelState extends State<RequirementsItemsPanel> {
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
               decoration: BoxDecoration(
-                color: color.withOpacity(0.2),
+                color: color.withValues(alpha: 0.2),
                 borderRadius: BorderRadius.circular(3),
               ),
               child: Text(status, style: TextStyle(fontSize: 8, color: color)),
@@ -993,56 +1218,182 @@ class RequirementsItemsPanelState extends State<RequirementsItemsPanel> {
       ),
     );
   }
-  
-  Widget _buildLocationCell(String location, {int flex = 1}) {
-    final hasLocation = location.isNotEmpty && location != '-' && location != 'null';
-    
+
+  String _pendingInvoiceNotice(Map<String, dynamic> item) {
+    final available = _asRequirementInt(item['cantidad_disponible']);
+    final pending = _asRequirementInt(item['cantidad_pendiente_entrada']);
+    if (available > 0 || pending <= 0) return '';
+    final invoices = (item['invoices_pendientes'] ?? '').toString().trim();
+    return invoices.isEmpty
+        ? '$pending pendiente por invoice'
+        : '$pending pendiente · $invoices';
+  }
+
+  Widget _buildLocationCell(String location,
+      {int flex = 1, String pendingInvoice = ''}) {
+    final hasLocation =
+        location.isNotEmpty && location != '-' && location != 'null';
+    final showPendingInvoice = !hasLocation && pendingInvoice.isNotEmpty;
+
     return Expanded(
       flex: flex,
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 6),
         alignment: Alignment.centerLeft,
         decoration: const BoxDecoration(
-          border: Border(right: BorderSide(color: AppColors.border, width: 0.5)),
+          border:
+              Border(right: BorderSide(color: AppColors.border, width: 0.5)),
         ),
-        child: Text(
-          hasLocation ? location : '-',
-          style: TextStyle(
-            fontSize: 9, 
-            color: hasLocation ? Colors.amber : Colors.red.shade300,
-            fontWeight: hasLocation ? FontWeight.bold : FontWeight.normal,
+        child: showPendingInvoice
+            ? Tooltip(
+                message: 'Sin existencia en almacén. $pendingInvoice',
+                child: Text(
+                  '⏳ $pendingInvoice',
+                  style: const TextStyle(
+                    fontSize: 9,
+                    color: Colors.orangeAccent,
+                    fontWeight: FontWeight.bold,
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              )
+            : Text(
+                hasLocation ? location : '-',
+                style: TextStyle(
+                  fontSize: 9,
+                  color: hasLocation ? Colors.amber : Colors.red.shade300,
+                  fontWeight: hasLocation ? FontWeight.bold : FontWeight.normal,
+                ),
+                overflow: TextOverflow.ellipsis,
+              ),
+      ),
+    );
+  }
+
+  Widget _buildDeliveryLocationCell(Map<String, dynamic> item, {int flex = 1}) {
+    final location = item['ubicacion_destino']?.toString().trim() ?? '';
+    return Expanded(
+      flex: flex,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 6),
+        alignment: Alignment.centerLeft,
+        decoration: const BoxDecoration(
+          border:
+              Border(right: BorderSide(color: AppColors.border, width: 0.5)),
+        ),
+        child: InkWell(
+          onTap: _canModifyRequirement
+              ? () => _showEditDeliveryLocationDialog(item)
+              : null,
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  location.isEmpty ? '-' : location,
+                  style: TextStyle(
+                    fontSize: 9,
+                    color: location.isEmpty ? Colors.white38 : Colors.amber,
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              if (_canModifyRequirement)
+                const Icon(Icons.edit_location_alt,
+                    size: 10, color: Colors.white38),
+            ],
           ),
-          overflow: TextOverflow.ellipsis,
         ),
       ),
     );
   }
-  
-  Future<void> _showEditQtyDialog(Map<String, dynamic> item, String field, int currentValue) async {
+
+  Future<void> _showEditDeliveryLocationDialog(
+      Map<String, dynamic> item) async {
+    final controller = TextEditingController(
+      text: item['ubicacion_destino']?.toString() ?? '',
+    );
+    final result = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: AppColors.panelBackground,
+        title: const Text(
+          'Ubicación de entrega',
+          style: TextStyle(color: Colors.white, fontSize: 14),
+        ),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          style: const TextStyle(color: Colors.white),
+          decoration: const InputDecoration(
+            hintText: 'Ej. Línea 3, Rack B...',
+            prefixIcon: Icon(Icons.pin_drop),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text(tr('cancel')),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, controller.text.trim()),
+            child: Text(tr('save')),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (result == null || widget.requirement == null) return;
+
+    final updated = await ApiService.updateRequirementItem(
+      widget.requirement!['id'],
+      item['id'],
+      {'ubicacion_destino': result},
+    );
+    if (!mounted) return;
+    if (updated) {
+      await loadItems(widget.requirement!['id']);
+      widget.onItemsChanged?.call();
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('No se pudo actualizar la ubicación de entrega.'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
+  Future<void> _showEditQtyDialog(
+      Map<String, dynamic> item, String field, int currentValue) async {
     final controller = TextEditingController(text: currentValue.toString());
-    
+
     final result = await showDialog<int>(
       context: context,
       builder: (context) => AlertDialog(
         backgroundColor: AppColors.panelBackground,
-        title: Text(tr('edit_qty'), style: const TextStyle(color: Colors.white, fontSize: 14)),
+        title: Text(tr('edit_qty'),
+            style: const TextStyle(color: Colors.white, fontSize: 14)),
         content: TextField(
           controller: controller,
           keyboardType: TextInputType.number,
           autofocus: true,
           style: const TextStyle(color: Colors.white),
           decoration: InputDecoration(
-            labelText: field == 'cantidad_preparada' ? tr('qty_prepared') : tr('qty'),
+            labelText:
+                field == 'cantidad_preparada' ? tr('qty_prepared') : tr('qty'),
             labelStyle: const TextStyle(color: Colors.white54),
             border: const OutlineInputBorder(),
-            enabledBorder: const OutlineInputBorder(borderSide: BorderSide(color: Colors.white24)),
-            focusedBorder: const OutlineInputBorder(borderSide: BorderSide(color: Colors.teal)),
+            enabledBorder: const OutlineInputBorder(
+                borderSide: BorderSide(color: Colors.white24)),
+            focusedBorder: const OutlineInputBorder(
+                borderSide: BorderSide(color: Colors.teal)),
           ),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: Text(tr('cancel'), style: const TextStyle(color: Colors.white54)),
+            child: Text(tr('cancel'),
+                style: const TextStyle(color: Colors.white54)),
           ),
           ElevatedButton(
             onPressed: () {
@@ -1055,7 +1406,7 @@ class RequirementsItemsPanelState extends State<RequirementsItemsPanel> {
         ],
       ),
     );
-    
+
     if (result != null && result != currentValue) {
       _updateItemQty(item, field, result);
     }
@@ -1067,9 +1418,9 @@ class RequirementsItemsPanelState extends State<RequirementsItemsPanel> {
 // ============================================
 class _AddMaterialDialog extends StatefulWidget {
   final LanguageProvider languageProvider;
-  
+
   const _AddMaterialDialog({required this.languageProvider});
-  
+
   @override
   State<_AddMaterialDialog> createState() => _AddMaterialDialogState();
 }
@@ -1077,19 +1428,22 @@ class _AddMaterialDialog extends StatefulWidget {
 class _AddMaterialDialogState extends State<_AddMaterialDialog> {
   final _searchController = TextEditingController();
   final _cantidadController = TextEditingController(text: '1');
+  final _standardQuantityController = TextEditingController();
+  final _unitsController = TextEditingController(text: '1');
+  final _deliveryLocationController = TextEditingController();
   List<Map<String, dynamic>> _materials = [];
   List<Map<String, dynamic>> _filteredMaterials = [];
   Map<String, dynamic>? _selectedMaterial;
   bool _isLoading = true;
-  
+
   String tr(String key) => widget.languageProvider.tr(key);
-  
+
   @override
   void initState() {
     super.initState();
     _loadMaterials();
   }
-  
+
   Future<void> _loadMaterials() async {
     try {
       final materials = await ApiService.getMateriales();
@@ -1104,7 +1458,7 @@ class _AddMaterialDialogState extends State<_AddMaterialDialog> {
       if (mounted) setState(() => _isLoading = false);
     }
   }
-  
+
   void _onSearch(String query) {
     setState(() {
       if (query.isEmpty) {
@@ -1112,20 +1466,75 @@ class _AddMaterialDialogState extends State<_AddMaterialDialog> {
       } else {
         _filteredMaterials = _materials.where((m) {
           final partNumber = (m['numero_parte'] ?? '').toString().toLowerCase();
-          final spec = (m['especificacion_material'] ?? '').toString().toLowerCase();
-          return partNumber.contains(query.toLowerCase()) || spec.contains(query.toLowerCase());
+          final spec =
+              (m['especificacion_material'] ?? '').toString().toLowerCase();
+          return partNumber.contains(query.toLowerCase()) ||
+              spec.contains(query.toLowerCase());
         }).toList();
       }
     });
   }
-  
+
+  int? get _standardQuantity =>
+      _parsePositiveRequirementInt(_standardQuantityController.text);
+
+  int get _units => _parsePositiveRequirementInt(_unitsController.text) ?? 1;
+
+  bool get _usesUnits => _standardQuantity != null;
+
+  int get _selectedAvailableQuantity =>
+      _asRequirementInt(_selectedMaterial?['cantidad_disponible']);
+
+  int get _selectedPendingInvoiceQuantity =>
+      _asRequirementInt(_selectedMaterial?['cantidad_pendiente_entrada']);
+
+  String get _selectedPendingInvoices {
+    final invoices =
+        (_selectedMaterial?['pendiente_entrada_en'] ?? '').toString().trim();
+    return invoices == 'null' ? '' : invoices;
+  }
+
+  bool get _selectedIsPendingInvoiceOnly =>
+      _selectedAvailableQuantity <= 0 && _selectedPendingInvoiceQuantity > 0;
+
+  int get _requestedQuantity => _usesUnits
+      ? _standardQuantity! * _units
+      : (_parsePositiveRequirementInt(_cantidadController.text) ?? 0);
+
+  void _syncCalculatedQuantity() {
+    if (_usesUnits) {
+      _cantidadController.text = '${_standardQuantity! * _units}';
+    }
+  }
+
+  void _onUnitValueChanged(String _) {
+    _syncCalculatedQuantity();
+    setState(() {});
+  }
+
+  void _selectMaterial(Map<String, dynamic> material) {
+    final standardPack =
+        _parsePositiveRequirementInt(material['standard_pack']) ??
+            _parsePositiveRequirementInt(material['unidad_empaque']);
+    setState(() {
+      _selectedMaterial = material;
+      _standardQuantityController.text =
+          standardPack == null ? '' : '$standardPack';
+      _unitsController.text = '1';
+      _syncCalculatedQuantity();
+    });
+  }
+
   @override
   void dispose() {
     _searchController.dispose();
     _cantidadController.dispose();
+    _standardQuantityController.dispose();
+    _unitsController.dispose();
+    _deliveryLocationController.dispose();
     super.dispose();
   }
-  
+
   @override
   Widget build(BuildContext context) {
     return Dialog(
@@ -1141,16 +1550,21 @@ class _AddMaterialDialogState extends State<_AddMaterialDialog> {
               children: [
                 const Icon(Icons.add, color: Colors.teal, size: 20),
                 const SizedBox(width: 8),
-                Text(tr('add_material'), style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w600)),
+                Text(tr('add_material'),
+                    style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600)),
                 const Spacer(),
                 IconButton(
-                  icon: const Icon(Icons.close, color: Colors.white54, size: 18),
+                  icon:
+                      const Icon(Icons.close, color: Colors.white54, size: 18),
                   onPressed: () => Navigator.pop(context),
                 ),
               ],
             ),
             const SizedBox(height: 12),
-            
+
             // Search bar and quantity
             Row(
               children: [
@@ -1160,109 +1574,201 @@ class _AddMaterialDialogState extends State<_AddMaterialDialog> {
                     controller: _searchController,
                     style: const TextStyle(color: Colors.white, fontSize: 12),
                     decoration: InputDecoration(
-                      hintText: '${tr('search')} ${tr('part_number')} / ${tr('spec')}...',
-                      hintStyle: const TextStyle(color: Colors.white38, fontSize: 11),
-                      prefixIcon: const Icon(Icons.search, size: 18, color: Colors.white54),
+                      hintText:
+                          '${tr('search')} ${tr('part_number')} / ${tr('spec')}...',
+                      hintStyle:
+                          const TextStyle(color: Colors.white38, fontSize: 11),
+                      prefixIcon: const Icon(Icons.search,
+                          size: 18, color: Colors.white54),
                       filled: true,
                       fillColor: AppColors.gridBackground,
-                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(4), borderSide: BorderSide.none),
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                      border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(4),
+                          borderSide: BorderSide.none),
+                      contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 10),
                     ),
                     onChanged: _onSearch,
                   ),
                 ),
-                const SizedBox(width: 12),
+                const SizedBox(width: 8),
+                SizedBox(
+                  width: 120,
+                  child: TextField(
+                    controller: _standardQuantityController,
+                    keyboardType: TextInputType.number,
+                    inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(color: Colors.white, fontSize: 12),
+                    onChanged: _onUnitValueChanged,
+                    decoration: InputDecoration(
+                      labelText: 'Cant. por empaque',
+                      labelStyle:
+                          const TextStyle(color: Colors.white54, fontSize: 10),
+                      filled: true,
+                      fillColor: AppColors.gridBackground,
+                      border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(4),
+                          borderSide: BorderSide.none),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                SizedBox(
+                  width: 75,
+                  child: TextField(
+                    controller: _unitsController,
+                    keyboardType: TextInputType.number,
+                    inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(color: Colors.white, fontSize: 12),
+                    onChanged: _onUnitValueChanged,
+                    decoration: InputDecoration(
+                      labelText: 'Unidades',
+                      labelStyle:
+                          const TextStyle(color: Colors.white54, fontSize: 10),
+                      filled: true,
+                      fillColor: AppColors.gridBackground,
+                      border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(4),
+                          borderSide: BorderSide.none),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
                 SizedBox(
                   width: 100,
                   child: TextField(
                     controller: _cantidadController,
                     keyboardType: TextInputType.number,
+                    inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                    readOnly: _usesUnits,
                     textAlign: TextAlign.center,
                     style: const TextStyle(color: Colors.white, fontSize: 12),
+                    onChanged: (_) => setState(() {}),
                     decoration: InputDecoration(
-                      labelText: tr('qty_required'),
-                      labelStyle: const TextStyle(color: Colors.white54, fontSize: 10),
+                      labelText: 'Total',
+                      labelStyle:
+                          const TextStyle(color: Colors.white54, fontSize: 10),
                       filled: true,
                       fillColor: AppColors.gridBackground,
-                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(4), borderSide: BorderSide.none),
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+                      border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(4),
+                          borderSide: BorderSide.none),
+                      contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 10),
                     ),
                   ),
                 ),
               ],
             ),
             const SizedBox(height: 12),
-            
+
             // Table header
             Container(
               height: 28,
               decoration: const BoxDecoration(
                 color: AppColors.gridHeader,
-                borderRadius: BorderRadius.only(topLeft: Radius.circular(4), topRight: Radius.circular(4)),
+                borderRadius: BorderRadius.only(
+                    topLeft: Radius.circular(4), topRight: Radius.circular(4)),
               ),
               child: Row(
                 children: [
                   _buildHeaderCell(tr('part_number'), flex: 2),
-                  _buildHeaderCell(tr('spec'), flex: 4),
+                  _buildHeaderCell(tr('spec'), flex: 3),
+                  _buildHeaderCell('Almacén / invoice', flex: 1),
                   _buildHeaderCell(tr('location'), flex: 2),
                 ],
               ),
             ),
-            
+
             // Table data
             Expanded(
               child: _isLoading
-                ? const Center(child: CircularProgressIndicator(color: Colors.teal))
-                : _filteredMaterials.isEmpty
-                  ? Center(child: Text(tr('no_materials_found'), style: const TextStyle(color: Colors.white38, fontSize: 11)))
-                  : ListView.builder(
-                      itemCount: _filteredMaterials.length,
-                      itemBuilder: (context, index) {
-                        final m = _filteredMaterials[index];
-                        final isSelected = _selectedMaterial != null && _selectedMaterial!['numero_parte'] == m['numero_parte'];
-                        
-                        return GestureDetector(
-                          onTap: () => setState(() => _selectedMaterial = m),
-                          onDoubleTap: () {
-                            setState(() => _selectedMaterial = m);
-                            _confirmSelection();
-                          },
-                          child: Container(
-                            height: 28,
-                            decoration: BoxDecoration(
-                              color: isSelected
-                                ? Colors.teal.withOpacity(0.3)
-                                : index.isEven ? AppColors.gridBackground : AppColors.gridRowAlt,
-                              border: Border(
-                                left: isSelected ? const BorderSide(color: Colors.teal, width: 3) : BorderSide.none,
+                  ? const Center(
+                      child: CircularProgressIndicator(color: Colors.teal))
+                  : _filteredMaterials.isEmpty
+                      ? Center(
+                          child: Text(tr('no_materials_found'),
+                              style: const TextStyle(
+                                  color: Colors.white38, fontSize: 11)))
+                      : ListView.builder(
+                          itemCount: _filteredMaterials.length,
+                          itemBuilder: (context, index) {
+                            final m = _filteredMaterials[index];
+                            final isSelected = _selectedMaterial != null &&
+                                _selectedMaterial!['numero_parte'] ==
+                                    m['numero_parte'];
+
+                            return GestureDetector(
+                              onTap: () => _selectMaterial(m),
+                              onDoubleTap: () {
+                                _selectMaterial(m);
+                                _confirmSelection();
+                              },
+                              child: Container(
+                                height: 28,
+                                decoration: BoxDecoration(
+                                  color: isSelected
+                                      ? Colors.teal.withValues(alpha: 0.3)
+                                      : index.isEven
+                                          ? AppColors.gridBackground
+                                          : AppColors.gridRowAlt,
+                                  border: Border(
+                                    left: isSelected
+                                        ? const BorderSide(
+                                            color: Colors.teal, width: 3)
+                                        : BorderSide.none,
+                                  ),
+                                ),
+                                child: Row(
+                                  children: [
+                                    _buildDataCell(m['numero_parte'] ?? '',
+                                        flex: 2),
+                                    _buildDataCell(
+                                        m['especificacion_material'] ?? '-',
+                                        flex: 3),
+                                    _buildAvailabilityCell(m, flex: 1),
+                                    _buildDataCell(
+                                        m['ubicacion_material'] ?? '-',
+                                        flex: 2),
+                                  ],
+                                ),
                               ),
-                            ),
-                            child: Row(
-                              children: [
-                                _buildDataCell(m['numero_parte'] ?? '', flex: 2),
-                                _buildDataCell(m['especificacion_material'] ?? '-', flex: 4),
-                                _buildDataCell(m['ubicacion_material'] ?? '-', flex: 2),
-                              ],
-                            ),
-                          ),
-                        );
-                      },
-                    ),
+                            );
+                          },
+                        ),
             ),
-            
+
             // Selected material info & buttons
             const SizedBox(height: 12),
             if (_selectedMaterial != null)
               Container(
                 padding: const EdgeInsets.all(8),
                 decoration: BoxDecoration(
-                  color: Colors.teal.withOpacity(0.1),
+                  color: (_selectedIsPendingInvoiceOnly
+                          ? Colors.orange
+                          : Colors.teal)
+                      .withValues(alpha: 0.1),
                   borderRadius: BorderRadius.circular(4),
-                  border: Border.all(color: Colors.teal.withOpacity(0.3)),
+                  border: Border.all(
+                    color: (_selectedIsPendingInvoiceOnly
+                            ? Colors.orange
+                            : Colors.teal)
+                        .withValues(alpha: 0.3),
+                  ),
                 ),
                 child: Row(
                   children: [
-                    const Icon(Icons.check_circle, color: Colors.teal, size: 16),
+                    Icon(
+                      _selectedIsPendingInvoiceOnly
+                          ? Icons.pending_actions
+                          : Icons.check_circle,
+                      color: _selectedIsPendingInvoiceOnly
+                          ? Colors.orangeAccent
+                          : Colors.teal,
+                      size: 16,
+                    ),
                     const SizedBox(width: 8),
                     Expanded(
                       child: Column(
@@ -1270,24 +1776,62 @@ class _AddMaterialDialogState extends State<_AddMaterialDialog> {
                         children: [
                           Text(
                             _selectedMaterial!['numero_parte'] ?? '',
-                            style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w600),
+                            style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600),
                           ),
                           Text(
-                            _selectedMaterial!['especificacion_material'] ?? '-',
-                            style: const TextStyle(color: Colors.white70, fontSize: 9),
+                            '${_selectedMaterial!['especificacion_material'] ?? '-'} · Existencia: $_selectedAvailableQuantity${_selectedPendingInvoiceQuantity > 0 ? ' · Pendiente por invoice: $_selectedPendingInvoiceQuantity' : ''}',
+                            style: const TextStyle(
+                                color: Colors.white70, fontSize: 9),
                             overflow: TextOverflow.ellipsis,
                           ),
+                          if (_selectedIsPendingInvoiceOnly)
+                            Text(
+                              _selectedPendingInvoices.isEmpty
+                                  ? 'Sin material en almacén; hay material pendiente por invoice.'
+                                  : 'Sin material en almacén; pendiente en: $_selectedPendingInvoices',
+                              style: const TextStyle(
+                                color: Colors.orangeAccent,
+                                fontSize: 9,
+                                fontWeight: FontWeight.bold,
+                              ),
+                              overflow: TextOverflow.ellipsis,
+                            ),
                         ],
                       ),
                     ),
                     Text(
-                      'x ${_cantidadController.text}',
-                      style: const TextStyle(color: Colors.teal, fontSize: 14, fontWeight: FontWeight.bold),
+                      _usesUnits
+                          ? '${_standardQuantity ?? 0} × $_units = $_requestedQuantity'
+                          : 'Total: $_requestedQuantity',
+                      style: const TextStyle(
+                          color: Colors.teal,
+                          fontSize: 14,
+                          fontWeight: FontWeight.bold),
                     ),
                   ],
                 ),
               ),
-            const SizedBox(height: 12),
+            const SizedBox(height: 8),
+            TextField(
+              controller: _deliveryLocationController,
+              style: const TextStyle(color: Colors.white, fontSize: 12),
+              decoration: InputDecoration(
+                labelText: 'Ubicación de entrega',
+                hintText: 'Ej. Línea 3, Rack B...',
+                prefixIcon:
+                    const Icon(Icons.pin_drop, size: 16, color: Colors.amber),
+                filled: true,
+                fillColor: AppColors.gridBackground,
+                border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(4),
+                    borderSide: BorderSide.none),
+                isDense: true,
+              ),
+            ),
+            const SizedBox(height: 10),
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
@@ -1299,12 +1843,17 @@ class _AddMaterialDialogState extends State<_AddMaterialDialog> {
                   children: [
                     TextButton(
                       onPressed: () => Navigator.pop(context),
-                      child: Text(tr('cancel'), style: const TextStyle(color: Colors.white54)),
+                      child: Text(tr('cancel'),
+                          style: const TextStyle(color: Colors.white54)),
                     ),
                     const SizedBox(width: 8),
                     ElevatedButton(
-                      onPressed: _selectedMaterial == null ? null : _confirmSelection,
-                      style: ElevatedButton.styleFrom(backgroundColor: Colors.teal),
+                      onPressed:
+                          _selectedMaterial == null || _requestedQuantity <= 0
+                              ? null
+                              : _confirmSelection,
+                      style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.teal),
                       child: Text(tr('add')),
                     ),
                   ],
@@ -1316,35 +1865,81 @@ class _AddMaterialDialogState extends State<_AddMaterialDialog> {
       ),
     );
   }
-  
+
   void _confirmSelection() {
-    if (_selectedMaterial == null) return;
+    if (_selectedMaterial == null || _requestedQuantity <= 0) return;
+    final standardQuantity = _standardQuantity;
     Navigator.pop(context, {
       'numero_parte': _selectedMaterial!['numero_parte'],
       'descripcion': _selectedMaterial!['especificacion_material'] ?? '',
-      'cantidad_requerida': int.tryParse(_cantidadController.text) ?? 1,
+      'cantidad_requerida': _requestedQuantity,
+      'cantidad_estandarizada': standardQuantity,
+      'cantidad_unidades': standardQuantity == null ? null : _units,
+      'unidad_empaque': standardQuantity?.toString(),
+      'ubicacion_destino': _deliveryLocationController.text.trim().isEmpty
+          ? null
+          : _deliveryLocationController.text.trim(),
       'ubicacion_material': _selectedMaterial!['ubicacion_material'],
     });
   }
-  
+
   Widget _buildHeaderCell(String text, {int flex = 1}) {
     return Expanded(
       flex: flex,
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 8),
         alignment: Alignment.centerLeft,
-        child: Text(text, style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.w600)),
+        child: Text(text,
+            style: const TextStyle(
+                color: Colors.white,
+                fontSize: 10,
+                fontWeight: FontWeight.w600)),
       ),
     );
   }
-  
+
   Widget _buildDataCell(String text, {int flex = 1}) {
     return Expanded(
       flex: flex,
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 8),
         alignment: Alignment.centerLeft,
-        child: Text(text, style: const TextStyle(color: Colors.white70, fontSize: 10), overflow: TextOverflow.ellipsis),
+        child: Text(text,
+            style: const TextStyle(color: Colors.white70, fontSize: 10),
+            overflow: TextOverflow.ellipsis),
+      ),
+    );
+  }
+
+  Widget _buildAvailabilityCell(Map<String, dynamic> material, {int flex = 1}) {
+    final available = _asRequirementInt(material['cantidad_disponible']);
+    final pending = _asRequirementInt(material['cantidad_pendiente_entrada']);
+    final invoices = (material['pendiente_entrada_en'] ?? '').toString().trim();
+    final pendingOnly = available <= 0 && pending > 0;
+
+    return Expanded(
+      flex: flex,
+      child: Tooltip(
+        message: pendingOnly
+            ? 'Sin existencia. Pendiente por recibir: $pending${invoices.isEmpty || invoices == 'null' ? '' : ' · $invoices'}'
+            : 'Existencia en almacén: $available',
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          alignment: Alignment.centerLeft,
+          child: Text(
+            pendingOnly ? '⏳ +$pending' : '$available',
+            style: TextStyle(
+              color: pendingOnly
+                  ? Colors.orangeAccent
+                  : available > 0
+                      ? Colors.greenAccent
+                      : Colors.red.shade300,
+              fontSize: 10,
+              fontWeight: FontWeight.bold,
+            ),
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
       ),
     );
   }
@@ -1355,9 +1950,9 @@ class _AddMaterialDialogState extends State<_AddMaterialDialog> {
 // ============================================
 class _ImportBomDialog extends StatefulWidget {
   final LanguageProvider languageProvider;
-  
+
   const _ImportBomDialog({required this.languageProvider});
-  
+
   @override
   State<_ImportBomDialog> createState() => _ImportBomDialogState();
 }
@@ -1368,14 +1963,14 @@ class _ImportBomDialogState extends State<_ImportBomDialog> {
   List<Map<String, dynamic>> _bomItems = [];
   bool _isLoading = false;
   bool _bomLoaded = false;
-  
+
   String tr(String key) => widget.languageProvider.tr(key);
-  
+
   Future<void> _loadBom() async {
     if (_modeloController.text.isEmpty) return;
-    
+
     setState(() => _isLoading = true);
-    
+
     try {
       final items = await ApiService.importRequirementsBom(
         _modeloController.text.trim(),
@@ -1395,14 +1990,14 @@ class _ImportBomDialogState extends State<_ImportBomDialog> {
       }
     }
   }
-  
+
   @override
   void dispose() {
     _modeloController.dispose();
     _cantidadController.dispose();
     super.dispose();
   }
-  
+
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
@@ -1411,7 +2006,8 @@ class _ImportBomDialogState extends State<_ImportBomDialog> {
         children: [
           const Icon(Icons.upload_file, color: Colors.purple, size: 20),
           const SizedBox(width: 8),
-          Text(tr('import_from_bom'), style: const TextStyle(color: Colors.white, fontSize: 14)),
+          Text(tr('import_from_bom'),
+              style: const TextStyle(color: Colors.white, fontSize: 14)),
         ],
       ),
       content: SizedBox(
@@ -1430,8 +2026,10 @@ class _ImportBomDialogState extends State<_ImportBomDialog> {
                       labelText: '${tr('model')} *',
                       labelStyle: const TextStyle(color: Colors.white54),
                       border: const OutlineInputBorder(),
-                      enabledBorder: const OutlineInputBorder(borderSide: BorderSide(color: Colors.white24)),
-                      focusedBorder: const OutlineInputBorder(borderSide: BorderSide(color: Colors.purple)),
+                      enabledBorder: const OutlineInputBorder(
+                          borderSide: BorderSide(color: Colors.white24)),
+                      focusedBorder: const OutlineInputBorder(
+                          borderSide: BorderSide(color: Colors.purple)),
                     ),
                   ),
                 ),
@@ -1445,61 +2043,84 @@ class _ImportBomDialogState extends State<_ImportBomDialog> {
                       labelText: tr('multiplier'),
                       labelStyle: const TextStyle(color: Colors.white54),
                       border: const OutlineInputBorder(),
-                      enabledBorder: const OutlineInputBorder(borderSide: BorderSide(color: Colors.white24)),
-                      focusedBorder: const OutlineInputBorder(borderSide: BorderSide(color: Colors.purple)),
+                      enabledBorder: const OutlineInputBorder(
+                          borderSide: BorderSide(color: Colors.white24)),
+                      focusedBorder: const OutlineInputBorder(
+                          borderSide: BorderSide(color: Colors.purple)),
                     ),
                   ),
                 ),
                 const SizedBox(width: 8),
                 ElevatedButton(
                   onPressed: _isLoading ? null : _loadBom,
-                  style: ElevatedButton.styleFrom(backgroundColor: Colors.purple),
-                  child: _isLoading 
-                    ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                    : Text(tr('load')),
+                  style:
+                      ElevatedButton.styleFrom(backgroundColor: Colors.purple),
+                  child: _isLoading
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(
+                              strokeWidth: 2, color: Colors.white))
+                      : Text(tr('load')),
                 ),
               ],
             ),
             const SizedBox(height: 12),
             Expanded(
               child: _bomLoaded
-                ? _bomItems.isEmpty
-                  ? Center(child: Text(tr('no_bom_found'), style: const TextStyle(color: Colors.white54)))
-                  : ListView.builder(
-                      itemCount: _bomItems.length,
-                      itemBuilder: (context, index) {
-                        final item = _bomItems[index];
-                        return Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-                          decoration: BoxDecoration(
-                            color: index.isEven ? AppColors.gridBackground : AppColors.gridRowAlt,
-                            border: const Border(bottom: BorderSide(color: AppColors.border, width: 0.5)),
-                          ),
-                          child: Row(
-                            children: [
-                              Expanded(
-                                flex: 2,
-                                child: Text(item['numero_parte'] ?? '', style: const TextStyle(color: Colors.white, fontSize: 11)),
+                  ? _bomItems.isEmpty
+                      ? Center(
+                          child: Text(tr('no_bom_found'),
+                              style: const TextStyle(color: Colors.white54)))
+                      : ListView.builder(
+                          itemCount: _bomItems.length,
+                          itemBuilder: (context, index) {
+                            final item = _bomItems[index];
+                            return Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 8, vertical: 6),
+                              decoration: BoxDecoration(
+                                color: index.isEven
+                                    ? AppColors.gridBackground
+                                    : AppColors.gridRowAlt,
+                                border: const Border(
+                                    bottom: BorderSide(
+                                        color: AppColors.border, width: 0.5)),
                               ),
-                              Expanded(
-                                flex: 3,
-                                child: Text(item['descripcion'] ?? '-', style: const TextStyle(color: Colors.white70, fontSize: 10)),
+                              child: Row(
+                                children: [
+                                  Expanded(
+                                    flex: 2,
+                                    child: Text(item['numero_parte'] ?? '',
+                                        style: const TextStyle(
+                                            color: Colors.white, fontSize: 11)),
+                                  ),
+                                  Expanded(
+                                    flex: 3,
+                                    child: Text(item['descripcion'] ?? '-',
+                                        style: const TextStyle(
+                                            color: Colors.white70,
+                                            fontSize: 10)),
+                                  ),
+                                  SizedBox(
+                                    width: 60,
+                                    child: Text(
+                                        'x ${item['cantidad_requerida']}',
+                                        style: const TextStyle(
+                                            color: Colors.teal, fontSize: 11)),
+                                  ),
+                                ],
                               ),
-                              SizedBox(
-                                width: 60,
-                                child: Text('x ${item['cantidad_requerida']}', style: const TextStyle(color: Colors.teal, fontSize: 11)),
-                              ),
-                            ],
-                          ),
-                        );
-                      },
-                    )
-                : Center(
-                    child: Text(
-                      tr('enter_model_to_load_bom'),
-                      style: const TextStyle(color: Colors.white38, fontSize: 11),
+                            );
+                          },
+                        )
+                  : Center(
+                      child: Text(
+                        tr('enter_model_to_load_bom'),
+                        style: const TextStyle(
+                            color: Colors.white38, fontSize: 11),
+                      ),
                     ),
-                  ),
             ),
             if (_bomLoaded && _bomItems.isNotEmpty)
               Padding(
@@ -1515,12 +2136,15 @@ class _ImportBomDialogState extends State<_ImportBomDialog> {
       actions: [
         TextButton(
           onPressed: () => Navigator.pop(context),
-          child: Text(tr('cancel'), style: const TextStyle(color: Colors.white54)),
+          child:
+              Text(tr('cancel'), style: const TextStyle(color: Colors.white54)),
         ),
         ElevatedButton(
-          onPressed: _bomItems.isEmpty ? null : () {
-            Navigator.pop(context, {'items': _bomItems});
-          },
+          onPressed: _bomItems.isEmpty
+              ? null
+              : () {
+                  Navigator.pop(context, {'items': _bomItems});
+                },
           style: ElevatedButton.styleFrom(backgroundColor: Colors.purple),
           child: Text(tr('import')),
         ),

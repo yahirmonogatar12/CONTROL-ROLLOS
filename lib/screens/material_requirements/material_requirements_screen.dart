@@ -11,21 +11,23 @@ import 'requirements_form_panel.dart';
 // ============================================
 class MaterialRequirementsScreen extends StatefulWidget {
   final LanguageProvider languageProvider;
-  
+
   const MaterialRequirementsScreen({
     super.key,
     required this.languageProvider,
   });
 
   @override
-  State<MaterialRequirementsScreen> createState() => MaterialRequirementsScreenState();
+  State<MaterialRequirementsScreen> createState() =>
+      MaterialRequirementsScreenState();
 }
 
-class MaterialRequirementsScreenState extends State<MaterialRequirementsScreen> {
+class MaterialRequirementsScreenState
+    extends State<MaterialRequirementsScreen> {
   // Keys para comunicación entre paneles
   final GlobalKey<RequirementsGridPanelState> _gridKey = GlobalKey();
   final GlobalKey<RequirementsItemsPanelState> _itemsKey = GlobalKey();
-  
+
   // Requerimiento seleccionado
   Map<String, dynamic>? _selectedRequirement;
   bool _showForm = false;
@@ -40,7 +42,7 @@ class MaterialRequirementsScreenState extends State<MaterialRequirementsScreen> 
     });
     _itemsKey.currentState?.loadItems(requirement?['id']);
   }
-  
+
   void _onCreateNew() {
     setState(() {
       _selectedRequirement = null;
@@ -48,24 +50,32 @@ class MaterialRequirementsScreenState extends State<MaterialRequirementsScreen> 
       _isCreatingNew = true;
     });
   }
-  
+
   /// Verificar si el usuario actual puede editar el requerimiento
   bool _canEditRequirement() {
     if (_selectedRequirement == null) return false;
     // Cualquier usuario con permisos de escritura puede editar
     return AuthService.canWriteRequirements;
   }
-  
+
   void _onEditRequirement() {
     if (_selectedRequirement != null) {
-      if (!_canEditRequirement()) return;
+      if (!_canEditRequirement()) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('No tienes permiso para editar requerimientos.'),
+            backgroundColor: Colors.red,
+          ),
+        );
+        return;
+      }
       setState(() {
         _showForm = true;
         _isCreatingNew = false;
       });
     }
   }
-  
+
   void _onSaved() {
     setState(() {
       _showForm = false;
@@ -73,13 +83,13 @@ class MaterialRequirementsScreenState extends State<MaterialRequirementsScreen> 
     });
     _gridKey.currentState?.loadData();
   }
-  
+
   void _onCancelled() {
     setState(() {
       _showForm = false;
     });
   }
-  
+
   void _onItemsChanged() {
     _gridKey.currentState?.loadData();
   }
@@ -97,14 +107,17 @@ class MaterialRequirementsScreenState extends State<MaterialRequirementsScreen> 
               children: [
                 // Header del módulo
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                   decoration: const BoxDecoration(
                     color: AppColors.gridHeader,
-                    border: Border(bottom: BorderSide(color: AppColors.border, width: 1)),
+                    border: Border(
+                        bottom: BorderSide(color: AppColors.border, width: 1)),
                   ),
                   child: Row(
                     children: [
-                      const Icon(Icons.assignment, color: Colors.teal, size: 20),
+                      const Icon(Icons.assignment,
+                          color: Colors.teal, size: 20),
                       const SizedBox(width: 8),
                       Text(
                         tr('material_requirements'),
@@ -168,7 +181,7 @@ class MaterialRequirementsScreenState extends State<MaterialRequirementsScreen> 
       ),
     );
   }
-  
+
   Widget _buildInfoPanel() {
     if (_selectedRequirement == null) {
       return Container(
@@ -177,11 +190,13 @@ class MaterialRequirementsScreenState extends State<MaterialRequirementsScreen> 
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(Icons.assignment_outlined, size: 48, color: Colors.white.withOpacity(0.1)),
+              Icon(Icons.assignment_outlined,
+                  size: 48, color: Colors.white.withValues(alpha: 0.1)),
               const SizedBox(height: 8),
               Text(
                 tr('select_requirement'),
-                style: TextStyle(color: Colors.white.withOpacity(0.3), fontSize: 12),
+                style: TextStyle(
+                    color: Colors.white.withValues(alpha: 0.3), fontSize: 12),
               ),
               const SizedBox(height: 16),
               _buildInfoButton(
@@ -195,7 +210,7 @@ class MaterialRequirementsScreenState extends State<MaterialRequirementsScreen> 
         ),
       );
     }
-    
+
     return Container(
       color: AppColors.panelBackground,
       child: Column(
@@ -206,7 +221,8 @@ class MaterialRequirementsScreenState extends State<MaterialRequirementsScreen> 
             padding: const EdgeInsets.symmetric(horizontal: 12),
             decoration: const BoxDecoration(
               color: AppColors.gridHeader,
-              border: Border(bottom: BorderSide(color: AppColors.border, width: 1)),
+              border:
+                  Border(bottom: BorderSide(color: AppColors.border, width: 1)),
             ),
             child: Row(
               children: [
@@ -214,7 +230,10 @@ class MaterialRequirementsScreenState extends State<MaterialRequirementsScreen> 
                 const SizedBox(width: 8),
                 Text(
                   tr('requirement_details'),
-                  style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600),
+                  style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600),
                 ),
                 const Spacer(),
                 _buildEditButton(),
@@ -229,25 +248,39 @@ class MaterialRequirementsScreenState extends State<MaterialRequirementsScreen> 
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   _buildInfoRow(tr('id'), '#${_selectedRequirement!['id']}'),
-                  _buildInfoRow(tr('target_area'), _selectedRequirement!['area_destino'] ?? '-'),
-                  _buildInfoRow(tr('model'), _selectedRequirement!['modelo'] ?? '-'),
-                  _buildInfoRow(tr('required_date'), _formatDate(_selectedRequirement!['fecha_requerida'])),
-                  _buildStatusChip(_selectedRequirement!['status'] ?? 'Pendiente'),
-                  _buildPriorityChip(_selectedRequirement!['prioridad'] ?? 'Normal'),
+                  _buildInfoRow(tr('target_area'),
+                      _selectedRequirement!['area_destino'] ?? '-'),
+                  _buildInfoRow(
+                      tr('model'), _selectedRequirement!['modelo'] ?? '-'),
+                  _buildInfoRow(tr('required_date'),
+                      _formatDate(_selectedRequirement!['fecha_requerida'])),
+                  _buildStatusChip(
+                      _selectedRequirement!['status'] ?? 'Pendiente'),
+                  _buildPriorityChip(
+                      _selectedRequirement!['prioridad'] ?? 'Normal'),
                   const SizedBox(height: 12),
-                  _buildInfoRow(tr('total_items'), '${_selectedRequirement!['total_items'] ?? 0}'),
-                  _buildInfoRow(tr('qty_required'), '${_selectedRequirement!['total_qty_requerida'] ?? 0}'),
-                  _buildInfoRow(tr('qty_delivered'), '${_selectedRequirement!['total_qty_entregada'] ?? 0}'),
+                  _buildInfoRow(tr('total_items'),
+                      '${_selectedRequirement!['total_items'] ?? 0}'),
+                  _buildInfoRow(tr('qty_required'),
+                      '${_selectedRequirement!['total_qty_requerida'] ?? 0}'),
+                  _buildInfoRow(tr('qty_delivered'),
+                      '${_selectedRequirement!['total_qty_entregada'] ?? 0}'),
                   const SizedBox(height: 12),
-                  _buildInfoRow(tr('created_by'), _selectedRequirement!['creado_por'] ?? '-'),
-                  _buildInfoRow(tr('created_at'), _formatDateTime(_selectedRequirement!['fecha_creacion'])),
-                  if (_selectedRequirement!['notas'] != null && _selectedRequirement!['notas'].toString().isNotEmpty) ...[
+                  _buildInfoRow(tr('created_by'),
+                      _selectedRequirement!['creado_por'] ?? '-'),
+                  _buildInfoRow(tr('created_at'),
+                      _formatDateTime(_selectedRequirement!['fecha_creacion'])),
+                  if (_selectedRequirement!['notas'] != null &&
+                      _selectedRequirement!['notas'].toString().isNotEmpty) ...[
                     const SizedBox(height: 12),
-                    Text(tr('notes'), style: const TextStyle(color: Colors.white54, fontSize: 10)),
+                    Text(tr('notes'),
+                        style: const TextStyle(
+                            color: Colors.white54, fontSize: 10)),
                     const SizedBox(height: 4),
                     Text(
                       _selectedRequirement!['notas'],
-                      style: const TextStyle(color: Colors.white70, fontSize: 11),
+                      style:
+                          const TextStyle(color: Colors.white70, fontSize: 11),
                     ),
                   ],
                 ],
@@ -258,7 +291,7 @@ class MaterialRequirementsScreenState extends State<MaterialRequirementsScreen> 
       ),
     );
   }
-  
+
   Widget _buildInfoRow(String label, String value) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 6),
@@ -267,16 +300,18 @@ class MaterialRequirementsScreenState extends State<MaterialRequirementsScreen> 
         children: [
           SizedBox(
             width: 90,
-            child: Text(label, style: const TextStyle(color: Colors.white54, fontSize: 10)),
+            child: Text(label,
+                style: const TextStyle(color: Colors.white54, fontSize: 10)),
           ),
           Expanded(
-            child: Text(value, style: const TextStyle(color: Colors.white, fontSize: 11)),
+            child: Text(value,
+                style: const TextStyle(color: Colors.white, fontSize: 11)),
           ),
         ],
       ),
     );
   }
-  
+
   Widget _buildStatusChip(String status) {
     Color color;
     switch (status) {
@@ -298,21 +333,22 @@ class MaterialRequirementsScreenState extends State<MaterialRequirementsScreen> 
       default:
         color = Colors.grey;
     }
-    
+
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
       child: Row(
         children: [
           SizedBox(
             width: 90,
-            child: Text(tr('status'), style: const TextStyle(color: Colors.white54, fontSize: 10)),
+            child: Text(tr('status'),
+                style: const TextStyle(color: Colors.white54, fontSize: 10)),
           ),
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
             decoration: BoxDecoration(
-              color: color.withOpacity(0.2),
+              color: color.withValues(alpha: 0.2),
               borderRadius: BorderRadius.circular(4),
-              border: Border.all(color: color.withOpacity(0.5)),
+              border: Border.all(color: color.withValues(alpha: 0.5)),
             ),
             child: Text(status, style: TextStyle(color: color, fontSize: 10)),
           ),
@@ -320,7 +356,7 @@ class MaterialRequirementsScreenState extends State<MaterialRequirementsScreen> 
       ),
     );
   }
-  
+
   Widget _buildPriorityChip(String priority) {
     Color color;
     IconData icon;
@@ -337,21 +373,22 @@ class MaterialRequirementsScreenState extends State<MaterialRequirementsScreen> 
         color = Colors.grey;
         icon = Icons.remove;
     }
-    
+
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
       child: Row(
         children: [
           SizedBox(
             width: 90,
-            child: Text(tr('priority'), style: const TextStyle(color: Colors.white54, fontSize: 10)),
+            child: Text(tr('priority'),
+                style: const TextStyle(color: Colors.white54, fontSize: 10)),
           ),
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
             decoration: BoxDecoration(
-              color: color.withOpacity(0.2),
+              color: color.withValues(alpha: 0.2),
               borderRadius: BorderRadius.circular(4),
-              border: Border.all(color: color.withOpacity(0.5)),
+              border: Border.all(color: color.withValues(alpha: 0.5)),
             ),
             child: Row(
               mainAxisSize: MainAxisSize.min,
@@ -366,7 +403,7 @@ class MaterialRequirementsScreenState extends State<MaterialRequirementsScreen> 
       ),
     );
   }
-  
+
   Widget _buildInfoButton({
     required IconData icon,
     required String label,
@@ -381,9 +418,9 @@ class MaterialRequirementsScreenState extends State<MaterialRequirementsScreen> 
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
           decoration: BoxDecoration(
-            color: color.withOpacity(0.2),
+            color: color.withValues(alpha: 0.2),
             borderRadius: BorderRadius.circular(4),
-            border: Border.all(color: color.withOpacity(0.5)),
+            border: Border.all(color: color.withValues(alpha: 0.5)),
           ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
@@ -397,23 +434,21 @@ class MaterialRequirementsScreenState extends State<MaterialRequirementsScreen> 
       ),
     );
   }
-  
+
   Widget _buildEditButton() {
     final canEdit = _canEditRequirement();
     final color = canEdit ? Colors.blue : Colors.grey;
-    
+
     return Tooltip(
-      message: canEdit
-        ? tr('edit')
-        : tr('no_permission'),
+      message: canEdit ? tr('edit') : tr('no_permission'),
       child: InkWell(
-        onTap: canEdit ? _onEditRequirement : null,
+        onTap: _onEditRequirement,
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
           decoration: BoxDecoration(
-            color: color.withOpacity(0.2),
+            color: color.withValues(alpha: 0.2),
             borderRadius: BorderRadius.circular(4),
-            border: Border.all(color: color.withOpacity(0.5)),
+            border: Border.all(color: color.withValues(alpha: 0.5)),
           ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
@@ -427,7 +462,7 @@ class MaterialRequirementsScreenState extends State<MaterialRequirementsScreen> 
       ),
     );
   }
-  
+
   String _formatDate(dynamic date) {
     if (date == null) return '-';
     try {
@@ -437,7 +472,7 @@ class MaterialRequirementsScreenState extends State<MaterialRequirementsScreen> 
       return date.toString();
     }
   }
-  
+
   String _formatDateTime(dynamic date) {
     if (date == null) return '-';
     try {

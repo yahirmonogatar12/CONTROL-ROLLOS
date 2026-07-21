@@ -5,6 +5,7 @@
 
 const { pool } = require('../config/database');
 const { getBasePartNumber } = require('../utils/partNumberHelper');
+const { attachPendingInvoiceData } = require('../services/pendingInvoiceService');
 
 // GET /api/materials - Lista códigos de material únicos
 exports.getMaterialCodes = async (req, res, next) => {
@@ -29,35 +30,42 @@ exports.getAll = async (req, res, next) => {
   try {
     const [rows] = await pool.query(`
       SELECT 
-        numero_parte,
-        codigo_material,
-        propiedad_material,
-        clasificacion,
-        especificacion_material,
-        unidad_empaque,
-        ubicacion_material,
-        ubicacion_rollos,
-        vendedor,
-        prohibido_sacar,
-        reparable,
-        nivel_msl,
-        espesor_msl,
-        fecha_registro,
-        cantidad,
-        classification,
-        usuario_registro,
-        IFNULL(iqc_required, 0) as iqc_required,
-        IFNULL(assign_internal_lot, 0) as assign_internal_lot,
-        IFNULL(dividir_lote, 1) as dividir_lote,
-        IFNULL(standard_pack, 0) as standard_pack,
-        version,
-        IFNULL(unidad_medida, 'EA') as unidad_medida,
-        comparacion
-      FROM materiales 
-      WHERE propiedad_material = 'SMD'
-      ORDER BY fecha_registro DESC
+        m.numero_parte,
+        m.codigo_material,
+        m.propiedad_material,
+        m.clasificacion,
+        m.especificacion_material,
+        m.unidad_empaque,
+        m.ubicacion_material,
+        m.ubicacion_rollos,
+        m.vendedor,
+        m.prohibido_sacar,
+        m.reparable,
+        m.nivel_msl,
+        m.espesor_msl,
+        m.fecha_registro,
+        m.cantidad,
+        m.classification,
+        m.usuario_registro,
+        IFNULL(m.iqc_required, 0) as iqc_required,
+        IFNULL(m.assign_internal_lot, 0) as assign_internal_lot,
+        IFNULL(m.dividir_lote, 1) as dividir_lote,
+        IFNULL(m.standard_pack, 0) as standard_pack,
+        m.version,
+        IFNULL(m.unidad_medida, 'EA') as unidad_medida,
+        m.comparacion,
+        COALESCE(inv.cantidad_disponible, 0) as cantidad_disponible
+      FROM materiales m
+      LEFT JOIN (
+        SELECT numero_parte, SUM(cantidad_actual) as cantidad_disponible
+        FROM control_material_almacen_smd
+        WHERE tiene_salida = 0 AND cancelado = 0
+        GROUP BY numero_parte
+      ) inv ON inv.numero_parte = m.numero_parte
+      WHERE m.propiedad_material = 'SMD'
+      ORDER BY m.fecha_registro DESC
     `);
-    res.json(rows);
+    res.json(await attachPendingInvoiceData(rows));
   } catch (err) {
     next(err);
   }
