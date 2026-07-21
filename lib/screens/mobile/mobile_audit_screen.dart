@@ -531,10 +531,9 @@ class _MobileAuditScreenState extends State<MobileAuditScreen> {
         // Escanear etiqueta de parte en discrepancia (v2)
         await _scanPartItem(code, currentUser.id);
       } else if (_scanMode == 'summary') {
-        // Después de escanear la ubicación, cualquier etiqueta adicional se
-        // registra como conteo físico. Esto funciona también en ubicaciones
-        // vacías y con materiales que todavía no existen en inventario.
-        await _showPhysicalItemDialog(initialCode: code);
+        // Rollo existente en almacén: se registra automático con la cantidad
+        // del sistema. Solo abre el diálogo si el material es nuevo.
+        await _autoRegisterScannedRoll(code);
       } else {
         // Modo legacy: Escanear material individual
         await _scanItem(code, currentUser.id);
@@ -598,6 +597,55 @@ class _MobileAuditScreenState extends State<MobileAuditScreen> {
       }
     } finally {
       _hideLoadingDialog();
+    }
+  }
+
+  // Escaneo ágil: busca el rollo en almacén y registra su cantidad de sistema
+  // sin captura manual. Cae al diálogo solo si no existe en almacén.
+  Future<void> _autoRegisterScannedRoll(String code) async {
+    if (_currentLocation == null) return;
+    final currentUser = AuthService.currentUser;
+    if (currentUser == null) return;
+
+    _showLoadingDialog(tr('processing_msg'));
+    final warehouse = await ApiService.getWarehousingByCode(code);
+    final quantity =
+        warehouse == null ? 0.0 : _toDouble(warehouse['cantidad_actual']);
+
+    if (warehouse == null ||
+        warehouse['codigo_material_recibido'] == null ||
+        quantity <= 0) {
+      // Material nuevo o sin stock en almacén: alta manual como antes
+      _hideLoadingDialog();
+      await _showPhysicalItemDialog(initialCode: code);
+      return;
+    }
+
+    try {
+      final result = await ApiService.registerAuditPhysicalItem(
+        location: _currentLocation!,
+        warehousingCode: code,
+        physicalQuantity: quantity,
+        userId: currentUser.id,
+      );
+
+      if (result['success'] == true) {
+        FeedbackService.playSuccess();
+        await _reloadPartSummary();
+        _showStatus(
+          'OK $code: ${_formatQty(quantity)} ${warehouse['numero_parte'] ?? ''}',
+          isError: false,
+        );
+      } else {
+        FeedbackService.playError();
+        _showStatus(
+          result['error'] ?? tr('audit_physical_item_error'),
+          isError: true,
+        );
+      }
+    } finally {
+      _hideLoadingDialog();
+      _restoreScannerFocus();
     }
   }
 

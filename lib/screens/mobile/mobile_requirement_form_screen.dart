@@ -197,17 +197,50 @@ class _MobileRequirementFormScreenState
     if (date != null && mounted) setState(() => _requiredDate = date);
   }
 
+  Map<String, dynamic>? _catalogEntry(String partNumber) {
+    final normalized = partNumber.trim().toUpperCase();
+    if (normalized.isEmpty) return null;
+    for (final material in _materialCatalog) {
+      final part =
+          material['numero_parte']?.toString().trim().toUpperCase() ?? '';
+      if (part == normalized) return material;
+    }
+    return null;
+  }
+
+  // El catálogo trae cantidad_disponible; el API by-part-number no.
+  Future<Map<String, dynamic>?> _resolvePartNumber(String partNumber) async {
+    if (partNumber.trim().isEmpty) return null;
+    return _catalogEntry(partNumber) ??
+        await ApiService.getMaterialByPartNumber(partNumber);
+  }
+
   Future<Map<String, dynamic>?> _resolveMaterial(String rawCode) async {
     final code = rawCode.trim();
     if (code.isEmpty) return null;
 
-    final byPart = await ApiService.getMaterialByPartNumber(code);
+    final byPart = await _resolvePartNumber(code);
     if (byPart != null) return byPart;
 
     final byCode = await ApiService.getMaterialByCode(code);
     if (byCode != null) return byCode;
 
-    return ApiService.parseBarcodeForMaterial(code);
+    // Etiqueta de rollo (ej. MCK67482303-202607210001): buscar en almacén
+    final roll = await ApiService.getWarehousingByCode(code);
+    final rollPart = roll?['numero_parte']?.toString().trim() ?? '';
+    if (rollPart.isNotEmpty) {
+      final material = await _resolvePartNumber(rollPart);
+      if (material != null) return material;
+    }
+
+    // Formato PARTE-LOTE (ej. EAX69471801-1.0-20260721000105):
+    // el primer segmento es el número de parte
+    if (code.contains('-')) {
+      final material = await _resolvePartNumber(code.split('-').first);
+      if (material != null) return material;
+    }
+
+    return null;
   }
 
   Future<void> _resolveCurrentInput() async {
@@ -225,8 +258,25 @@ class _MobileRequirementFormScreenState
       _materialSuggestions = [];
     });
 
-    final material = await _resolveMaterial(code);
+    var material = await _resolveMaterial(code);
+
+    // Ubicación escaneada (ej. rack H8): elegir material de esa ubicación
+    List<Map<String, dynamic>> locationParts = const [];
+    if (material == null) {
+      locationParts = await ApiService.getPartsByLocation(code);
+    }
+    if (material == null && locationParts.isEmpty) {
+      material = await ApiService.parseBarcodeForMaterial(code);
+    }
     if (!mounted) return;
+
+    if (locationParts.isNotEmpty) {
+      setState(() => _resolvingMaterial = false);
+      await FeedbackService.playSuccess();
+      await _pickMaterialFromLocation(code.toUpperCase(), locationParts);
+      return;
+    }
+
     setState(() {
       _pendingMaterial = material;
       _resolvingMaterial = false;
@@ -239,6 +289,89 @@ class _MobileRequirementFormScreenState
     } else {
       await FeedbackService.playSuccess();
     }
+  }
+
+  Future<void> _pickMaterialFromLocation(
+    String location,
+    List<Map<String, dynamic>> parts,
+  ) async {
+    Map<String, dynamic>? selected = parts.length == 1 ? parts.first : null;
+    selected ??= await showDialog<Map<String, dynamic>>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: const Color(0xFF252A3C),
+        title: Text(
+          'Materiales en $location',
+          style: const TextStyle(color: Colors.white),
+        ),
+        contentPadding: const EdgeInsets.symmetric(vertical: 8),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: ListView.separated(
+            shrinkWrap: true,
+            itemCount: parts.length,
+            separatorBuilder: (_, __) => const Divider(height: 1),
+            itemBuilder: (context, index) {
+              final part = parts[index];
+              final partNumber = part['numero_parte']?.toString() ?? '';
+              final specification =
+                  part['especificacion_material']?.toString() ?? '';
+              final rolls = _asMobileRequirementInt(part['rollos']);
+              final total = _asMobileRequirementInt(part['cantidad_total']);
+              return ListTile(
+                dense: true,
+                leading: const Icon(Icons.inventory_2_outlined,
+                    color: Colors.tealAccent),
+                title: Text(
+                  partNumber,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                subtitle: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (specification.isNotEmpty)
+                      Text(
+                        specification,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(color: Colors.white70),
+                      ),
+                    Text(
+                      '$rolls rollos · $total pzas en $location',
+                      style: const TextStyle(
+                          color: Colors.white54, fontSize: 11),
+                    ),
+                  ],
+                ),
+                onTap: () => Navigator.pop(dialogContext, part),
+              );
+            },
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Cancelar'),
+          ),
+        ],
+      ),
+    );
+    if (selected == null || !mounted) return;
+
+    final partNumber = selected['numero_parte']?.toString().trim() ?? '';
+    final material = await _resolvePartNumber(partNumber) ?? selected;
+    if (!mounted) return;
+    setState(() {
+      _pendingMaterial = material;
+      _materialSuggestions = [];
+      _materialCodeController.text = partNumber;
+      _materialCodeController.selection =
+          TextSelection.collapsed(offset: partNumber.length);
+      _quantityController.text = '1';
+    });
   }
 
   Future<void> _openScanner() async {
@@ -556,9 +689,10 @@ class _MobileRequirementFormScreenState
                   onChanged: _updateMaterialSuggestions,
                   onSubmitted: (_) => _resolveCurrentInput(),
                   decoration: InputDecoration(
-                    labelText: 'Número de parte, SPEC o código',
-                    hintText: 'Escribe NParte o SPEC',
-                    helperText: 'Busca por número de parte o especificación',
+                    labelText: 'NParte, rollo o ubicación',
+                    hintText: 'Escanea etiqueta o rack',
+                    helperText:
+                        'Acepta número de parte, etiqueta de rollo o ubicación',
                     prefixIcon: const Icon(Icons.keyboard),
                     suffixIcon: _loadingCatalog
                         ? const Padding(

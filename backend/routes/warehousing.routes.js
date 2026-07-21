@@ -10,6 +10,7 @@ const controller = require('../controllers/warehousing.controller');
 router.get('/search', controller.search);
 router.get('/by-code/:code', controller.getByCode);
 router.get('/smart-search/:code', controller.smartSearch);
+router.get('/parts-by-location/:location', controller.getPartsByLocation);
 router.get('/next-sequence', controller.getNextSequence);
 router.get('/next-sequence-preview', controller.getNextSequencePreview);  // Nueva: preview sin afectar cache
 router.get('/reserve-sequences', controller.reserveSequences);  // Nueva: reservar múltiples secuencias atómicamente

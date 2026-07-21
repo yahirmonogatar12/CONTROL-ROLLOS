@@ -572,6 +572,25 @@ class ApiService {
     }
   }
 
+  // GET - Partes con stock en una ubicación (escaneo de rack en requerimientos)
+  static Future<List<Map<String, dynamic>>> getPartsByLocation(
+      String location) async {
+    try {
+      final response = await http.get(
+        Uri.parse(
+            '$baseUrl/warehousing/parts-by-location/${Uri.encodeComponent(location)}'),
+      );
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        return List<Map<String, dynamic>>.from(data['parts'] ?? []);
+      }
+      return [];
+    } catch (e) {
+      print('Error en getPartsByLocation: $e');
+      return [];
+    }
+  }
+
   // GET - Búsqueda inteligente por código (detecta tipo automáticamente)
   static Future<Map<String, dynamic>?> smartSearchWarehousing(
       String code) async {

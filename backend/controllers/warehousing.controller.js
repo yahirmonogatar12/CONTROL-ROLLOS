@@ -196,6 +196,41 @@ const smartSearch = async (req, res, next) => {
   }
 };
 
+// GET /api/warehousing/parts-by-location/:location - Partes con stock en una ubicación
+const getPartsByLocation = async (req, res, next) => {
+  try {
+    const location = String(req.params.location || '').trim().toUpperCase();
+    if (!location) {
+      return res.status(400).json({ error: 'Se requiere ubicación' });
+    }
+
+    const [rows] = await pool.query(`
+      SELECT
+        cma.numero_parte,
+        MAX(COALESCE(m.especificacion_material, cma.especificacion)) AS especificacion_material,
+        MAX(m.codigo_material) AS codigo_material,
+        MAX(IFNULL(m.unidad_medida, 'EA')) AS unidad_medida,
+        COUNT(*) AS rollos,
+        SUM(cma.cantidad_actual) AS cantidad_total
+      FROM control_material_almacen_smd cma
+      LEFT JOIN materiales m ON m.numero_parte = cma.numero_parte
+      WHERE UPPER(COALESCE(cma.ubicacion_destino, cma.ubicacion_salida)) = ?
+        AND cma.cancelado = 0
+        AND cma.cantidad_actual > 0
+      GROUP BY cma.numero_parte
+      ORDER BY cma.numero_parte
+    `, [location]);
+
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'No hay materiales en esa ubicación' });
+    }
+
+    res.json({ location, count: rows.length, parts: rows });
+  } catch (err) {
+    next(err);
+  }
+};
+
 // GET /api/warehousing/next-sequence - Siguiente secuencia para etiqueta (SEGURO - sin race conditions)
 const getNextSequence = async (req, res, next) => {
   try {
@@ -1739,6 +1774,7 @@ module.exports = {
   search,
   getByCode,
   smartSearch,
+  getPartsByLocation,
   getNextSequence,
   getNextSequencePreview,
   getNextInternalLotSequence,
