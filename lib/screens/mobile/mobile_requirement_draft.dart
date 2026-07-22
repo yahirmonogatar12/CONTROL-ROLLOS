@@ -3,18 +3,25 @@ class RequirementDraftItem {
   final String description;
   final String? notes;
   int quantity;
+  int? packSize; // cantidad por empaque (cantidad_estandarizada)
+  int? units; // número de empaques (cantidad_unidades)
 
   RequirementDraftItem({
     required this.partNumber,
     required this.description,
     required this.quantity,
     this.notes,
+    this.packSize,
+    this.units,
   });
 
   Map<String, dynamic> toJson() => {
         'numero_parte': partNumber,
         'descripcion': description.isEmpty ? null : description,
         'cantidad_requerida': quantity,
+        'cantidad_estandarizada': packSize,
+        'cantidad_unidades': packSize == null ? null : units,
+        'unidad_empaque': packSize?.toString(),
         'notas': notes,
       };
 }
@@ -30,6 +37,8 @@ class MobileRequirementDraft {
     required String description,
     required int quantity,
     String? notes,
+    int? packSize,
+    int? units,
   }) {
     final normalized = partNumber.trim().toUpperCase();
     if (normalized.isEmpty) {
@@ -48,6 +57,13 @@ class MobileRequirementDraft {
     }
     if (existing != null) {
       existing.quantity += quantity;
+      if (packSize != null && existing.packSize == packSize) {
+        existing.units = (existing.units ?? 0) + (units ?? 0);
+      } else {
+        // Mezcla de empaques distintos: se conserva solo el total
+        existing.packSize = null;
+        existing.units = null;
+      }
       return;
     }
 
@@ -56,6 +72,8 @@ class MobileRequirementDraft {
       description: description.trim(),
       quantity: quantity,
       notes: notes?.trim().isEmpty == true ? null : notes?.trim(),
+      packSize: packSize,
+      units: packSize == null ? null : units,
     ));
   }
 
@@ -67,6 +85,9 @@ class MobileRequirementDraft {
       throw ArgumentError('La cantidad debe ser mayor que cero');
     }
     items[index].quantity = quantity;
+    // Edición manual del total invalida el desglose por empaques
+    items[index].packSize = null;
+    items[index].units = null;
   }
 
   void removeAt(int index) => items.removeAt(index);

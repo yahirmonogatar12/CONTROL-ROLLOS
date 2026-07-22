@@ -222,7 +222,9 @@ class _MobileAuditScreenState extends State<MobileAuditScreen> {
     _isQueueProcessing = true;
     try {
       while (_scanQueue.isNotEmpty) {
-        if (!mounted || _scanMode != 'mismatch_scan') {
+        final isMismatch = _scanMode == 'mismatch_scan';
+        final isSummary = _scanMode == 'summary';
+        if (!mounted || (!isMismatch && !isSummary)) {
           _scanQueue.clear();
           break;
         }
@@ -234,7 +236,11 @@ class _MobileAuditScreenState extends State<MobileAuditScreen> {
         _scanQueue.removeRange(0, count);
         if (mounted) setState(() {});
 
-        await _scanPartItemsFast(codes);
+        if (isMismatch) {
+          await _scanPartItemsFast(codes);
+        } else {
+          await _registerPhysicalItemsFast(codes);
+        }
       }
     } finally {
       _isQueueProcessing = false;
@@ -436,8 +442,8 @@ class _MobileAuditScreenState extends State<MobileAuditScreen> {
 
     final code = barcode.rawValue!.trim();
 
-    // En modo mismatch_scan: siempre encolar para escaneo rápido
-    if (_scanMode == 'mismatch_scan') {
+    // Modos de escaneo masivo: siempre encolar para escaneo rápido
+    if (_scanMode == 'mismatch_scan' || _scanMode == 'summary') {
       _enqueueAndProcess(code);
       return;
     }
@@ -466,8 +472,8 @@ class _MobileAuditScreenState extends State<MobileAuditScreen> {
     try {
       if (code.isEmpty) return;
 
-      // En modo mismatch_scan: siempre encolar para escaneo rápido
-      if (_scanMode == 'mismatch_scan') {
+      // Modos de escaneo masivo: siempre encolar para escaneo rápido
+      if (_scanMode == 'mismatch_scan' || _scanMode == 'summary') {
         _enqueueAndProcess(code);
         return;
       }
@@ -530,12 +536,9 @@ class _MobileAuditScreenState extends State<MobileAuditScreen> {
       } else if (_scanMode == 'mismatch_scan') {
         // Escanear etiqueta de parte en discrepancia (v2)
         await _scanPartItem(code, currentUser.id);
-      } else if (_scanMode == 'summary') {
-        // Rollo existente en almacén: se registra automático con la cantidad
-        // del sistema. Solo abre el diálogo si el material es nuevo.
-        await _autoRegisterScannedRoll(code);
       } else {
         // Modo legacy: Escanear material individual
+        // (summary usa la cola rápida vía _enqueueAndProcess)
         await _scanItem(code, currentUser.id);
       }
     } finally {
@@ -600,52 +603,59 @@ class _MobileAuditScreenState extends State<MobileAuditScreen> {
     }
   }
 
-  // Escaneo ágil: busca el rollo en almacén y registra su cantidad de sistema
-  // sin captura manual. Cae al diálogo solo si no existe en almacén.
-  Future<void> _autoRegisterScannedRoll(String code) async {
-    if (_currentLocation == null) return;
+  // Escaneo ágil para verificar ubicaciones: procesa el lote de rollos sin
+  // diálogo modal, con feedback ligero, y recarga el resumen una sola vez al
+  // final. El backend resuelve todo y deriva la cantidad de la etiqueta.
+  Future<void> _registerPhysicalItemsFast(List<String> warehousingCodes) async {
+    if (_currentLocation == null || warehousingCodes.isEmpty) return;
     final currentUser = AuthService.currentUser;
     if (currentUser == null) return;
 
-    _showLoadingDialog(tr('processing_msg'));
-    final warehouse = await ApiService.getWarehousingByCode(code);
-    final quantity =
-        warehouse == null ? 0.0 : _toDouble(warehouse['cantidad_actual']);
+    var successCount = 0;
+    var errorCount = 0;
+    String? firstError;
+    String? lastOk;
 
-    if (warehouse == null ||
-        warehouse['codigo_material_recibido'] == null ||
-        quantity <= 0) {
-      // Material nuevo o sin stock en almacén: alta manual como antes
-      _hideLoadingDialog();
-      await _showPhysicalItemDialog(initialCode: code);
-      return;
-    }
+    final stopwatch = Stopwatch()..start();
+    for (final code in warehousingCodes) {
+      final normalizedCode = code.trim();
+      if (normalizedCode.isEmpty) continue;
 
-    try {
       final result = await ApiService.registerAuditPhysicalItem(
         location: _currentLocation!,
-        warehousingCode: code,
-        physicalQuantity: quantity,
+        warehousingCode: normalizedCode,
         userId: currentUser.id,
       );
-
       if (result['success'] == true) {
-        FeedbackService.playSuccess();
-        await _reloadPartSummary();
-        _showStatus(
-          'OK $code: ${_formatQty(quantity)} ${warehouse['numero_parte'] ?? ''}',
-          isError: false,
-        );
+        successCount++;
+        final data = result['data'] as Map<String, dynamic>? ?? {};
+        final qty = _toDouble(data['physicalQuantity']);
+        final part = data['partNumber']?.toString() ?? '';
+        lastOk = '$normalizedCode: ${_formatQty(qty)} $part';
       } else {
-        FeedbackService.playError();
-        _showStatus(
-          result['error'] ?? tr('audit_physical_item_error'),
-          isError: true,
-        );
+        errorCount++;
+        firstError ??=
+            '$normalizedCode: ${result['error'] ?? tr('audit_physical_item_error')}';
       }
-    } finally {
-      _hideLoadingDialog();
-      _restoreScannerFocus();
+    }
+    stopwatch.stop();
+
+    _recordScanLatency(
+      elapsedMs: stopwatch.elapsedMilliseconds,
+      batchOk: errorCount == 0,
+    );
+
+    if (successCount > 0) {
+      await _reloadPartSummary();
+      FeedbackService.playSuccess();
+      _showStatus('OK +$successCount  ${lastOk ?? ''}', isError: false);
+    }
+    if (errorCount > 0) {
+      FeedbackService.playError();
+      _showStatus(
+        'ERR $errorCount: ${firstError ?? tr('audit_scan_error')}',
+        isError: true,
+      );
     }
   }
 

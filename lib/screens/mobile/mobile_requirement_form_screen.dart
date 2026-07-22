@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:material_warehousing_flutter/core/localization/app_translations.dart';
@@ -38,6 +39,8 @@ class _MobileRequirementFormScreenState
   final _notesController = TextEditingController();
   final _materialCodeController = TextEditingController();
   final _quantityController = TextEditingController(text: '1');
+  final _packController = TextEditingController();
+  final _unitsController = TextEditingController(text: '1');
   final MobileRequirementDraft _draft = MobileRequirementDraft();
 
   List<String> _areas = [];
@@ -87,6 +90,8 @@ class _MobileRequirementFormScreenState
     _notesController.dispose();
     _materialCodeController.dispose();
     _quantityController.dispose();
+    _packController.dispose();
+    _unitsController.dispose();
     super.dispose();
   }
 
@@ -137,16 +142,43 @@ class _MobileRequirementFormScreenState
     }
   }
 
+  int? _positiveInt(dynamic value) {
+    final parsed = int.tryParse(value?.toString().trim() ?? '');
+    return parsed != null && parsed > 0 ? parsed : null;
+  }
+
+  int? get _packSize => _positiveInt(_packController.text);
+  int get _unitCount => _positiveInt(_unitsController.text) ?? 1;
+  bool get _usesUnits => _packSize != null;
+
+  // Prefill de empaque/unidades como en PC (standard_pack o unidad_empaque)
+  void _applyPendingMaterial(Map<String, dynamic>? material) {
+    _pendingMaterial = material;
+    if (material == null) return;
+    final pack = _positiveInt(material['standard_pack']) ??
+        _positiveInt(material['unidad_empaque']);
+    _packController.text = pack == null ? '' : '$pack';
+    _unitsController.text = '1';
+    _quantityController.text = '${pack ?? 1}';
+  }
+
+  void _syncTotalFromUnits() {
+    final pack = _packSize;
+    if (pack != null) {
+      _quantityController.text = '${pack * _unitCount}';
+    }
+    setState(() {});
+  }
+
   void _selectMaterialSuggestion(Map<String, dynamic> material) {
     final partNumber = material['numero_parte']?.toString().trim() ?? '';
     setState(() {
-      _pendingMaterial = material;
+      _applyPendingMaterial(material);
       _materialSuggestions = [];
       _materialCodeController.text = partNumber;
       _materialCodeController.selection = TextSelection.collapsed(
         offset: partNumber.length,
       );
-      _quantityController.text = '1';
     });
     FocusScope.of(context).unfocus();
   }
@@ -278,7 +310,7 @@ class _MobileRequirementFormScreenState
     }
 
     setState(() {
-      _pendingMaterial = material;
+      _applyPendingMaterial(material);
       _resolvingMaterial = false;
     });
 
@@ -365,12 +397,11 @@ class _MobileRequirementFormScreenState
     final material = await _resolvePartNumber(partNumber) ?? selected;
     if (!mounted) return;
     setState(() {
-      _pendingMaterial = material;
+      _applyPendingMaterial(material);
       _materialSuggestions = [];
       _materialCodeController.text = partNumber;
       _materialCodeController.selection =
           TextSelection.collapsed(offset: partNumber.length);
-      _quantityController.text = '1';
     });
   }
 
@@ -405,11 +436,15 @@ class _MobileRequirementFormScreenState
         partNumber: partNumber,
         description: material['especificacion_material']?.toString() ?? '',
         quantity: quantity,
+        packSize: _packSize,
+        units: _usesUnits ? _unitCount : null,
       );
       _pendingMaterial = null;
       _materialSuggestions = [];
       _materialCodeController.clear();
       _quantityController.text = '1';
+      _packController.clear();
+      _unitsController.text = '1';
     });
     _showMessage('Material agregado al requerimiento.');
   }
@@ -793,11 +828,55 @@ class _MobileRequirementFormScreenState
                   const SizedBox(height: 10),
                   Row(
                     children: [
+                      Expanded(
+                        child: TextField(
+                          controller: _packController,
+                          keyboardType: TextInputType.number,
+                          inputFormatters: [
+                            FilteringTextInputFormatter.digitsOnly
+                          ],
+                          onChanged: (_) => _syncTotalFromUnits(),
+                          decoration: const InputDecoration(
+                            labelText: 'Cant. por empaque',
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: TextField(
+                          controller: _unitsController,
+                          keyboardType: TextInputType.number,
+                          inputFormatters: [
+                            FilteringTextInputFormatter.digitsOnly
+                          ],
+                          onChanged: (_) => _syncTotalFromUnits(),
+                          decoration: const InputDecoration(
+                            labelText: 'Unidades',
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  if (_usesUnits)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 6),
+                      child: Text(
+                        '$_packSize × $_unitCount = ${_packSize! * _unitCount} pzas',
+                        style: const TextStyle(
+                          color: Colors.tealAccent,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ),
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
                       SizedBox(
                         width: 110,
                         child: TextField(
                           controller: _quantityController,
                           keyboardType: TextInputType.number,
+                          readOnly: _usesUnits,
                           decoration:
                               const InputDecoration(labelText: 'Cantidad *'),
                         ),
@@ -923,13 +1002,26 @@ class _MobileRequirementFormScreenState
                         fontWeight: FontWeight.bold,
                       ),
                     ),
-                    subtitle: Text(
-                      item.description.isEmpty
-                          ? 'Sin descripción'
-                          : item.description,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(color: Colors.white60),
+                    subtitle: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          item.description.isEmpty
+                              ? 'Sin descripción'
+                              : item.description,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(color: Colors.white60),
+                        ),
+                        if (item.packSize != null && item.units != null)
+                          Text(
+                            '${item.packSize} × ${item.units} unidades = ${item.quantity}',
+                            style: const TextStyle(
+                              color: Colors.tealAccent,
+                              fontSize: 11,
+                            ),
+                          ),
+                      ],
                     ),
                     trailing: Row(
                       mainAxisSize: MainAxisSize.min,

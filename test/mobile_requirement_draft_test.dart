@@ -32,6 +32,67 @@ void main() {
       expect(draft.items.single.quantity, 5);
     });
 
+    test('guarda desglose por empaque y lo suma si coincide', () {
+      final draft = MobileRequirementDraft();
+      draft.addOrIncrement(
+        partNumber: 'EBR123',
+        description: '',
+        quantity: 8000,
+        packSize: 4000,
+        units: 2,
+      );
+      draft.addOrIncrement(
+        partNumber: 'EBR123',
+        description: '',
+        quantity: 4000,
+        packSize: 4000,
+        units: 1,
+      );
+
+      final item = draft.toJson().single;
+      expect(item['cantidad_requerida'], 12000);
+      expect(item['cantidad_estandarizada'], 4000);
+      expect(item['cantidad_unidades'], 3);
+      expect(item['unidad_empaque'], '4000');
+    });
+
+    test('mezcla de empaques distintos conserva solo el total', () {
+      final draft = MobileRequirementDraft();
+      draft.addOrIncrement(
+        partNumber: 'EBR123',
+        description: '',
+        quantity: 4000,
+        packSize: 4000,
+        units: 1,
+      );
+      draft.addOrIncrement(
+        partNumber: 'EBR123',
+        description: '',
+        quantity: 100,
+      );
+
+      final item = draft.toJson().single;
+      expect(item['cantidad_requerida'], 4100);
+      expect(item['cantidad_estandarizada'], isNull);
+      expect(item['cantidad_unidades'], isNull);
+    });
+
+    test('editar el total invalida el desglose por empaques', () {
+      final draft = MobileRequirementDraft();
+      draft.addOrIncrement(
+        partNumber: 'EBR123',
+        description: '',
+        quantity: 4000,
+        packSize: 4000,
+        units: 1,
+      );
+      draft.updateQuantity(0, 500);
+
+      final item = draft.toJson().single;
+      expect(item['cantidad_requerida'], 500);
+      expect(item['cantidad_estandarizada'], isNull);
+    });
+
     test('rechaza cantidades no positivas', () {
       final draft = MobileRequirementDraft();
       expect(

@@ -3203,8 +3203,8 @@ class ApiService {
   static Future<Map<String, dynamic>> registerAuditPhysicalItem({
     required String location,
     required String warehousingCode,
-    required double physicalQuantity,
     required int userId,
+    double? physicalQuantity,
     String? numeroParte,
     String? numeroLote,
     String? especificacion,
@@ -3217,7 +3217,7 @@ class ApiService {
         body: json.encode({
           'location': location,
           'warehousing_code': warehousingCode,
-          'physical_quantity': physicalQuantity,
+          if (physicalQuantity != null) 'physical_quantity': physicalQuantity,
           'usuario': userId,
           'usuario_id': userId,
           if (numeroParte != null && numeroParte.trim().isNotEmpty)

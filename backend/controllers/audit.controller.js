@@ -878,16 +878,18 @@ async function registerPhysicalItem(req, res, next) {
   const suppliedLot = String(req.body.numero_lote || '').trim();
   const suppliedSpec = String(req.body.especificacion || '').trim();
   const suppliedUnit = String(req.body.unidad_medida || 'EA').trim() || 'EA';
-  const physicalQuantity = parsePhysicalQuantity(req.body.physical_quantity);
+  let physicalQuantity = parsePhysicalQuantity(req.body.physical_quantity);
   const usuario = String(req.body.usuario || 'Mobile');
   const usuarioId = Number(req.body.usuario_id || 0) || null;
 
-  if (!location || !warehousingCode || physicalQuantity === null) {
+  // physical_quantity es opcional: si no viene, el backend deriva la cantidad
+  // desde la etiqueta en almacén o la fuente automática (salida/almacén general).
+  if (!location || !warehousingCode) {
     connection.release();
     return res.status(400).json({
       success: false,
       code: 'INVALID_PHYSICAL_ITEM',
-      error: 'Se requiere ubicación, código de material y una cantidad física mayor a cero'
+      error: 'Se requiere ubicación y código de material'
     });
   }
 
@@ -963,6 +965,27 @@ async function registerPhysicalItem(req, res, next) {
         connection,
         warehousingCode
       );
+
+      // Sin cantidad explícita: tomar la de la fuente automática.
+      if (physicalQuantity === null) {
+        const sourceQty = Number(
+          automaticSource?.cantidad_actual
+            || automaticSource?.cantidad_salida
+            || 0
+        );
+        if (sourceQty > 0) physicalQuantity = sourceQty;
+      }
+
+      // Advertencia: el código nunca existió en inventario SMD ni en almacén.
+      if (!automaticSource && !suppliedPart) {
+        await connection.rollback();
+        return res.status(404).json({
+          success: false,
+          code: 'CODE_NOT_FOUND',
+          error: `El código ${warehousingCode} no existe en inventario SMD ni en almacén`
+        });
+      }
+
       const newPart = suppliedPart || String(
         automaticSource?.numero_parte || ''
       ).trim();
@@ -978,6 +1001,15 @@ async function registerPhysicalItem(req, res, next) {
           success: false,
           code: 'NEW_MATERIAL_DETAILS_REQUIRED',
           error: 'El material es nuevo. Capture número de parte y número de lote'
+        });
+      }
+
+      if (physicalQuantity === null || physicalQuantity <= 0) {
+        await connection.rollback();
+        return res.status(404).json({
+          success: false,
+          code: 'CODE_NOT_FOUND',
+          error: `No se pudo determinar la cantidad para ${warehousingCode}`
         });
       }
 
@@ -1044,6 +1076,20 @@ async function registerPhysicalItem(req, res, next) {
     }
 
     const material = materialRows[0];
+
+    // Sin cantidad explícita: usar la de la etiqueta (registro de almacén).
+    if (physicalQuantity === null) {
+      physicalQuantity = Number(material.cantidad_actual || 0);
+    }
+    if (physicalQuantity === null || physicalQuantity <= 0) {
+      await connection.rollback();
+      return res.status(409).json({
+        success: false,
+        code: 'INVALID_PHYSICAL_ITEM',
+        error: `El material ${warehousingCode} no tiene una cantidad válida para registrar`
+      });
+    }
+
     if (
       Number(material.cancelado || 0) === 1
       || Number(material.estado_desecho || 0) === 1
