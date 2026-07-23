@@ -10,17 +10,20 @@
 #
 # REQUISITOS:
 #   - Flutter SDK instalado y en PATH
-#   - Node.js instalado (solo para compilar, no para ejecutar)
 #   - Inno Setup instalado (para crear instalador)
 #
-# NOTA: El backend se compila a .exe, no requiere Node.js en destino
+# NOTA: Build de SOLO FRONTEND. El backend vive en el servidor central
+#       (192.168.1.10) y se corre por separado con 'npm start'.
 #
 # ============================================
 
 param(
     [string]$Version = "",
     [switch]$SkipInstaller = $false,
-    [switch]$Clean = $false
+    [switch]$Clean = $false,
+    [string]$DefaultServerName = "SERVER",
+    [string]$DefaultServerIp = "192.168.1.10",
+    [int]$DefaultServerPort = 3010
 )
 
 # Configuración
@@ -30,11 +33,9 @@ $Publisher = "MES"
 $ProjectRoot = $PSScriptRoot
 $BuildDir = "$ProjectRoot\build\windows\x64\runner\Release"
 $DistDir = "$ProjectRoot\dist"
-$BackendDir = "$ProjectRoot\backend"
 $VersionFile = "$ProjectRoot\VERSION.txt"
 $InnoSetupScript = "$ProjectRoot\installer\setup.iss"
 $InnoSetupCompiler = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
-$BackendExeName = "backend-server.exe"
 
 # Colores para output
 function Write-Info { param($msg) Write-Host "[INFO] $msg" -ForegroundColor Cyan }
@@ -67,12 +68,19 @@ if ($Version -eq "") {
 $BuildVersion = $Version -replace '\.', '_'
 $OutputDir = "$DistDir\$ProjectName-v$Version"
 $InstallerName = "${ProjectName}_Setup_v${Version}"
+$InstallerPath = "$DistDir\$InstallerName.exe"
+$PubspecLockPath = "$ProjectRoot\pubspec.lock"
+$PubspecLockHash = $null
+if (Test-Path $PubspecLockPath) {
+    $PubspecLockHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $PubspecLockPath).Hash
+}
 
 Write-Host ""
 Write-Info "Configuración de Build:"
 Write-Host "  - Versión: $Version"
 Write-Host "  - Directorio de salida: $OutputDir"
 Write-Host "  - Nombre del instalador: $InstallerName.exe"
+Write-Host "  - Servidor por defecto: $DefaultServerName ($DefaultServerIp`:$DefaultServerPort)"
 Write-Host ""
 
 # Verificar requisitos
@@ -85,14 +93,6 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 Write-Success "Flutter: OK"
-
-# Node.js
-$nodeVersion = node --version 2>&1
-if ($LASTEXITCODE -ne 0) {
-    Write-Error "Node.js no está instalado o no está en PATH"
-    exit 1
-}
-Write-Success "Node.js: $nodeVersion"
 
 # Inno Setup (solo si no se salta el instalador)
 if (-not $SkipInstaller) {
@@ -136,10 +136,40 @@ if ($LASTEXITCODE -ne 0) {
 
 # Compilar en modo release
 Write-Info "Compilando aplicación Windows..."
+
+# firebase_core descarga el SDK C++ durante la configuración de CMake. Si una
+# descarga se interrumpe puede dejar un ZIP de 0 bytes y una carpeta extracted
+# vacía; CMake los considera cacheados y después falla en add_subdirectory.
+$FirebaseBuildDir = "$ProjectRoot\build\windows\x64"
+$FirebaseZip = "$FirebaseBuildDir\firebase_cpp_sdk_windows_12.7.0.zip"
+$FirebaseExtractedRoot = "$FirebaseBuildDir\extracted"
+$FirebaseVersionHeader =
+    "$FirebaseExtractedRoot\firebase_cpp_sdk_windows\include\firebase\version.h"
+
+if ((Test-Path $FirebaseZip) -and (Get-Item $FirebaseZip).Length -eq 0) {
+    Write-Warning "Eliminando descarga incompleta de Firebase (ZIP de 0 bytes)..."
+    Remove-Item -Force -LiteralPath $FirebaseZip
+}
+if ((Test-Path $FirebaseExtractedRoot) -and
+    -not (Test-Path $FirebaseVersionHeader)) {
+    Write-Warning "Eliminando extracción incompleta de Firebase..."
+    Remove-Item -Recurse -Force -LiteralPath $FirebaseExtractedRoot
+}
+
+# No dejar un instalador anterior con el mismo nombre si esta compilación falla.
+if (Test-Path $InstallerPath) {
+    Write-Info "Eliminando instalador anterior de la misma versión..."
+    Remove-Item -Force -LiteralPath $InstallerPath
+}
+
+$BuildSourceDir = $BuildDir
+$UsingNativeFallback = $false
 $previousCmakePolicyVersionMinimum = $env:CMAKE_POLICY_VERSION_MINIMUM
 $env:CMAKE_POLICY_VERSION_MINIMUM = "3.5"
+$flutterBuildExitCode = 1
 try {
     flutter build windows --release
+    $flutterBuildExitCode = $LASTEXITCODE
 }
 finally {
     if ([string]::IsNullOrWhiteSpace($previousCmakePolicyVersionMinimum)) {
@@ -148,69 +178,140 @@ finally {
         $env:CMAKE_POLICY_VERSION_MINIMUM = $previousCmakePolicyVersionMinimum
     }
 }
-if ($LASTEXITCODE -ne 0) {
-    Write-Error "Error compilando Flutter"
-    exit 1
-}
-Write-Success "Flutter compilado exitosamente"
 
-# Paso 2: Compilar Backend a ejecutable
-Write-Host ""
-Write-Host "============================================" -ForegroundColor Blue
-Write-Info "PASO 2: Compilando Backend a ejecutable..."
-Write-Host "============================================" -ForegroundColor Blue
+if ($flutterBuildExitCode -ne 0) {
+    Write-Warning "La compilación nativa falló; intentando fallback sin recompilar Firebase..."
 
-Set-Location $BackendDir
+    # Cuando dl.google.com está bloqueado, todavía podemos generar el código Dart
+    # actualizado y reutilizar un shell nativo anterior si los plugins no cambiaron.
+    $FallbackCandidates = Get-ChildItem -LiteralPath $DistDir -Directory -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.FullName -ne $OutputDir -and
+            (Test-Path (Join-Path $_.FullName "control_inventario_smd.exe")) -and
+            (Test-Path (Join-Path $_.FullName "flutter_windows.dll")) -and
+            (Test-Path (Join-Path $_.FullName "data\icudtl.dat"))
+        } |
+        Sort-Object LastWriteTime -Descending
 
-# Instalar dependencias incluyendo pkg
-Write-Info "Instalando dependencias de Node.js..."
-npm install
-if ($LASTEXITCODE -ne 0) {
-    Write-Error "Error instalando dependencias de Node.js"
-    exit 1
-}
-Write-Success "Dependencias instaladas"
+    $FallbackNativeDir = $null
+    foreach ($Candidate in $FallbackCandidates) {
+        $CandidateHashFile = Join-Path $Candidate.FullName "BUILD_NATIVE_LOCK.sha256"
+        $CandidateExe = Join-Path $Candidate.FullName "control_inventario_smd.exe"
+        $IsCompatible = $false
 
-# Verificar/instalar pkg globalmente
-Write-Info "Verificando pkg..."
-$pkgInstalled = npm list -g pkg 2>&1 | Select-String "pkg@"
-if (-not $pkgInstalled) {
-    Write-Info "Instalando pkg globalmente..."
-    npm install -g pkg
-    if ($LASTEXITCODE -ne 0) {
-        Write-Error "Error instalando pkg"
+        if ($PubspecLockHash -and (Test-Path $CandidateHashFile)) {
+            $CandidateHash = (Get-Content -LiteralPath $CandidateHashFile -First 1).Trim()
+            $IsCompatible = $CandidateHash -eq $PubspecLockHash
+        } elseif (Test-Path $PubspecLockPath) {
+            # Compatibilidad con distribuciones creadas antes de guardar el hash.
+            $IsCompatible =
+                (Get-Item -LiteralPath $PubspecLockPath).LastWriteTimeUtc -le
+                (Get-Item -LiteralPath $CandidateExe).LastWriteTimeUtc
+        }
+
+        if ($IsCompatible) {
+            $FallbackNativeDir = $Candidate.FullName
+            break
+        }
+    }
+
+    if (-not $FallbackNativeDir) {
+        Write-Error "Error compilando Flutter y no hay un shell nativo anterior compatible."
+        Write-Error "Se requiere acceso a dl.google.com:443 para reconstruir Firebase."
         exit 1
     }
-}
-Write-Success "pkg: OK"
 
-# Crear directorio dist para backend
-$BackendDistDir = "$BackendDir\dist"
-if (Test-Path $BackendDistDir) {
-    Remove-Item -Recurse -Force $BackendDistDir
-}
-New-Item -ItemType Directory -Path $BackendDistDir -Force | Out-Null
+    $FlutterCommand = Get-Command flutter -ErrorAction SilentlyContinue
+    if (-not $FlutterCommand) {
+        Write-Error "No se pudo localizar Flutter para generar el bundle Dart."
+        exit 1
+    }
 
-# Compilar servidor a ejecutable
-Write-Info "Compilando servidor Node.js a ejecutable..."
-pkg . --targets node18-win-x64 --output "$BackendDistDir\$BackendExeName" --compress GZip
-if ($LASTEXITCODE -ne 0) {
-    Write-Error "Error compilando backend a ejecutable"
-    exit 1
-}
+    $FlutterBinDir = Split-Path -Parent $FlutterCommand.Source
+    $FlutterRoot = Split-Path -Parent $FlutterBinDir
+    $ToolBackend = Join-Path $FlutterRoot "packages\flutter_tools\bin\tool_backend.bat"
+    $FlutterEphemeralDir = "$ProjectRoot\windows\flutter\ephemeral"
+    $GeneratedConfigFile = Join-Path $FlutterEphemeralDir "generated_config.cmake"
+    $DartAppSo = "$ProjectRoot\build\windows\app.so"
+    $DartFlutterAssets = "$ProjectRoot\build\flutter_assets"
 
-if (Test-Path "$BackendDistDir\$BackendExeName") {
-    $exeSize = (Get-Item "$BackendDistDir\$BackendExeName").Length / 1MB
-    Write-Success "Backend compilado exitosamente ($([math]::Round($exeSize, 2)) MB)"
+    if (-not (Test-Path $ToolBackend)) {
+        Write-Error "No se encontró tool_backend.bat en el SDK de Flutter."
+        exit 1
+    }
+
+    Write-Info "Reutilizando shell nativo compatible: $FallbackNativeDir"
+    Write-Info "Generando bundle Dart actualizado..."
+
+    $DartEnvironmentNames = @(
+        "FLUTTER_ROOT",
+        "PROJECT_DIR",
+        "FLUTTER_EPHEMERAL_DIR",
+        "FLUTTER_TARGET",
+        "DART_DEFINES",
+        "DART_OBFUSCATION",
+        "TRACK_WIDGET_CREATION",
+        "TREE_SHAKE_ICONS",
+        "PACKAGE_CONFIG"
+    )
+    $PreviousDartEnvironment = @{}
+    foreach ($EnvironmentName in $DartEnvironmentNames) {
+        $PreviousDartEnvironment[$EnvironmentName] =
+            [Environment]::GetEnvironmentVariable($EnvironmentName, "Process")
+    }
+
+    $dartBundleExitCode = 1
+    try {
+        $env:FLUTTER_ROOT = $FlutterRoot
+        $env:PROJECT_DIR = $ProjectRoot
+        $env:FLUTTER_EPHEMERAL_DIR = $FlutterEphemeralDir
+        $env:FLUTTER_TARGET = "lib\main.dart"
+        $env:DART_OBFUSCATION = "false"
+        $env:TRACK_WIDGET_CREATION = "true"
+        $env:TREE_SHAKE_ICONS = "true"
+        $env:PACKAGE_CONFIG = "$ProjectRoot\.dart_tool\package_config.json"
+
+        if (Test-Path $GeneratedConfigFile) {
+            $GeneratedConfig = Get-Content -LiteralPath $GeneratedConfigFile
+            foreach ($ConfigLine in $GeneratedConfig) {
+                if ($ConfigLine -match '"DART_DEFINES=(.*?)"') {
+                    $env:DART_DEFINES = $Matches[1]
+                    break
+                }
+            }
+        }
+
+        & $ToolBackend windows-x64 Release
+        $dartBundleExitCode = $LASTEXITCODE
+    }
+    finally {
+        foreach ($EnvironmentName in $DartEnvironmentNames) {
+            [Environment]::SetEnvironmentVariable(
+                $EnvironmentName,
+                $PreviousDartEnvironment[$EnvironmentName],
+                "Process"
+            )
+        }
+    }
+
+    if ($dartBundleExitCode -ne 0 -or
+        -not (Test-Path $DartAppSo) -or
+        -not (Test-Path $DartFlutterAssets)) {
+        Write-Error "No se pudo generar el bundle Dart de respaldo."
+        exit 1
+    }
+
+    $BuildSourceDir = $FallbackNativeDir
+    $UsingNativeFallback = $true
+    Write-Success "Bundle Dart generado; se continuará con el shell nativo compatible."
 } else {
-    Write-Error "No se generó el ejecutable del backend"
-    exit 1
+    Write-Success "Flutter compilado exitosamente"
 }
 
-# Paso 3: Crear estructura de distribución
+# Paso 2: Crear estructura de distribución (solo frontend)
 Write-Host ""
 Write-Host "============================================" -ForegroundColor Blue
-Write-Info "PASO 3: Creando estructura de distribución..."
+Write-Info "PASO 2: Creando estructura de distribución (frontend)..."
 Write-Host "============================================" -ForegroundColor Blue
 
 # Crear directorio de salida
@@ -219,51 +320,65 @@ if (Test-Path $OutputDir) {
 }
 New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
 
-# Copiar ejecutable Flutter y DLLs
+# Copiar ejecutable Flutter y DLLs (frontend puro, sin backend)
 Write-Info "Copiando aplicación Flutter..."
-Copy-Item -Recurse "$BuildDir\*" "$OutputDir\"
+Copy-Item -Recurse "$BuildSourceDir\*" "$OutputDir\"
 
-# Copiar Backend (solo el ejecutable y configuración)
-Write-Info "Copiando Backend compilado..."
-Copy-Item "$BackendDir\dist\$BackendExeName" "$OutputDir\"
+if ($UsingNativeFallback) {
+    $OutputFlutterAssets = "$OutputDir\data\flutter_assets"
+    if (Test-Path $OutputFlutterAssets) {
+        Remove-Item -Recurse -Force -LiteralPath $OutputFlutterAssets
+    }
+    New-Item -ItemType Directory -Path $OutputFlutterAssets -Force | Out-Null
+    Copy-Item -Recurse -Force "$DartFlutterAssets\*" "$OutputFlutterAssets\"
+    Copy-Item -Force -LiteralPath $DartAppSo "$OutputDir\data\app.so"
+    Write-Success "Código Dart actualizado integrado en el shell nativo."
+}
 
-# Crear archivo .env de ejemplo
-Write-Info "Creando archivo de configuración..."
-@"
-# Configuración de Base de Datos
-DB_HOST=localhost
-DB_USER=root
-DB_PASSWORD=
-DB_NAME=meslocal
-DB_PORT=3306
+if ($PubspecLockHash) {
+    $PubspecLockHash |
+        Out-File -FilePath "$OutputDir\BUILD_NATIVE_LOCK.sha256" -Encoding ASCII -NoNewline
+}
 
-# Backend central de solicitudes SMT / FCM
-CENTRAL_URL=http://127.0.0.1:4000
-"@ | Out-File -FilePath "$OutputDir\.env.example" -Encoding UTF8
-
-# Copiar archivo .env si existe (para desarrollo)
-if (Test-Path "$BackendDir\.env") {
-    Copy-Item "$BackendDir\.env" "$OutputDir\.env"
+# Credenciales opcionales para consultar la carpeta UNC de actualizaciones.
+# El archivo real está excluido de Git y se copia solo cuando existe en la
+# máquina que genera el instalador; en cada PC queda junto al ejecutable.
+$EnvFile = "$ProjectRoot\.env"
+$OutputEnvFile = "$OutputDir\.env"
+if (Test-Path $OutputEnvFile) {
+    Remove-Item -Force -LiteralPath $OutputEnvFile
+}
+if (Test-Path $EnvFile) {
+    Copy-Item -Force $EnvFile $OutputEnvFile
+    Write-Info "Copiando configuración de acceso a actualizaciones (.env)..."
+} else {
+    Write-Warning "No se encontró .env; el instalador requerirá acceso SMB preconfigurado."
 }
 
 # Crear archivo de versión
 $Version | Out-File -FilePath "$OutputDir\VERSION.txt" -Encoding UTF8 -NoNewline
 
+# Config inicial del servidor central para equipos usuario.
+# La app lee este JSON en el primer arranque (ServerConfig._loadInstalledDefaultServer).
+$DefaultServerConfig = [ordered]@{
+    id = "installed-default"
+    name = $DefaultServerName
+    ip = $DefaultServerIp
+    port = $DefaultServerPort
+    useHttps = $false
+} | ConvertTo-Json
+$DefaultServerConfig | Out-File -FilePath "$OutputDir\default_server_config.json" -Encoding UTF8
+
 # Crear script de inicio (ya no necesita verificar Node.js)
 Write-Info "Creando scripts de inicio..."
 
-# Script VBS para iniciar sin mostrar consola
+# Script VBS para USUARIO: solo app Flutter, apunta al servidor central.
+# El backend NO corre en las PC de usuario.
 @"
 Set WshShell = CreateObject("WScript.Shell")
 WshShell.CurrentDirectory = CreateObject("Scripting.FileSystemObject").GetParentFolderName(WScript.ScriptFullName)
 
-' Iniciar Backend en segundo plano (oculto)
-WshShell.Run "cmd /c $BackendExeName", 0, False
-
-' Esperar 2 segundos para que inicie el backend
-WScript.Sleep 2000
-
-' Iniciar la aplicación Flutter
+' Iniciar la aplicación Flutter conectada al servidor central
 WshShell.Run "control_inventario_smd.exe", 1, False
 "@ | Out-File -FilePath "$OutputDir\Iniciar.vbs" -Encoding ASCII
 
@@ -273,22 +388,19 @@ WshShell.Run "control_inventario_smd.exe", 1, False
 cscript //nologo "%~dp0Iniciar.vbs"
 "@ | Out-File -FilePath "$OutputDir\Iniciar.bat" -Encoding ASCII
 
-# Script para detener
+# Script para detener (solo la app; el backend vive en el servidor)
 @"
 @echo off
-echo Deteniendo servicios...
-taskkill /F /IM $BackendExeName 2>nul
 taskkill /F /IM control_inventario_smd.exe 2>nul
-echo Servicios detenidos.
 "@ | Out-File -FilePath "$OutputDir\Detener.bat" -Encoding ASCII
 
 Write-Success "Estructura de distribución creada en: $OutputDir"
 
-# Paso 4: Crear instalador con Inno Setup
+# Paso 3: Crear instalador con Inno Setup
 if (-not $SkipInstaller) {
     Write-Host ""
     Write-Host "============================================" -ForegroundColor Blue
-    Write-Info "PASO 4: Creando instalador..."
+    Write-Info "PASO 3: Creando instalador..."
     Write-Host "============================================" -ForegroundColor Blue
     
     # Crear directorio para instalador
@@ -296,6 +408,16 @@ if (-not $SkipInstaller) {
     if (-not (Test-Path $InstallerDir)) {
         New-Item -ItemType Directory -Path $InstallerDir -Force | Out-Null
     }
+
+    # Compilar fuera de OneDrive evita bloqueos transitorios mientras sincroniza
+    # el instalador. Después se publica en dist con reintentos.
+    $InstallerStagingDir = Join-Path ([System.IO.Path]::GetTempPath()) (
+        "Control_inventario_SMD-installer-{0}-{1}" -f
+        $PID,
+        [Guid]::NewGuid().ToString("N")
+    )
+    New-Item -ItemType Directory -Path $InstallerStagingDir -Force | Out-Null
+    $StagedInstallerPath = Join-Path $InstallerStagingDir "$InstallerName.exe"
     
     # Generar script de Inno Setup dinámicamente
     Write-Info "Generando script de Inno Setup..."
@@ -313,7 +435,7 @@ if (-not $SkipInstaller) {
 #define MyAppExeName "control_inventario_smd.exe"
 #define MyAppIcon "$ProjectRoot\logoLogIn.ico"
 #define SourceDir "$OutputDir"
-#define OutputDir "$DistDir"
+#define OutputDir "$InstallerStagingDir"
 
 [Setup]
 AppId={{F3A1D7E9-5B42-4C86-A9F0-7E3B1C8D2A45}
@@ -359,12 +481,54 @@ Filename: "{app}\Detener.bat"; Flags: runhidden; RunOnceId: "StopControlInventar
     # Compilar instalador
     Write-Info "Compilando instalador..."
     & $InnoSetupCompiler $InnoSetupScript
+    $installerCompileExitCode = $LASTEXITCODE
     
-    if ($LASTEXITCODE -eq 0) {
-        Write-Success "Instalador creado: $DistDir\$InstallerName.exe"
-    } else {
+    if ($installerCompileExitCode -ne 0 -or -not (Test-Path $StagedInstallerPath)) {
         Write-Error "Error creando instalador"
+        if (Test-Path $InstallerStagingDir) {
+            Remove-Item -Recurse -Force -LiteralPath $InstallerStagingDir -ErrorAction SilentlyContinue
+        }
+        exit 1
     }
+
+    Write-Info "Publicando instalador en dist..."
+    $InstallerPublished = $false
+    $InstallerPublishError = $null
+    $InstallerPublishAttempts = 5
+    for ($PublishAttempt = 1; $PublishAttempt -le $InstallerPublishAttempts; $PublishAttempt++) {
+        try {
+            if (Test-Path $InstallerPath) {
+                Remove-Item -Force -LiteralPath $InstallerPath -ErrorAction Stop
+            }
+            Copy-Item -Force -LiteralPath $StagedInstallerPath -Destination $InstallerPath -ErrorAction Stop
+            $InstallerPublished = $true
+            break
+        }
+        catch {
+            $InstallerPublishError = $_.Exception.Message
+            if ($PublishAttempt -lt $InstallerPublishAttempts) {
+                Write-Warning (
+                    "El instalador está ocupado; reintentando publicación ({0}/{1})..." -f
+                    $PublishAttempt,
+                    $InstallerPublishAttempts
+                )
+                Start-Sleep -Seconds 2
+            }
+        }
+    }
+
+    Remove-Item -Recurse -Force -LiteralPath $InstallerStagingDir -ErrorAction SilentlyContinue
+
+    if (-not $InstallerPublished -or -not (Test-Path $InstallerPath)) {
+        Write-Error "No se pudo reemplazar el instalador: $InstallerPath"
+        Write-Error "Cierre el instalador si está abierto y pause OneDrive temporalmente."
+        if ($InstallerPublishError) {
+            Write-Error $InstallerPublishError
+        }
+        exit 1
+    }
+
+    Write-Success "Instalador creado: $InstallerPath"
 }
 
 # Resumen final
@@ -381,10 +545,11 @@ if (-not $SkipInstaller -and (Test-Path "$DistDir\$InstallerName.exe")) {
     Write-Host "  - Instalador: $DistDir\$InstallerName.exe" -ForegroundColor Gray
 }
 Write-Host ""
-Write-Host "Para probar sin instalador:" -ForegroundColor Yellow
-Write-Host "  1. Copie la carpeta '$OutputDir' al equipo destino" -ForegroundColor Gray
-Write-Host "  2. Configure backend\.env con los datos de la BD" -ForegroundColor Gray
-Write-Host "  3. Ejecute 'Iniciar.bat'" -ForegroundColor Gray
+Write-Host "Servidor por defecto: $DefaultServerName ($DefaultServerIp`:$DefaultServerPort)" -ForegroundColor White
+Write-Host ""
+Write-Host "Este build es SOLO FRONTEND (sin backend)." -ForegroundColor Yellow
+Write-Host "  - PC usuario: ejecute 'Iniciar.bat' (abre la app, usa el servidor central)" -ForegroundColor Gray
+Write-Host "  - Servidor central ($DefaultServerIp): corra el backend con 'npm start' en backend/" -ForegroundColor Gray
 Write-Host ""
 
 Set-Location $ProjectRoot

@@ -53,4 +53,46 @@ void main() {
       expect(info.updateAvailable, isFalse);
     });
   });
+
+  group('UpdateService.pickLatestInstallerVersion', () {
+    test('elige la versión más alta e ignora archivos ajenos', () {
+      final best = UpdateService.pickLatestInstallerVersion([
+        'Control_inventario_SMD_Setup_v1.3.1.exe',
+        'Control_inventario_SMD_Setup_v1.3.10.exe', // 10 > 2, no orden textual
+        'Control_inventario_SMD_Setup_v1.3.2.exe',
+        'notas.txt',
+        'otro_instalador.exe',
+      ]);
+
+      expect(best, '1.3.10');
+    });
+
+    test('regresa null cuando no hay instaladores', () {
+      expect(
+        UpdateService.pickLatestInstallerVersion(['readme.md', 'foo.exe']),
+        isNull,
+      );
+    });
+  });
+
+  group('UpdateService.parseEnvContent', () {
+    test('lee valores con comillas, espacios y caracteres especiales', () {
+      final values = UpdateService.parseEnvContent('''
+        # comentario
+        UPDATE_SHARE_USERNAME = operador
+        UPDATE_SHARE_PASSWORD="p@ss word#2026"
+        UPDATE_SHARE_DOMAIN='PLANTA'
+        INVALID_LINE
+      ''');
+
+      expect(values['UPDATE_SHARE_USERNAME'], 'operador');
+      expect(values['UPDATE_SHARE_PASSWORD'], 'p@ss word#2026');
+      expect(values['UPDATE_SHARE_DOMAIN'], 'PLANTA');
+      expect(values.containsKey('INVALID_LINE'), isFalse);
+    });
+
+    test('obtiene la raíz SMB a partir de la subcarpeta de instaladores', () {
+      expect(UpdateShareConfig.shareRoot, r'\\192.168.1.10\updates');
+    });
+  });
 }

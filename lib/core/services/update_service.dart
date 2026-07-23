@@ -1,18 +1,42 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
-import '../config/server_config.dart';
 
-/// Configuración de GitHub para actualizaciones
+/// Configuración de GitHub (se conserva solo para UpdateInfo.fromGitHub / tests).
 class GitHubConfig {
   static const String owner = 'yahirmonogatar12';
   static const String repo = 'CONTROL-ROLLOS';
-  static const String apiUrl = 'https://api.github.com/repos/$owner/$repo/releases/latest';
-  static const String downloadUrl = 'https://github.com/$owner/$repo/releases/download';
+  static const String apiUrl =
+      'https://api.github.com/repos/$owner/$repo/releases/latest';
+  static const String downloadUrl =
+      'https://github.com/$owner/$repo/releases/download';
+}
+
+/// Carpeta de red del servidor donde se publica el último instalador de PC.
+/// Solo hay que soltar ahí el .exe: Control_inventario_SMD_Setup_vX.Y.Z.exe
+class UpdateShareConfig {
+  static const String pcSharePath = r'\\192.168.1.10\updates\SMT\PC';
+  static const String installerPrefix = 'Control_inventario_SMD_Setup_v';
+
+  /// Variables esperadas en el archivo .env que acompaña al ejecutable.
+  static const String usernameKey = 'UPDATE_SHARE_USERNAME';
+  static const String passwordKey = 'UPDATE_SHARE_PASSWORD';
+  static const String domainKey = 'UPDATE_SHARE_DOMAIN';
+
+  /// `net use` solo acepta el servidor y el nombre del recurso compartido,
+  /// no las subcarpetas que se usan para publicar los instaladores.
+  static String get shareRoot {
+    final parts = pcSharePath
+        .replaceFirst(RegExp(r'^\\\\'), '')
+        .split('\\')
+        .where((part) => part.isNotEmpty)
+        .toList();
+    if (parts.length < 2) return pcSharePath;
+    return '\\\\${parts[0]}\\${parts[1]}';
+  }
 }
 
 /// Información de una actualización disponible
@@ -36,15 +60,17 @@ class UpdateInfo {
   });
 
   /// Crear desde respuesta de GitHub Releases API
-  factory UpdateInfo.fromGitHub(Map<String, dynamic> json, String currentVersion) {
+  factory UpdateInfo.fromGitHub(
+      Map<String, dynamic> json, String currentVersion) {
     // Obtener tag_name (ej: "v1.2.0" o "1.2.0")
     String tagName = json['tag_name']?.toString() ?? '';
     // Remover prefijo 'v' si existe
-    String latestVersion = tagName.startsWith('v') ? tagName.substring(1) : tagName;
-    
+    String latestVersion =
+        tagName.startsWith('v') ? tagName.substring(1) : tagName;
+
     // Comparar versiones
     final hasUpdate = _compareVersions(latestVersion, currentVersion) > 0;
-    
+
     // Buscar el asset del instalador (.exe)
     String? downloadUrl;
     final assets = json['assets'] as List<dynamic>? ?? [];
@@ -55,17 +81,17 @@ class UpdateInfo {
         break;
       }
     }
-    
+
     // Si la API no incluye assets, usar el nombre generado por build.ps1.
     // No usar html_url: guardaría una página HTML con extensión .exe.
     if (downloadUrl == null && tagName.isNotEmpty && latestVersion.isNotEmpty) {
       downloadUrl =
           '${GitHubConfig.downloadUrl}/$tagName/Control_inventario_SMD_Setup_v$latestVersion.exe';
     }
-    
+
     // Verificar si es pre-release (considerarlo como obligatorio si no lo es)
     final isPrerelease = json['prerelease'] == true;
-    
+
     return UpdateInfo(
       updateAvailable: hasUpdate,
       currentVersion: currentVersion,
@@ -73,19 +99,22 @@ class UpdateInfo {
       releaseDate: json['published_at']?.toString(),
       downloadUrl: downloadUrl,
       releaseNotes: json['body']?.toString(),
-      isMandatory: !isPrerelease && hasUpdate, // Obligatorio si no es pre-release
+      isMandatory:
+          !isPrerelease && hasUpdate, // Obligatorio si no es pre-release
     );
   }
 
   factory UpdateInfo.fromJson(Map<String, dynamic> json) {
     // Handle isMandatory as int (0/1) or bool
     final mandatory = json['isMandatory'];
-    final isMandatoryBool = mandatory == true || mandatory == 1 || mandatory == '1';
-    
+    final isMandatoryBool =
+        mandatory == true || mandatory == 1 || mandatory == '1';
+
     // Handle updateAvailable as int (0/1) or bool
     final available = json['updateAvailable'];
-    final updateAvailableBool = available == true || available == 1 || available == '1';
-    
+    final updateAvailableBool =
+        available == true || available == 1 || available == '1';
+
     return UpdateInfo(
       updateAvailable: updateAvailableBool,
       currentVersion: json['currentVersion']?.toString() ?? '',
@@ -96,18 +125,18 @@ class UpdateInfo {
       isMandatory: isMandatoryBool,
     );
   }
-  
+
   /// Comparar dos versiones semánticas
   /// Retorna: >0 si v1 > v2, <0 si v1 < v2, 0 si son iguales
   static int _compareVersions(String v1, String v2) {
     try {
       final parts1 = v1.split('.').map((e) => int.tryParse(e) ?? 0).toList();
       final parts2 = v2.split('.').map((e) => int.tryParse(e) ?? 0).toList();
-      
+
       // Asegurar que ambas tengan al menos 3 partes
       while (parts1.length < 3) parts1.add(0);
       while (parts2.length < 3) parts2.add(0);
-      
+
       for (int i = 0; i < 3; i++) {
         if (parts1[i] > parts2[i]) return 1;
         if (parts1[i] < parts2[i]) return -1;
@@ -131,6 +160,16 @@ class _UpdateCheckAttempt {
   });
 }
 
+class _UpdateShareCredentials {
+  final String username;
+  final String password;
+
+  const _UpdateShareCredentials({
+    required this.username,
+    required this.password,
+  });
+}
+
 /// Servicio para manejar actualizaciones de la aplicación
 class UpdateService {
   static String? _currentVersion;
@@ -139,16 +178,16 @@ class UpdateService {
   static double _downloadProgress = 0.0;
   static String? _lastCheckError;
   static String? _lastDownloadError;
-  
+
   /// Versión actual de la aplicación
   static String get currentVersion => _currentVersion ?? '0.0.0';
-  
+
   /// Indica si está verificando actualizaciones
   static bool get isChecking => _isChecking;
-  
+
   /// Indica si está descargando una actualización
   static bool get isDownloading => _isDownloading;
-  
+
   /// Progreso de descarga (0.0 - 1.0)
   static double get downloadProgress => _downloadProgress;
 
@@ -157,21 +196,21 @@ class UpdateService {
 
   /// Último error de descarga o ejecución del instalador.
   static String? get lastDownloadError => _lastDownloadError;
-  
+
   /// Cargar la versión actual desde VERSION.txt
   static Future<void> loadCurrentVersion() async {
     try {
       // En modo release, el VERSION.txt está en el directorio de la app
       final exePath = Platform.resolvedExecutable;
       final exeDir = File(exePath).parent.path;
-      
+
       // Intentar diferentes ubicaciones
       final possiblePaths = [
         '$exeDir\\data\\flutter_assets\\assets\\VERSION.txt',
         '$exeDir\\VERSION.txt',
         'assets/VERSION.txt',
       ];
-      
+
       for (final path in possiblePaths) {
         final file = File(path);
         if (await file.exists()) {
@@ -180,7 +219,7 @@ class UpdateService {
           return;
         }
       }
-      
+
       // Si no se encuentra, usar versión por defecto
       _currentVersion = '1.0.0';
       debugPrint('⚠️ VERSION.txt not found, using default: $_currentVersion');
@@ -189,10 +228,10 @@ class UpdateService {
       debugPrint('❌ Error loading version: $e');
     }
   }
-  
-  /// Verificar si hay actualizaciones disponibles.
-  /// Consulta GitHub y el backend configurado en paralelo para que una red que
-  /// bloquee api.github.com todavía pueda obtener la versión desde el servidor.
+
+  /// Verificar si hay actualizaciones disponibles en la carpeta de red del
+  /// servidor (\\192.168.1.10\updates\SMT\PC). El instalador más nuevo que se
+  /// haya colocado ahí es la fuente de verdad.
   static Future<UpdateInfo?> checkForUpdates() async {
     if (_isChecking) return null;
 
@@ -204,45 +243,17 @@ class UpdateService {
         await loadCurrentVersion();
       }
 
-      final attempts = await Future.wait([
-        _attemptUpdateCheck('GitHub', _checkGitHubApi),
-        _attemptUpdateCheck('servidor ${ServerConfig.baseUrl}',
-            _checkConfiguredServer),
-      ]);
-
-      // GitHub CONTROL-ROLLOS es la fuente autoritativa. El backend es una
-      // tabla compartida y nunca debe reemplazar una respuesta válida de este
-      // repositorio con la versión de otra aplicación.
-      final githubAttempt = attempts.first;
-      if (githubAttempt.info != null) {
-        _logUpdateInfo(githubAttempt.source, githubAttempt.info!);
-        return githubAttempt.info;
-      }
-
-      // api.github.com puede estar bloqueado aunque github.com funcione.
-      final webAttempt = await _attemptUpdateCheck(
-        'página de GitHub',
-        _checkGitHubReleasePage,
+      final attempt = await _attemptUpdateCheck(
+        'servidor de actualizaciones',
+        _checkNetworkShare,
       );
-      if (webAttempt.info != null) {
-        _logUpdateInfo(webAttempt.source, webAttempt.info!);
-        return webAttempt.info;
+      if (attempt.info != null) {
+        _logUpdateInfo(attempt.source, attempt.info!);
+        return attempt.info;
       }
 
-      // Si GitHub no fue accesible, aceptar la respuesta válida del backend.
-      final serverAttempt = attempts[1];
-      if (serverAttempt.info != null) {
-        _logUpdateInfo(serverAttempt.source, serverAttempt.info!);
-        return serverAttempt.info;
-      }
-
-      final errors = <String>[
-        for (final attempt in [...attempts, webAttempt])
-          if (attempt.error != null) '${attempt.source}: ${attempt.error}',
-      ];
-      _lastCheckError = errors.isEmpty
-          ? 'No se recibió una respuesta válida de actualización.'
-          : 'No se pudo consultar la actualización. ${errors.join(' | ')}';
+      _lastCheckError =
+          'No se pudo consultar la actualización. ${attempt.source}: ${attempt.error ?? 'sin respuesta'}';
       debugPrint('❌ $_lastCheckError');
       return null;
     } finally {
@@ -263,134 +274,160 @@ class UpdateService {
     }
   }
 
-  static Future<UpdateInfo> _checkGitHubApi() async {
-    final response = await http.get(
-      Uri.parse(GitHubConfig.apiUrl),
-      headers: {
-        'Accept': 'application/vnd.github.v3+json',
-        'User-Agent': 'CONTROL-ROLLOS-App',
-      },
-    ).timeout(const Duration(seconds: 10));
-
-    if (response.statusCode != 200) {
-      throw HttpException('GitHub respondió HTTP ${response.statusCode}');
-    }
-    final data = jsonDecode(response.body);
-    if (data is! Map<String, dynamic> ||
-        (data['tag_name']?.toString().isEmpty ?? true)) {
-      throw const FormatException('GitHub devolvió una respuesta sin versión');
-    }
-    return UpdateInfo.fromGitHub(data, currentVersion);
-  }
-
-  static Future<UpdateInfo> _checkConfiguredServer() async {
-    final uri = Uri.parse('${ServerConfig.baseUrl}/updates/check').replace(
-      queryParameters: {
-        'currentVersion': currentVersion,
-        'app': 'control_inventario_smd',
-      },
-    );
-    final response = await http.get(
-      uri,
-      headers: {'Accept': 'application/json'},
-    ).timeout(const Duration(seconds: 7));
-
-    if (response.statusCode != 200) {
-      throw HttpException('el servidor respondió HTTP ${response.statusCode}');
-    }
-    final data = jsonDecode(response.body);
-    if (data is! Map<String, dynamic> || data['success'] != true) {
-      throw const FormatException('el servidor devolvió una respuesta inválida');
-    }
-    final info = UpdateInfo.fromJson(data);
-    if (info.latestVersion.trim().isEmpty) {
-      throw const FormatException(
-        'el servidor no tiene versiones publicadas',
+  /// Lee la carpeta de red y arma el UpdateInfo con el instalador más nuevo.
+  static Future<UpdateInfo> _checkNetworkShare() async {
+    final dir = Directory(UpdateShareConfig.pcSharePath);
+    await _ensureNetworkShareAccess(dir);
+    if (!await dir.exists()) {
+      throw const FileSystemException(
+        'no se pudo acceder a la carpeta de actualizaciones del servidor',
       );
     }
-    final serverDownloadUrl = info.downloadUrl?.trim();
-    if (serverDownloadUrl != null &&
-        serverDownloadUrl.isNotEmpty &&
-        !_isControlInventarioInstallerUrl(serverDownloadUrl)) {
-      throw FormatException(
-        'el servidor devolvió una actualización de otra aplicación: '
-        '$serverDownloadUrl',
-      );
-    }
-    if (!info.updateAvailable ||
-        (serverDownloadUrl != null && serverDownloadUrl.isNotEmpty)) {
-      return info;
-    }
 
-    final normalizedVersion = info.latestVersion.startsWith('v')
-        ? info.latestVersion.substring(1)
-        : info.latestVersion;
-    return UpdateInfo(
-      updateAvailable: info.updateAvailable,
-      currentVersion: info.currentVersion,
-      latestVersion: normalizedVersion,
-      releaseDate: info.releaseDate,
-      downloadUrl:
-          '${GitHubConfig.downloadUrl}/v$normalizedVersion/Control_inventario_SMD_Setup_v$normalizedVersion.exe',
-      releaseNotes: info.releaseNotes,
-      isMandatory: info.isMandatory,
-    );
-  }
-
-  static bool _isControlInventarioInstallerUrl(String value) {
-    final uri = Uri.tryParse(value);
-    if (uri == null) return false;
-    final lowerPath = uri.path.toLowerCase();
-    final hasExpectedInstaller =
-        lowerPath.contains('control_inventario_smd_setup_v') &&
-            lowerPath.endsWith('.exe');
-    if (!hasExpectedInstaller) return false;
-
-    if (uri.host.toLowerCase() == 'github.com') {
-      return lowerPath.contains(
-        '/${GitHubConfig.owner.toLowerCase()}/${GitHubConfig.repo.toLowerCase()}/releases/download/',
-      );
-    }
-    return uri.scheme == 'http' || uri.scheme == 'https';
-  }
-
-  static Future<UpdateInfo> _checkGitHubReleasePage() async {
-    final client = http.Client();
-    try {
-      final request = http.Request(
-        'GET',
-        Uri.parse(
-          'https://github.com/${GitHubConfig.owner}/${GitHubConfig.repo}/releases/latest',
-        ),
-      )
-        ..followRedirects = false
-        ..headers['User-Agent'] = 'CONTROL-ROLLOS-App';
-      final response = await client.send(request).timeout(
-            const Duration(seconds: 10),
-          );
-      final location = response.headers['location'] ?? '';
-      await response.stream.drain<void>();
-      final match = RegExp(r'/releases/tag/([^/?#]+)').firstMatch(location);
-      if (match == null) {
-        throw const FormatException(
-          'GitHub no indicó la versión más reciente',
-        );
+    final fileNames = <String>[];
+    await for (final entity in dir.list(followLinks: false)) {
+      if (entity is File) {
+        fileNames.add(entity.uri.pathSegments.last);
       }
-      final tagName = Uri.decodeComponent(match.group(1)!);
-      final latestVersion =
-          tagName.startsWith('v') ? tagName.substring(1) : tagName;
-      return UpdateInfo(
-        updateAvailable:
-            UpdateInfo._compareVersions(latestVersion, currentVersion) > 0,
-        currentVersion: currentVersion,
-        latestVersion: latestVersion,
-        downloadUrl:
-            '${GitHubConfig.downloadUrl}/$tagName/Control_inventario_SMD_Setup_v$latestVersion.exe',
-        isMandatory: true,
-      );
-    } finally {
-      client.close();
     }
+
+    final latest = pickLatestInstallerVersion(fileNames);
+    if (latest == null) {
+      throw const FormatException(
+        'no hay instaladores en la carpeta de actualizaciones',
+      );
+    }
+
+    final hasUpdate = UpdateInfo._compareVersions(latest, currentVersion) > 0;
+    return UpdateInfo(
+      updateAvailable: hasUpdate,
+      currentVersion: currentVersion,
+      latestVersion: latest,
+      downloadUrl:
+          '${UpdateShareConfig.pcSharePath}\\${UpdateShareConfig.installerPrefix}$latest.exe',
+      isMandatory: hasUpdate,
+    );
+  }
+
+  /// De una lista de nombres de archivo, regresa la versión más alta de un
+  /// instalador Control_inventario_SMD_Setup_vX.Y.Z.exe, o null si no hay.
+  /// Público para poder testear el parseo sin tocar el sistema de archivos.
+  static String? pickLatestInstallerVersion(Iterable<String> fileNames) {
+    final re = RegExp(
+      '^${RegExp.escape(UpdateShareConfig.installerPrefix)}'
+      r'(\d+(?:\.\d+)*)\.exe$',
+      caseSensitive: false,
+    );
+    String? best;
+    for (final name in fileNames) {
+      final match = re.firstMatch(name.trim());
+      if (match == null) continue;
+      final version = match.group(1)!;
+      if (best == null || UpdateInfo._compareVersions(version, best) > 0) {
+        best = version;
+      }
+    }
+    return best;
+  }
+
+  /// Abre una sesión SMB para esta aplicación cuando Windows todavía no tiene
+  /// credenciales válidas para el recurso compartido.
+  ///
+  /// El .env debe estar junto al ejecutable en producción o en el directorio
+  /// actual durante desarrollo. No se agrega a `pubspec.yaml`: así no queda
+  /// dentro de `flutter_assets`, y el archivo puede instalarse por separado.
+  static Future<void> _ensureNetworkShareAccess(Directory dir) async {
+    try {
+      if (await dir.exists()) return;
+    } on FileSystemException catch (error) {
+      // En Windows, Directory.exists() puede lanzar 1326 cuando todavía no hay
+      // una sesión SMB autenticada. Ese error debe activar el `net use` de
+      // abajo, no impedir que se lean las credenciales del .env.
+      debugPrint(
+        '⚠️ El recurso SMB requiere autenticación: ${error.osError?.errorCode ?? 'sin código'}',
+      );
+    }
+    if (!Platform.isWindows) return;
+
+    final credentials = await _loadShareCredentials();
+    if (credentials == null) return;
+
+    final result = await Process.run(
+      'net',
+      [
+        'use',
+        UpdateShareConfig.shareRoot,
+        credentials.password,
+        '/user:${credentials.username}',
+        '/persistent:no',
+      ],
+      runInShell: false,
+    );
+
+    if (result.exitCode != 0) {
+      // No incluir stdout/stderr porque algunos mensajes de `net use` pueden
+      // contener información de la cuenta o de la red.
+      throw const FileSystemException(
+        'no se pudo autenticar la carpeta de actualizaciones con las credenciales del .env',
+      );
+    }
+  }
+
+  static Future<_UpdateShareCredentials?> _loadShareCredentials() async {
+    final exeDir = File(Platform.resolvedExecutable).parent.path;
+    final candidates = <String>[
+      '$exeDir\\.env',
+      '${Directory.current.path}\\.env',
+    ];
+
+    for (final path in candidates.toSet()) {
+      final file = File(path);
+      if (!await file.exists()) continue;
+
+      final values = parseEnvContent(await file.readAsString());
+      final rawUsername = values[UpdateShareConfig.usernameKey]?.trim();
+      final password = values[UpdateShareConfig.passwordKey];
+      if (rawUsername == null ||
+          rawUsername.isEmpty ||
+          password == null ||
+          password.isEmpty) {
+        continue;
+      }
+
+      final domain = values[UpdateShareConfig.domainKey]?.trim();
+      final username = domain != null &&
+              domain.isNotEmpty &&
+              !rawUsername.contains('\\') &&
+              !rawUsername.contains('@')
+          ? '$domain\\$rawUsername'
+          : rawUsername;
+      return _UpdateShareCredentials(username: username, password: password);
+    }
+
+    return null;
+  }
+
+  /// Parser pequeño para no agregar otra dependencia solo para leer `.env`.
+  /// Se conservan espacios y `#` dentro del valor de la contraseña.
+  static Map<String, String> parseEnvContent(String content) {
+    final values = <String, String>{};
+    for (final rawLine in content.split(RegExp(r'\r?\n'))) {
+      final line = rawLine.trim();
+      if (line.isEmpty || line.startsWith('#')) continue;
+
+      final separator = line.indexOf('=');
+      if (separator <= 0) continue;
+
+      final key = line.substring(0, separator).trim();
+      var value = line.substring(separator + 1).trim();
+      if (value.length >= 2 &&
+          ((value.startsWith('"') && value.endsWith('"')) ||
+              (value.startsWith("'") && value.endsWith("'")))) {
+        value = value.substring(1, value.length - 1);
+      }
+      values[key] = value;
+    }
+    return values;
   }
 
   static void _logUpdateInfo(String source, UpdateInfo info) {
@@ -412,7 +449,7 @@ class UpdateService {
     if (error is HttpException) return error.message;
     return error.toString();
   }
-  
+
   /// Descargar e instalar actualización
   static Future<bool> downloadAndInstall(
     String version, {
@@ -429,13 +466,17 @@ class UpdateService {
       _downloadProgress = 0.0;
       _lastDownloadError = null;
 
-      final normalizedVersion = version.startsWith('v')
-          ? version.substring(1)
-          : version;
-      final tagName = version.startsWith('v') ? version : 'v$version';
+      final normalizedVersion =
+          version.startsWith('v') ? version.substring(1) : version;
       final url = (downloadUrl != null && downloadUrl.trim().isNotEmpty)
           ? downloadUrl.trim()
-          : '${GitHubConfig.downloadUrl}/$tagName/Control_inventario_SMD_Setup_v$normalizedVersion.exe';
+          : '${UpdateShareConfig.pcSharePath}\\${UpdateShareConfig.installerPrefix}$normalizedVersion.exe';
+
+      // La fuente normal es la carpeta de red (ruta UNC): se copia el
+      // instalador desde ahí. El bloque HTTP de abajo queda como respaldo.
+      if (!url.startsWith('http://') && !url.startsWith('https://')) {
+        return await _installFromLocalPath(url, normalizedVersion, onProgress);
+      }
 
       // Usar TEMP evita carpetas Descargas redirigidas, OneDrive y protección
       // contra escritura que varían entre PCs.
@@ -546,7 +587,47 @@ class UpdateService {
       _downloadProgress = 0.0;
     }
   }
-  
+
+  /// Copia el instalador desde la carpeta de red (ruta UNC/local) a TEMP y lo
+  /// ejecuta. Correr desde TEMP evita bloqueos y advertencias de ejecutar un
+  /// .exe directamente desde un recurso de red.
+  static Future<bool> _installFromLocalPath(
+    String sourcePath,
+    String normalizedVersion,
+    Function(double)? onProgress,
+  ) async {
+    final source = File(sourcePath);
+    if (!await source.exists()) {
+      _lastDownloadError =
+          'No se encontró el instalador en el servidor: $sourcePath';
+      return false;
+    }
+
+    final tempDir = await getTemporaryDirectory();
+    final updateDir = Directory(
+      '${tempDir.path}\\control_inventario_smd_updates',
+    );
+    await updateDir.create(recursive: true);
+    final installerPath =
+        '${updateDir.path}\\Control_inventario_SMD_Setup_v$normalizedVersion.exe';
+
+    final dest = File(installerPath);
+    if (await dest.exists()) await dest.delete();
+    await source.copy(installerPath);
+
+    if (await dest.length() < 1024 * 1024) {
+      _lastDownloadError =
+          'El instalador copiado es demasiado pequeño; ¿copia incompleta?';
+      return false;
+    }
+
+    _downloadProgress = 1.0;
+    onProgress?.call(1.0);
+    debugPrint('✅ Instalador copiado desde red: $installerPath');
+    await _runInstaller(installerPath);
+    return true;
+  }
+
   /// Ejecutar el instalador
   static Future<void> _runInstaller(String installerPath) async {
     try {
@@ -555,28 +636,28 @@ class UpdateService {
       if (!await file.exists()) {
         throw Exception('Installer file not found');
       }
-      
+
       // Ejecutar instalador
       await Process.start(installerPath, [], mode: ProcessStartMode.detached);
-      
+
       debugPrint('🚀 Installer launched: $installerPath');
-      
+
       // Cerrar la aplicación actual después de un breve delay
       await Future.delayed(const Duration(seconds: 2));
       exit(0);
     } catch (e) {
       debugPrint('❌ Error running installer: $e');
-      
+
       // Intentar abrir la carpeta donde está el instalador
       try {
         final uri = Uri.file(File(installerPath).parent.path);
         await launchUrl(uri);
       } catch (_) {}
-      
+
       rethrow;
     }
   }
-  
+
   /// Abrir URL de descarga en el navegador
   static Future<void> openDownloadUrl(String url) async {
     try {
@@ -588,7 +669,7 @@ class UpdateService {
       debugPrint('❌ Error opening download URL: $e');
     }
   }
-  
+
   /// Mostrar diálogo de actualización disponible
   static Future<void> showUpdateDialog(
     BuildContext context,
@@ -596,7 +677,7 @@ class UpdateService {
     bool canDismiss = true,
   }) async {
     final effectiveCanDismiss = canDismiss && !updateInfo.isMandatory;
-    
+
     return showDialog(
       context: context,
       barrierDismissible: effectiveCanDismiss,
@@ -606,16 +687,16 @@ class UpdateService {
       ),
     );
   }
-  
+
   /// Verificar actualizaciones y mostrar diálogo si hay disponibles
   static Future<void> checkAndPrompt(
     BuildContext context, {
     bool showNoUpdateMessage = false,
   }) async {
     final updateInfo = await checkForUpdates();
-    
+
     if (!context.mounted) return;
-    
+
     if (updateInfo != null && updateInfo.updateAvailable) {
       await showUpdateDialog(context, updateInfo);
     } else if (_lastCheckError != null) {
@@ -671,7 +752,8 @@ class _UpdateDialogState extends State<_UpdateDialog> {
                 color: Colors.blue.withValues(alpha: 0.2),
                 borderRadius: BorderRadius.circular(8),
               ),
-              child: const Icon(Icons.system_update, color: Colors.blue, size: 28),
+              child:
+                  const Icon(Icons.system_update, color: Colors.blue, size: 28),
             ),
             const SizedBox(width: 12),
             const Expanded(
@@ -700,50 +782,64 @@ class _UpdateDialogState extends State<_UpdateDialog> {
                   children: [
                     Column(
                       children: [
-                        const Text('Versión Actual', style: TextStyle(color: Colors.white54, fontSize: 12)),
+                        const Text('Versión Actual',
+                            style:
+                                TextStyle(color: Colors.white54, fontSize: 12)),
                         const SizedBox(height: 4),
                         Text(
                           widget.updateInfo.currentVersion,
-                          style: const TextStyle(color: Colors.orange, fontSize: 18, fontWeight: FontWeight.bold),
+                          style: const TextStyle(
+                              color: Colors.orange,
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold),
                         ),
                       ],
                     ),
                     const Icon(Icons.arrow_forward, color: Colors.white38),
                     Column(
                       children: [
-                        const Text('Nueva Versión', style: TextStyle(color: Colors.white54, fontSize: 12)),
+                        const Text('Nueva Versión',
+                            style:
+                                TextStyle(color: Colors.white54, fontSize: 12)),
                         const SizedBox(height: 4),
                         Text(
                           widget.updateInfo.latestVersion,
-                          style: const TextStyle(color: Colors.green, fontSize: 18, fontWeight: FontWeight.bold),
+                          style: const TextStyle(
+                              color: Colors.green,
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold),
                         ),
                       ],
                     ),
                   ],
                 ),
               ),
-              
+
               // Fecha de lanzamiento
               if (widget.updateInfo.releaseDate != null) ...[
                 const SizedBox(height: 12),
                 Row(
                   children: [
-                    const Icon(Icons.calendar_today, size: 14, color: Colors.white38),
+                    const Icon(Icons.calendar_today,
+                        size: 14, color: Colors.white38),
                     const SizedBox(width: 8),
                     Text(
                       'Publicado: ${widget.updateInfo.releaseDate}',
-                      style: const TextStyle(color: Colors.white54, fontSize: 12),
+                      style:
+                          const TextStyle(color: Colors.white54, fontSize: 12),
                     ),
                   ],
                 ),
               ],
-              
+
               // Notas de la versión
-              if (widget.updateInfo.releaseNotes != null && widget.updateInfo.releaseNotes!.isNotEmpty) ...[
+              if (widget.updateInfo.releaseNotes != null &&
+                  widget.updateInfo.releaseNotes!.isNotEmpty) ...[
                 const SizedBox(height: 16),
                 const Text(
                   'Novedades:',
-                  style: TextStyle(color: Colors.white70, fontWeight: FontWeight.bold),
+                  style: TextStyle(
+                      color: Colors.white70, fontWeight: FontWeight.bold),
                 ),
                 const SizedBox(height: 8),
                 Container(
@@ -757,17 +853,19 @@ class _UpdateDialogState extends State<_UpdateDialog> {
                   child: SingleChildScrollView(
                     child: Text(
                       widget.updateInfo.releaseNotes!,
-                      style: const TextStyle(color: Colors.white60, fontSize: 13),
+                      style:
+                          const TextStyle(color: Colors.white60, fontSize: 13),
                     ),
                   ),
                 ),
               ],
-              
+
               // Obligatorio
               if (widget.updateInfo.isMandatory) ...[
                 const SizedBox(height: 12),
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                   decoration: BoxDecoration(
                     color: Colors.red.withValues(alpha: 0.2),
                     borderRadius: BorderRadius.circular(8),
@@ -788,7 +886,7 @@ class _UpdateDialogState extends State<_UpdateDialog> {
                   ),
                 ),
               ],
-              
+
               // Progreso de descarga
               if (_isDownloading) ...[
                 const SizedBox(height: 16),
@@ -797,17 +895,19 @@ class _UpdateDialogState extends State<_UpdateDialog> {
                     LinearProgressIndicator(
                       value: _progress,
                       backgroundColor: Colors.white10,
-                      valueColor: const AlwaysStoppedAnimation<Color>(Colors.blue),
+                      valueColor:
+                          const AlwaysStoppedAnimation<Color>(Colors.blue),
                     ),
                     const SizedBox(height: 8),
                     Text(
                       'Descargando... ${(_progress * 100).toStringAsFixed(0)}%',
-                      style: const TextStyle(color: Colors.white54, fontSize: 12),
+                      style:
+                          const TextStyle(color: Colors.white54, fontSize: 12),
                     ),
                   ],
                 ),
               ],
-              
+
               // Error
               if (_error != null) ...[
                 const SizedBox(height: 12),
@@ -824,7 +924,8 @@ class _UpdateDialogState extends State<_UpdateDialog> {
                       Expanded(
                         child: Text(
                           _error!,
-                          style: const TextStyle(color: Colors.red, fontSize: 12),
+                          style:
+                              const TextStyle(color: Colors.red, fontSize: 12),
                         ),
                       ),
                     ],
@@ -843,7 +944,6 @@ class _UpdateDialogState extends State<_UpdateDialog> {
                 style: const TextStyle(color: Colors.white54),
               ),
             ),
-
           if (_error != null &&
               widget.updateInfo.downloadUrl != null &&
               !_isDownloading)
@@ -854,7 +954,6 @@ class _UpdateDialogState extends State<_UpdateDialog> {
               icon: const Icon(Icons.open_in_browser),
               label: const Text('Abrir descarga manual'),
             ),
-
           if (!_isDownloading)
             ElevatedButton.icon(
               onPressed: _downloadAndInstall,

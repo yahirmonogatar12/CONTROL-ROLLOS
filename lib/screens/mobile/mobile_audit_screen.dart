@@ -631,7 +631,19 @@ class _MobileAuditScreenState extends State<MobileAuditScreen> {
         final data = result['data'] as Map<String, dynamic>? ?? {};
         final qty = _toDouble(data['physicalQuantity']);
         final part = data['partNumber']?.toString() ?? '';
-        lastOk = '$normalizedCode: ${_formatQty(qty)} $part';
+        final relocated = data['relocated'] == true;
+        final returned = data['returned'] == true;
+        final reactivated = data['reactivated'] == true;
+        final from =
+            (data['relocatedFrom'] as List?)?.join(', ') ?? '';
+        final base = '$normalizedCode: ${_formatQty(qty)} $part';
+        lastOk = reactivated
+            ? '$base (reactivado)'
+            : returned
+                ? '$base (retornado)'
+                : relocated
+                    ? '$base (reubicado de $from)'
+                    : base;
       } else {
         errorCount++;
         firstError ??=

@@ -89,31 +89,65 @@ const getByCode = async (req, res, next) => {
     }
     
     const record = checkRows[0];
-    
-    if (record.cancelado === 1) {
-      return res.status(400).json({ error: 'Este registro está cancelado', code: 'CANCELLED' });
+
+    let lastSalidaQty = null;
+    let salidaDisponible = null;
+
+    if (forReturn) {
+      // Retorno: la elegibilidad se valida por una salida REAL registrada en
+      // control_material_salida_smd (el flag tiene_salida puede desincronizarse
+      // y por eso no se usa). Único bloqueo: que no exista ninguna salida.
+      const [salidaRows] = await pool.query(`
+        SELECT cantidad_salida
+        FROM control_material_salida_smd
+        WHERE UPPER(codigo_material_recibido) = ?
+          AND (cancelado = 0 OR cancelado IS NULL)
+          AND (rechazado = 0 OR rechazado IS NULL)
+        ORDER BY fecha_salida DESC, id DESC
+        LIMIT 1
+      `, [code]);
+
+      if (salidaRows.length === 0) {
+        return res.status(400).json({ error: 'Este lote no tiene salidas registradas, no aplica para retorno', code: 'NO_OUTPUT' });
+      }
+
+      lastSalidaQty = Number(salidaRows[0].cantidad_salida || 0);
+
+      const [lotRows] = await pool.query(`
+        SELECT total_salida
+        FROM inventario_lotes_smd
+        WHERE UPPER(codigo_material_recibido) = ?
+        LIMIT 1
+      `, [code]);
+      salidaDisponible = Number(lotRows[0]?.total_salida || 0);
+    } else {
+      if (record.cancelado === 1) {
+        return res.status(400).json({ error: 'Este registro está cancelado', code: 'CANCELLED' });
+      }
+      if (record.cantidad_actual <= 0) {
+        return res.status(400).json({ error: 'Este lote no tiene cantidad disponible (qty = 0)', code: 'NO_QUANTITY' });
+      }
     }
-    
-    if (record.cantidad_actual <= 0) {
-      return res.status(400).json({ error: 'Este lote no tiene cantidad disponible (qty = 0)', code: 'NO_QUANTITY' });
-    }
-    
-    // Solo validar tiene_salida cuando es para retorno
-    if (forReturn && record.tiene_salida !== 1) {
-      return res.status(400).json({ error: 'Este lote no tiene salidas registradas, no aplica para retorno', code: 'NO_OUTPUT' });
-    }
-    
+
     // Si pasa todas las validaciones, obtener datos completos
     const [rows] = await pool.query(`
       SELECT cma.*, COALESCE(cma.ubicacion_destino, cma.ubicacion_salida) as location,
              CASE WHEN q.id IS NOT NULL AND q.status NOT IN ('Released', 'Scrapped', 'Returned') THEN 1 ELSE 0 END as in_quarantine
       FROM control_material_almacen_smd cma
       LEFT JOIN quarantine_smd q ON cma.id = q.warehousing_id
-      WHERE cma.codigo_material_recibido = ?
+      WHERE UPPER(cma.codigo_material_recibido) = ?
       LIMIT 1
     `, [code]);
 
-    res.json(rows[0]);
+    if (!rows[0]) {
+      return res.status(404).json({ error: 'Registro no encontrado' });
+    }
+
+    res.json({
+      ...rows[0],
+      last_salida_qty: lastSalidaQty,
+      salida_disponible: salidaDisponible
+    });
   } catch (err) {
     next(err);
   }

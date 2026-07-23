@@ -166,11 +166,20 @@ class _MobileReturnScreenState extends State<MobileReturnScreen> {
 
       if (data != null) {
         await FeedbackService.vibrateSuccess();
+        // Pre-llenar con la cantidad de la última salida (tope: salida disponible)
+        final lastSalida =
+            int.tryParse(data['last_salida_qty']?.toString() ?? '') ?? 0;
+        final disponible =
+            int.tryParse(data['salida_disponible']?.toString() ?? '') ?? 0;
+        final prefill = (disponible > 0 && lastSalida > disponible)
+            ? disponible
+            : lastSalida;
         setState(() {
           _isLoading = false;
           _scannedMaterial = data;
           _warehousingId = data['id'];
           _materialLotNo = data['numero_lote_material']?.toString();
+          if (prefill > 0) _returnQtyController.text = prefill.toString();
         });
         _showMessage(
           '${tr('part_number')}: ${data['numero_parte'] ?? code}',
@@ -202,13 +211,19 @@ class _MobileReturnScreenState extends State<MobileReturnScreen> {
     final remainQty = int.tryParse(
       _scannedMaterial!['cantidad_actual']?.toString() ?? '0',
     ) ?? 0;
+    // El máximo a retornar es la salida real disponible; si no viene, la
+    // cantidad actual del registro.
+    final disponible = int.tryParse(
+      _scannedMaterial!['salida_disponible']?.toString() ?? '',
+    ) ?? 0;
+    final maxRetorno = disponible > 0 ? disponible : remainQty;
 
     if (returnQty <= 0) {
       _showMessage(tr('enter_valid_return_qty'), isError: true);
       return;
     }
 
-    if (returnQty > remainQty) {
+    if (returnQty > maxRetorno) {
       _showMessage(tr('return_qty_exceeds_remain'), isError: true);
       return;
     }

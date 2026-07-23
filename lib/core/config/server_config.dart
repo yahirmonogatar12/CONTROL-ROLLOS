@@ -95,6 +95,17 @@ class ServerProfile {
 class ServerConfig {
   static const String _serversKey = 'server_profiles';
   static const String _activeServerKey = 'active_server_id';
+  static const String _installedDefaultServerFile = 'default_server_config.json';
+
+  // Servidor central por defecto (el backend vive en el servidor, no en cada PC).
+  // El build/installer puede sobrescribirlo con default_server_config.json.
+  static ServerProfile _fallbackDefaultServer() => ServerProfile(
+        id: 'installed-default',
+        name: 'SERVER',
+        ip: '192.168.1.10',
+        port: 3010,
+        isActive: true,
+      );
 
   static List<ServerProfile> _servers = [];
   static String? _activeServerId;
@@ -118,11 +129,8 @@ class ServerConfig {
     if (server != null) {
       return server.baseUrl;
     }
-    // Default fallback based on platform
-    if (!kIsWeb && Platform.isWindows) {
-      return 'http://localhost:3010/api';
-    }
-    return 'http://localhost:3010/api';
+    // Fallback: servidor central por defecto.
+    return 'http://192.168.1.10:3010/api';
   }
 
   /// Check if service is initialized
@@ -152,17 +160,23 @@ class ServerConfig {
     // Load active server ID
     _activeServerId = prefs.getString(_activeServerKey);
 
-    // If no servers exist, create default based on platform
+    // Si no hay servers, usar el default instalado (default_server_config.json)
+    // o el servidor central por defecto.
     if (_servers.isEmpty) {
-      final defaultServer = ServerProfile(
-        id: 'default',
-        name: 'Local',
-        ip: 'localhost',
-        port: 3010,
-        isActive: true,
-      );
+      final defaultServer =
+          await _loadInstalledDefaultServer() ?? _fallbackDefaultServer();
       _servers.add(defaultServer);
       _activeServerId = defaultServer.id;
+      await _saveToPrefs();
+    } else if (_servers.length == 1 &&
+        _servers.first.id == 'default' &&
+        _servers.first.ip == 'localhost') {
+      // Migración: instalaciones viejas que apuntaban a localhost:3010 (backend
+      // por PC) ahora apuntan al servidor central.
+      final installed =
+          await _loadInstalledDefaultServer() ?? _fallbackDefaultServer();
+      _servers[0] = installed;
+      _activeServerId = installed.id;
       await _saveToPrefs();
     }
 
@@ -176,6 +190,46 @@ class ServerConfig {
     _isInitialized = true;
     print(
         'ServerConfig initialized with ${_servers.length} servers. Active: ${activeServer?.displayString}');
+  }
+
+  /// Lee default_server_config.json junto al ejecutable (lo genera build.ps1).
+  static Future<ServerProfile?> _loadInstalledDefaultServer() async {
+    if (kIsWeb ||
+        !(Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
+      return null;
+    }
+    try {
+      final exeDir = File(Platform.resolvedExecutable).parent.path;
+      final file = File(
+          '$exeDir${Platform.pathSeparator}$_installedDefaultServerFile');
+      if (!await file.exists()) return null;
+
+      final data = json.decode(await file.readAsString());
+      if (data is! Map<String, dynamic>) return null;
+
+      final ip = (data['ip'] ?? data['host'] ?? '').toString().trim();
+      if (ip.isEmpty) return null;
+
+      final rawPort = data['port'] ?? 3010;
+      final port =
+          rawPort is int ? rawPort : int.tryParse(rawPort.toString()) ?? 3010;
+      final rawUseHttps = data['useHttps'] ?? false;
+      final useHttps = rawUseHttps == true ||
+          rawUseHttps.toString().toLowerCase() == 'true';
+      final name = (data['name'] ?? 'SERVER').toString().trim();
+
+      return ServerProfile(
+        id: (data['id'] ?? 'installed-default').toString(),
+        name: name.isEmpty ? 'SERVER' : name,
+        ip: ip,
+        port: port,
+        useHttps: useHttps,
+        isActive: true,
+      );
+    } catch (e) {
+      print('Error loading installed server config: $e');
+      return null;
+    }
   }
 
   /// Save current state to SharedPreferences

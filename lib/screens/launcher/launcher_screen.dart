@@ -13,7 +13,8 @@ class LauncherScreen extends StatefulWidget {
   State<LauncherScreen> createState() => _LauncherScreenState();
 }
 
-class _LauncherScreenState extends State<LauncherScreen> with SingleTickerProviderStateMixin {
+class _LauncherScreenState extends State<LauncherScreen>
+    with SingleTickerProviderStateMixin {
   String _statusMessage = 'Iniciando...';
   double _progress = 0.0;
   bool _hasError = false;
@@ -25,19 +26,19 @@ class _LauncherScreenState extends State<LauncherScreen> with SingleTickerProvid
   @override
   void initState() {
     super.initState();
-    
+
     _animationController = AnimationController(
       duration: const Duration(milliseconds: 1500),
       vsync: this,
     )..repeat(reverse: true);
-    
+
     _pulseAnimation = Tween<double>(begin: 0.8, end: 1.0).animate(
       CurvedAnimation(parent: _animationController, curve: Curves.easeInOut),
     );
-    
+
     // Cargar la versión
     _loadVersion();
-    
+
     // Esperar a que el widget esté completamente construido
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
@@ -51,12 +52,12 @@ class _LauncherScreenState extends State<LauncherScreen> with SingleTickerProvid
 
   Future<void> _loadVersion() async {
     String version = '1.0.0';
-    
+
     try {
       // Intentar leer VERSION.txt del directorio del ejecutable
       final exeDir = File(Platform.resolvedExecutable).parent.path;
       final versionFile = File('$exeDir\\VERSION.txt');
-      
+
       if (await versionFile.exists()) {
         version = (await versionFile.readAsString()).trim();
       } else {
@@ -70,7 +71,7 @@ class _LauncherScreenState extends State<LauncherScreen> with SingleTickerProvid
       // Si falla, usar versión por defecto
       debugPrint('Error leyendo VERSION.txt: $e');
     }
-    
+
     if (mounted) {
       setState(() {
         _version = version;
@@ -88,12 +89,12 @@ class _LauncherScreenState extends State<LauncherScreen> with SingleTickerProvid
     // Tiempo mínimo de animación (2 segundos)
     final minimumDisplayTime = Future.delayed(const Duration(seconds: 2));
     final startTime = DateTime.now();
-    
+
     // Pequeño delay para asegurar que la UI esté visible
     await Future.delayed(const Duration(milliseconds: 100));
-    
+
     if (!mounted) return;
-    
+
     setState(() {
       _statusMessage = 'Verificando servidor...';
       _progress = 0.1;
@@ -101,7 +102,7 @@ class _LauncherScreenState extends State<LauncherScreen> with SingleTickerProvid
 
     // Primero verificar si el backend ya está corriendo
     final alreadyRunning = await BackendService.isBackendAlreadyRunning();
-    
+
     if (alreadyRunning) {
       if (!mounted) return;
       setState(() {
@@ -114,27 +115,16 @@ class _LauncherScreenState extends State<LauncherScreen> with SingleTickerProvid
       return;
     }
 
-    // Si no está corriendo, intentar iniciarlo
+    // El backend vive en el servidor central; no iniciar Node.js en la PC.
     if (!mounted) return;
     setState(() {
-      _statusMessage = 'Iniciando servidor backend...';
+      _statusMessage = 'Conectando al servidor central...';
       _progress = 0.2;
     });
 
-    final started = await BackendService.startBackend();
-    
-    if (!started) {
-      if (!mounted) return;
-      setState(() {
-        _statusMessage = 'Error: No se pudo iniciar el servidor.\nVerifique que Node.js esté instalado.';
-        _hasError = true;
-      });
-      return;
-    }
-
     if (!mounted) return;
     setState(() {
-      _statusMessage = 'Esperando que el servidor esté listo...';
+      _statusMessage = 'Esperando respuesta del servidor central...';
       _progress = 0.3;
     });
 
@@ -161,7 +151,8 @@ class _LauncherScreenState extends State<LauncherScreen> with SingleTickerProvid
     } else {
       if (!mounted) return;
       setState(() {
-        _statusMessage = 'Error: El servidor no respondió.\nVerifique la conexión a la base de datos.';
+        _statusMessage =
+            'Error: El servidor central no respondió.\nVerifique la red y que el backend esté activo.';
         _hasError = true;
       });
     }
@@ -216,7 +207,9 @@ class _LauncherScreenState extends State<LauncherScreen> with SingleTickerProvid
                               borderRadius: BorderRadius.circular(20),
                             ),
                             child: Icon(
-                              _hasError ? Icons.error_outline : Icons.inventory_2,
+                              _hasError
+                                  ? Icons.error_outline
+                                  : Icons.inventory_2,
                               size: 60,
                               color: _hasError ? Colors.red : Colors.white70,
                             ),
@@ -229,7 +222,7 @@ class _LauncherScreenState extends State<LauncherScreen> with SingleTickerProvid
               },
             ),
             const SizedBox(height: 40),
-            
+
             // Título
             const Text(
               'Control de Rollos',
@@ -249,7 +242,7 @@ class _LauncherScreenState extends State<LauncherScreen> with SingleTickerProvid
               ),
             ),
             const SizedBox(height: 50),
-            
+
             // Barra de progreso
             if (!_hasError) ...[
               SizedBox(
@@ -280,7 +273,7 @@ class _LauncherScreenState extends State<LauncherScreen> with SingleTickerProvid
                 ),
               ),
             ],
-            
+
             // Mensaje de error
             if (_hasError) ...[
               Container(
@@ -293,7 +286,8 @@ class _LauncherScreenState extends State<LauncherScreen> with SingleTickerProvid
                 ),
                 child: Column(
                   children: [
-                    const Icon(Icons.error_outline, color: Colors.red, size: 40),
+                    const Icon(Icons.error_outline,
+                        color: Colors.red, size: 40),
                     const SizedBox(height: 12),
                     Text(
                       _statusMessage,
@@ -313,7 +307,8 @@ class _LauncherScreenState extends State<LauncherScreen> with SingleTickerProvid
                           label: const Text('Reintentar'),
                           style: ElevatedButton.styleFrom(
                             backgroundColor: AppColors.headerTab,
-                            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 20, vertical: 12),
                           ),
                         ),
                         const SizedBox(width: 12),
@@ -333,9 +328,9 @@ class _LauncherScreenState extends State<LauncherScreen> with SingleTickerProvid
                 ),
               ),
             ],
-            
+
             const SizedBox(height: 60),
-            
+
             // Footer con versión
             Text(
               'v$_version',

@@ -921,6 +921,9 @@ async function registerPhysicalItem(req, res, next) {
       usuario
     );
 
+    // Ubicaciones de origen a recalcular tras una reubicación automática.
+    const relocatedFrom = new Set();
+
     const [auditItems] = await connection.query(`
       SELECT id, warehousing_id, location, numero_parte_snapshot,
              numero_lote_material_snapshot, cantidad_snapshot, status
@@ -933,14 +936,20 @@ async function registerPhysicalItem(req, res, next) {
       auditItems.length > 0
       && String(auditItems[0].location || '').trim() !== location
     ) {
-      await connection.rollback();
-      return res.status(409).json({
-        success: false,
-        code: 'WRONG_LOCATION',
-        error: `El material pertenece a ${auditItems[0].location}; use reubicación antes de contarlo en ${location}`,
-        expectedLocation: auditItems[0].location,
-        scannedLocation: location
-      });
+      // Reubicación automática: el material se escaneó en otra ubicación.
+      const previous = String(auditItems[0].location || '').trim();
+      if (previous) relocatedFrom.add(previous);
+      await connection.query(`
+        UPDATE inventory_audit_item_smd
+        SET location = ?,
+            notas = CONCAT_WS(' | ', NULLIF(notas, ''), ?)
+        WHERE id = ?
+      `, [
+        location,
+        `Reubicado de ${previous} a ${location} durante auditoría`,
+        auditItems[0].id
+      ]);
+      auditItems[0].location = location;
     }
 
     let [materialRows] = await connection.query(`
@@ -1090,16 +1099,46 @@ async function registerPhysicalItem(req, res, next) {
       });
     }
 
-    if (
-      Number(material.cancelado || 0) === 1
-      || Number(material.estado_desecho || 0) === 1
-    ) {
-      await connection.rollback();
-      return res.status(409).json({
-        success: false,
-        code: 'MATERIAL_NOT_ELIGIBLE',
-        error: 'El material está cancelado o marcado como desecho'
-      });
+    // Un rollo con registro anulado (cancelado) que aparece físicamente en la
+    // auditoría se reactiva y se cuenta. Las decisiones de calidad (cuarentena
+    // e IQC) siguen bloqueando más abajo aunque el rollo estuviera cancelado.
+    let reactivatedFromCancelled = false;
+    if (Number(material.cancelado || 0) === 1) {
+      await connection.query(`
+        UPDATE control_material_almacen_smd
+        SET cancelado = 0
+        WHERE id = ?
+      `, [material.id]);
+      material.cancelado = 0;
+      reactivatedFromCancelled = true;
+    }
+
+    // Un material en desecho por discrepancia de auditoría (marcado faltante y
+    // luego encontrado físicamente) se retorna a inventario. El desecho de
+    // calidad (cuarentena Scrapped/Returned) sí sigue bloqueado.
+    let returnedFromDesecho = false;
+    if (Number(material.estado_desecho || 0) === 1) {
+      const [scrapRows] = await connection.query(`
+        SELECT 1 FROM quarantine_smd
+        WHERE codigo_material_recibido = ?
+          AND status IN ('Scrapped', 'Returned')
+        LIMIT 1
+      `, [warehousingCode]);
+      if (scrapRows.length > 0) {
+        await connection.rollback();
+        return res.status(409).json({
+          success: false,
+          code: 'MATERIAL_NOT_ELIGIBLE',
+          error: 'El material fue desechado por calidad (cuarentena) y no puede retornarse'
+        });
+      }
+      await connection.query(`
+        UPDATE control_material_almacen_smd
+        SET estado_desecho = 0
+        WHERE id = ?
+      `, [material.id]);
+      material.estado_desecho = 0;
+      returnedFromDesecho = true;
     }
     if (!isInventoryCountableIqcStatus(material.iqc_status)) {
       await connection.rollback();
@@ -1120,14 +1159,10 @@ async function registerPhysicalItem(req, res, next) {
       && currentLocation
       && currentLocation !== location
     ) {
-      await connection.rollback();
-      return res.status(409).json({
-        success: false,
-        code: 'WRONG_LOCATION',
-        error: `El material está registrado en ${currentLocation}, no en ${location}`,
-        expectedLocation: currentLocation,
-        scannedLocation: location
-      });
+      // Reubicación automática: el material está registrado en otra ubicación.
+      // El UPDATE de control_material_almacen_smd más abajo lo mueve a la
+      // ubicación escaneada; aquí solo marcamos el origen para recalcular.
+      relocatedFrom.add(currentLocation);
     }
 
     let inventoryLotId = material.inventory_lot_id;
@@ -1339,16 +1374,46 @@ async function registerPhysicalItem(req, res, next) {
       WHERE ial.audit_id = ? AND ial.location = ?
     `, [auditId, location]);
 
+    // Reubicación automática: recalcular totales de las ubicaciones de origen
+    // para que descuenten el material que se movió a la ubicación escaneada.
+    for (const oldLocation of relocatedFrom) {
+      if (!oldLocation || oldLocation === location) continue;
+      await connection.query(`
+        UPDATE inventory_audit_location_smd ial
+        SET total_items = (
+              SELECT COUNT(*) FROM inventory_audit_item_smd iai
+              WHERE iai.audit_id = ial.audit_id AND iai.location = ial.location
+            ),
+            total_qty = (
+              SELECT COALESCE(SUM(COALESCE(iai.physical_quantity, iai.cantidad_snapshot)), 0)
+              FROM inventory_audit_item_smd iai
+              WHERE iai.audit_id = ial.audit_id AND iai.location = ial.location
+            )
+        WHERE ial.audit_id = ? AND ial.location = ?
+      `, [auditId, oldLocation]);
+    }
+
     await connection.commit();
     await checkLocationCompletion(auditId, location);
 
+    const relocatedFromList = [...relocatedFrom].filter(
+      (loc) => loc && loc !== location
+    );
+    const wasRelocated = relocatedFromList.length > 0;
+
     return res.json({
       success: true,
-      message: createdInventory
-        ? 'Material nuevo dado de alta y contado'
-        : Math.abs(delta) >= 0.0001
-          ? 'Cantidad física aplicada al inventario'
-          : 'Cantidad física confirmada',
+      message: reactivatedFromCancelled
+        ? `Material reactivado (estaba cancelado) en ${location} y contado`
+        : returnedFromDesecho
+          ? `Material retornado a inventario en ${location} y contado`
+          : wasRelocated
+            ? `Material reubicado de ${relocatedFromList.join(', ')} a ${location} y contado`
+            : createdInventory
+              ? 'Material nuevo dado de alta y contado'
+              : Math.abs(delta) >= 0.0001
+                ? 'Cantidad física aplicada al inventario'
+                : 'Cantidad física confirmada',
       auditId,
       location,
       warehousingCode,
@@ -1360,7 +1425,11 @@ async function registerPhysicalItem(req, res, next) {
       stockBefore,
       stockAfter,
       createdInventory,
-      addedToAudit: isNewAuditItem
+      addedToAudit: isNewAuditItem,
+      relocated: wasRelocated,
+      relocatedFrom: relocatedFromList,
+      returned: returnedFromDesecho,
+      reactivated: reactivatedFromCancelled
     });
   } catch (err) {
     try {

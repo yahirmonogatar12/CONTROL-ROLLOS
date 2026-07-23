@@ -45,14 +45,14 @@ class FeedbackService {
     }
   }
 
-  /// Reproducir tono de error (beep largo grave) + vibración doble
+  /// Reproducir tono de error (beep largo grave) + vibración doble rápida
   static Future<void> playError() async {
     try {
-      // Vibración doble
+      // Dos vibraciones cortas y rápidas para detectar la alerta
       if (Platform.isAndroid || Platform.isIOS) {
         final hasVibrator = await Vibration.hasVibrator() ?? false;
         if (hasVibrator) {
-          Vibration.vibrate(pattern: [0, 200, 100, 200]);
+          Vibration.vibrate(pattern: [0, 80, 80, 80]);
         }
       }
       
@@ -108,13 +108,13 @@ class FeedbackService {
     await _vibrateOnly(100);
   }
 
-  /// Vibración de error (doble)
+  /// Vibración de error (doble rápida)
   static Future<void> vibrateError() async {
     try {
       if (Platform.isAndroid || Platform.isIOS) {
         final hasVibrator = await Vibration.hasVibrator() ?? false;
         if (hasVibrator) {
-          Vibration.vibrate(pattern: [0, 200, 100, 200]);
+          Vibration.vibrate(pattern: [0, 80, 80, 80]);
         }
       }
     } catch (e) {
