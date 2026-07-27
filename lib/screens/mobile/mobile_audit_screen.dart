@@ -8,6 +8,7 @@ import 'package:material_warehousing_flutter/core/services/auth_service.dart';
 import 'package:material_warehousing_flutter/core/services/feedback_service.dart';
 import 'package:material_warehousing_flutter/core/services/scanner_config_service.dart';
 import 'package:material_warehousing_flutter/core/theme/app_colors.dart';
+import 'package:material_warehousing_flutter/screens/mobile/mobile_audit_flow_policy.dart';
 
 /// Pantalla de Auditoría de Inventario para Móvil (Operadores)
 /// Flujo:
@@ -155,7 +156,7 @@ class _MobileAuditScreenState extends State<MobileAuditScreen> {
   }
 
   void _enqueueScan(String code) {
-    if (code.isEmpty) return;
+    if (code.isEmpty || !canQueueMobileAuditMaterialScan(_scanMode)) return;
     if (_scanQueue.contains(code)) {
       // Código duplicado en cola - dar feedback pero no agregar
       FeedbackService.playDuplicate();
@@ -220,11 +221,10 @@ class _MobileAuditScreenState extends State<MobileAuditScreen> {
     if (_isQueueProcessing || _scanQueue.isEmpty) return;
     _scanQueueDebounce?.cancel();
     _isQueueProcessing = true;
+    if (mounted) setState(() {});
     try {
       while (_scanQueue.isNotEmpty) {
-        final isMismatch = _scanMode == 'mismatch_scan';
-        final isSummary = _scanMode == 'summary';
-        if (!mounted || (!isMismatch && !isSummary)) {
+        if (!mounted || !canQueueMobileAuditMaterialScan(_scanMode)) {
           _scanQueue.clear();
           break;
         }
@@ -236,14 +236,11 @@ class _MobileAuditScreenState extends State<MobileAuditScreen> {
         _scanQueue.removeRange(0, count);
         if (mounted) setState(() {});
 
-        if (isMismatch) {
-          await _scanPartItemsFast(codes);
-        } else {
-          await _registerPhysicalItemsFast(codes);
-        }
+        await _scanPartItemsFast(codes);
       }
     } finally {
       _isQueueProcessing = false;
+      if (mounted) setState(() {});
       if (_scanQueue.isNotEmpty) {
         _scheduleQueuedScanProcessing();
       }
@@ -268,6 +265,7 @@ class _MobileAuditScreenState extends State<MobileAuditScreen> {
     var automaticEntryDetected = false;
     String? firstError;
     final rows = <Map<String, dynamic>>[];
+    final unknownCodes = <String>[];
 
     final stopwatch = Stopwatch()..start();
     final selectedPart = _selectedPartForScan!['numero_parte'].toString();
@@ -289,6 +287,7 @@ class _MobileAuditScreenState extends State<MobileAuditScreen> {
           'code': normalizedCode,
           'success': false,
           'error': single['error'] ?? tr('audit_scan_error'),
+          'errorCode': single['code'],
         });
       }
     }
@@ -309,6 +308,10 @@ class _MobileAuditScreenState extends State<MobileAuditScreen> {
       } else {
         errorCount++;
         firstError ??= row['error']?.toString();
+        // Etiqueta desconocida: se captura la cantidad para darla de alta.
+        if (isMobileAuditUnknownLabel(row['errorCode'])) {
+          unknownCodes.add(rowCode);
+        }
       }
     }
 
@@ -353,6 +356,122 @@ class _MobileAuditScreenState extends State<MobileAuditScreen> {
         isError: true,
       );
     }
+
+    for (final unknown in unknownCodes) {
+      await _promptUnknownLabelQuantity(unknown);
+    }
+  }
+
+  // Etiqueta que no existe ni en inventario ni en almacén: el operador la tiene
+  // físicamente, así que se captura la cantidad y se da de alta en la ubicación.
+  Future<void> _promptUnknownLabelQuantity(String warehousingCode) async {
+    final currentUser = AuthService.currentUser;
+    if (!mounted ||
+        currentUser == null ||
+        _currentLocation == null ||
+        _selectedPartForScan == null) {
+      return;
+    }
+
+    await FeedbackService.vibrateLong();
+
+    final lotes = (_selectedPartForScan!['lotes'] as List?) ?? const [];
+    final qtyController = TextEditingController();
+    final lotController = TextEditingController(
+      text: lotes.length == 1
+          ? (lotes.first['numero_lote']?.toString() ?? '')
+          : '',
+    );
+    final numeroParte = _selectedPartForScan!['numero_parte'].toString();
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(tr('audit_register_physical_item')),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              warehousingCode,
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
+            Text('${tr('audit_parts')}: $numeroParte'),
+            Text('${tr('location')}: ${_currentLocation!}'),
+            const SizedBox(height: 12),
+            TextField(
+              controller: qtyController,
+              autofocus: true,
+              keyboardType:
+                  const TextInputType.numberWithOptions(decimal: true),
+              decoration: InputDecoration(
+                labelText: tr('audit_physical_quantity'),
+                border: const OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: lotController,
+              decoration: InputDecoration(
+                labelText: tr('lot_number'),
+                border: const OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              tr('audit_new_material_hint'),
+              style: const TextStyle(fontSize: 12, color: Colors.grey),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: Text(tr('cancel')),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: Text(tr('save')),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true || !mounted) return;
+
+    final quantity = _toDouble(qtyController.text.trim().replaceAll(',', '.'));
+    if (quantity <= 0) {
+      FeedbackService.playError();
+      _showStatus(tr('audit_invalid_physical_quantity'), isError: true);
+      return;
+    }
+
+    setState(() => _isProcessing = true);
+    final result = await ApiService.registerAuditPhysicalItem(
+      location: _currentLocation!,
+      warehousingCode: warehousingCode,
+      userId: currentUser.id,
+      physicalQuantity: quantity,
+      numeroParte: numeroParte,
+      numeroLote: lotController.text.trim(),
+    );
+    if (!mounted) return;
+    setState(() => _isProcessing = false);
+
+    if (result['success'] == true) {
+      FeedbackService.playSuccess();
+      _showStatus('✓ $warehousingCode: $quantity', isError: false);
+      await _reloadPartSummary();
+      await _loadPartLabels(numeroParte);
+    } else {
+      FeedbackService.playError();
+      _showStatus(
+        result['error'] ?? tr('audit_physical_item_error'),
+        isError: true,
+      );
+    }
+    _restoreScannerFocus();
   }
 
   // Marcar una etiqueta como escaneada en la lista local
@@ -442,11 +561,12 @@ class _MobileAuditScreenState extends State<MobileAuditScreen> {
 
     final code = barcode.rawValue!.trim();
 
-    // Modos de escaneo masivo: siempre encolar para escaneo rápido
-    if (_scanMode == 'mismatch_scan' || _scanMode == 'summary') {
+    // Los materiales solo se escanean dentro de "No coincide".
+    if (canQueueMobileAuditMaterialScan(_scanMode)) {
       _enqueueAndProcess(code);
       return;
     }
+    if (!canUseMobileAuditScanner(_scanMode)) return;
 
     if (_isProcessing) return;
     _processScannedCode(code);
@@ -454,9 +574,7 @@ class _MobileAuditScreenState extends State<MobileAuditScreen> {
 
   void _restoreScannerFocus() {
     if (!mounted || !ScannerConfigService.isReaderMode) return;
-    if (_scanMode != 'location' &&
-        _scanMode != 'summary' &&
-        _scanMode != 'mismatch_scan') {
+    if (!canUseMobileAuditScanner(_scanMode)) {
       return;
     }
 
@@ -472,11 +590,12 @@ class _MobileAuditScreenState extends State<MobileAuditScreen> {
     try {
       if (code.isEmpty) return;
 
-      // Modos de escaneo masivo: siempre encolar para escaneo rápido
-      if (_scanMode == 'mismatch_scan' || _scanMode == 'summary') {
+      // Los materiales solo se escanean dentro de "No coincide".
+      if (canQueueMobileAuditMaterialScan(_scanMode)) {
         _enqueueAndProcess(code);
         return;
       }
+      if (!canUseMobileAuditScanner(_scanMode)) return;
 
       if (_isProcessing) return;
       await _processScannedCode(code);
@@ -538,7 +657,6 @@ class _MobileAuditScreenState extends State<MobileAuditScreen> {
         await _scanPartItem(code, currentUser.id);
       } else {
         // Modo legacy: Escanear material individual
-        // (summary usa la cola rápida vía _enqueueAndProcess)
         await _scanItem(code, currentUser.id);
       }
     } finally {
@@ -600,242 +718,6 @@ class _MobileAuditScreenState extends State<MobileAuditScreen> {
       }
     } finally {
       _hideLoadingDialog();
-    }
-  }
-
-  // Escaneo ágil para verificar ubicaciones: procesa el lote de rollos sin
-  // diálogo modal, con feedback ligero, y recarga el resumen una sola vez al
-  // final. El backend resuelve todo y deriva la cantidad de la etiqueta.
-  Future<void> _registerPhysicalItemsFast(List<String> warehousingCodes) async {
-    if (_currentLocation == null || warehousingCodes.isEmpty) return;
-    final currentUser = AuthService.currentUser;
-    if (currentUser == null) return;
-
-    var successCount = 0;
-    var errorCount = 0;
-    String? firstError;
-    String? lastOk;
-
-    final stopwatch = Stopwatch()..start();
-    for (final code in warehousingCodes) {
-      final normalizedCode = code.trim();
-      if (normalizedCode.isEmpty) continue;
-
-      final result = await ApiService.registerAuditPhysicalItem(
-        location: _currentLocation!,
-        warehousingCode: normalizedCode,
-        userId: currentUser.id,
-      );
-      if (result['success'] == true) {
-        successCount++;
-        final data = result['data'] as Map<String, dynamic>? ?? {};
-        final qty = _toDouble(data['physicalQuantity']);
-        final part = data['partNumber']?.toString() ?? '';
-        final relocated = data['relocated'] == true;
-        final returned = data['returned'] == true;
-        final reactivated = data['reactivated'] == true;
-        final from =
-            (data['relocatedFrom'] as List?)?.join(', ') ?? '';
-        final base = '$normalizedCode: ${_formatQty(qty)} $part';
-        lastOk = reactivated
-            ? '$base (reactivado)'
-            : returned
-                ? '$base (retornado)'
-                : relocated
-                    ? '$base (reubicado de $from)'
-                    : base;
-      } else {
-        errorCount++;
-        firstError ??=
-            '$normalizedCode: ${result['error'] ?? tr('audit_physical_item_error')}';
-      }
-    }
-    stopwatch.stop();
-
-    _recordScanLatency(
-      elapsedMs: stopwatch.elapsedMilliseconds,
-      batchOk: errorCount == 0,
-    );
-
-    if (successCount > 0) {
-      await _reloadPartSummary();
-      FeedbackService.playSuccess();
-      _showStatus('OK +$successCount  ${lastOk ?? ''}', isError: false);
-    }
-    if (errorCount > 0) {
-      FeedbackService.playError();
-      _showStatus(
-        'ERR $errorCount: ${firstError ?? tr('audit_scan_error')}',
-        isError: true,
-      );
-    }
-  }
-
-  Future<void> _showPhysicalItemDialog({String initialCode = ''}) async {
-    if (_currentLocation == null) return;
-
-    final codeController = TextEditingController(text: initialCode);
-    final partController = TextEditingController();
-    final lotController = TextEditingController();
-    final quantityController = TextEditingController();
-    final specController = TextEditingController();
-    final formKey = GlobalKey<FormState>();
-
-    final payload = await showDialog<Map<String, dynamic>>(
-      context: context,
-      barrierDismissible: false,
-      builder: (dialogContext) => AlertDialog(
-        title: Text(tr('audit_register_physical_item')),
-        content: SizedBox(
-          width: 420,
-          child: Form(
-            key: formKey,
-            child: SingleChildScrollView(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    '${tr('location')}: $_currentLocation',
-                    style: const TextStyle(fontWeight: FontWeight.bold),
-                  ),
-                  const SizedBox(height: 12),
-                  TextFormField(
-                    controller: codeController,
-                    autofocus: initialCode.isEmpty,
-                    decoration: InputDecoration(
-                      labelText: tr('audit_material_code'),
-                      prefixIcon: const Icon(Icons.qr_code_scanner),
-                      border: const OutlineInputBorder(),
-                    ),
-                    validator: (value) => value == null || value.trim().isEmpty
-                        ? tr('required_field')
-                        : null,
-                  ),
-                  const SizedBox(height: 12),
-                  TextFormField(
-                    controller: quantityController,
-                    autofocus: initialCode.isNotEmpty,
-                    keyboardType: const TextInputType.numberWithOptions(
-                      decimal: true,
-                    ),
-                    decoration: InputDecoration(
-                      labelText: tr('audit_physical_quantity'),
-                      prefixIcon: const Icon(Icons.scale),
-                      border: const OutlineInputBorder(),
-                    ),
-                    validator: (value) {
-                      final quantity = double.tryParse(
-                        (value ?? '').trim().replaceAll(',', '.'),
-                      );
-                      return quantity == null || quantity <= 0
-                          ? tr('audit_invalid_physical_quantity')
-                          : null;
-                    },
-                  ),
-                  const SizedBox(height: 12),
-                  Text(
-                    tr('audit_new_material_hint'),
-                    style: const TextStyle(fontSize: 12, color: Colors.grey),
-                  ),
-                  const SizedBox(height: 8),
-                  TextFormField(
-                    controller: partController,
-                    decoration: InputDecoration(
-                      labelText: tr('part_number'),
-                      border: const OutlineInputBorder(),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  TextFormField(
-                    controller: lotController,
-                    decoration: InputDecoration(
-                      labelText: tr('lot_number'),
-                      border: const OutlineInputBorder(),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  TextFormField(
-                    controller: specController,
-                    decoration: InputDecoration(
-                      labelText: tr('specification'),
-                      border: const OutlineInputBorder(),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext),
-            child: Text(tr('cancel')),
-          ),
-          ElevatedButton.icon(
-            onPressed: () {
-              if (formKey.currentState?.validate() != true) return;
-              Navigator.pop(dialogContext, {
-                'code': codeController.text.trim(),
-                'quantity': double.parse(
-                  quantityController.text.trim().replaceAll(',', '.'),
-                ),
-                'part': partController.text.trim(),
-                'lot': lotController.text.trim(),
-                'spec': specController.text.trim(),
-              });
-            },
-            icon: const Icon(Icons.save),
-            label: Text(tr('save')),
-          ),
-        ],
-      ),
-    );
-
-    codeController.dispose();
-    partController.dispose();
-    lotController.dispose();
-    quantityController.dispose();
-    specController.dispose();
-
-    if (payload == null || !mounted) {
-      _restoreScannerFocus();
-      return;
-    }
-
-    final currentUser = AuthService.currentUser;
-    if (currentUser == null) return;
-
-    _showLoadingDialog(tr('processing_msg'));
-    try {
-      final result = await ApiService.registerAuditPhysicalItem(
-        location: _currentLocation!,
-        warehousingCode: payload['code'] as String,
-        physicalQuantity: payload['quantity'] as double,
-        userId: currentUser.id,
-        numeroParte: payload['part'] as String,
-        numeroLote: payload['lot'] as String,
-        especificacion: payload['spec'] as String,
-      );
-
-      if (result['success'] == true) {
-        FeedbackService.playSuccess();
-        final data = result['data'] as Map<String, dynamic>;
-        await _reloadPartSummary();
-        _showStatus(
-          'OK ${data['warehousingCode']}: ${data['message']}',
-          isError: false,
-        );
-      } else {
-        FeedbackService.playError();
-        _showStatus(
-          result['error'] ?? tr('audit_physical_item_error'),
-          isError: true,
-        );
-      }
-    } finally {
-      _hideLoadingDialog();
-      _restoreScannerFocus();
     }
   }
 
@@ -1203,86 +1085,18 @@ class _MobileAuditScreenState extends State<MobileAuditScreen> {
     }
   }
 
-  // Deshacer mismatch y confirmar como OK
-  Future<void> _undoMismatchAndConfirmOk() async {
+  // Terminar el escaneo de la parte. El backend crea salidas inmediatas para
+  // las etiquetas esperadas que no fueron escaneadas.
+  Future<void> _finishMismatchScan() async {
     if (_selectedPartForScan == null || _currentLocation == null) return;
-
-    final currentUser = AuthService.currentUser;
-    if (currentUser == null) return;
-
-    final confirm = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: AppColors.panelBackground,
-        title: Text(tr('audit_undo_mismatch'),
-            style: const TextStyle(color: Colors.white)),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(
-              '${tr('audit_confirm_ok_question')}: ${_selectedPartForScan!['numero_parte']}',
-              style: const TextStyle(color: Colors.white70),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              tr('audit_undo_mismatch_desc'),
-              style: const TextStyle(fontSize: 12, color: Colors.green),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: Text(tr('cancel')),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context, true),
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
-            child: Text(tr('audit_confirm_ok')),
-          ),
-        ],
-      ),
-    );
-
-    if (confirm != true) return;
-
-    setState(() => _isProcessing = true);
-
-    final result = await ApiService.undoAuditMismatch(
-      location: _currentLocation!,
-      numeroParte: _selectedPartForScan!['numero_parte'],
-      userId: currentUser.id,
-      confirmOk: true,
-    );
-
-    if (mounted) {
-      setState(() => _isProcessing = false);
-
-      if (result['success'] == true) {
-        FeedbackService.playSuccess();
-        _showStatus(
-            '✓ ${tr('audit_part_confirmed')}: ${_selectedPartForScan!['numero_parte']}',
-            isError: false);
-
-        // Volver a modo resumen
-        setState(() {
-          _selectedPartForScan = null;
-          _scanQueue.clear();
-          _partLabels = [];
-          _scanMode = 'summary';
-        });
-
-        await _reloadPartSummary();
-      } else {
-        FeedbackService.playError();
-        _showStatus(result['error'] ?? tr('general_error'), isError: true);
-      }
+    if (!canFinishMobileAuditMismatchScan(
+      mode: _scanMode,
+      isProcessing: _isProcessing,
+      isQueueProcessing: _isQueueProcessing,
+      hasPendingScans: _scanQueue.isNotEmpty,
+    )) {
+      return;
     }
-  }
-
-  // Confirmar faltantes de una parte en Mismatch
-  Future<void> _confirmMissing() async {
-    if (_selectedPartForScan == null || _currentLocation == null) return;
 
     final currentUser = AuthService.currentUser;
     if (currentUser == null) return;
@@ -1290,15 +1104,15 @@ class _MobileAuditScreenState extends State<MobileAuditScreen> {
     final confirm = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: Text(tr('audit_confirm_missing')),
+        title: Text(tr('audit_finish_scan')),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             Text(
-                '${tr('audit_confirm_missing_part')}: ${_selectedPartForScan!['numero_parte']}'),
+                '${tr('audit_finish_scan_part')}: ${_selectedPartForScan!['numero_parte']}'),
             const SizedBox(height: 8),
             Text(
-              tr('audit_unscanned_will_be_missing'),
+              tr('audit_finish_scan_warning'),
               style: const TextStyle(fontSize: 12, color: Colors.orange),
             ),
           ],
@@ -1311,7 +1125,7 @@ class _MobileAuditScreenState extends State<MobileAuditScreen> {
           ElevatedButton(
             onPressed: () => Navigator.pop(context, true),
             style: ElevatedButton.styleFrom(backgroundColor: Colors.orange),
-            child: Text(tr('confirm')),
+            child: Text(tr('audit_finish_scan')),
           ),
         ],
       ),
@@ -1334,9 +1148,12 @@ class _MobileAuditScreenState extends State<MobileAuditScreen> {
         FeedbackService.playSuccess();
         final data = result['data'];
         final missingItems = data?['missingItems'] ?? 0;
+        final status = data?['status']?.toString();
         final partNumber = _selectedPartForScan?['numero_parte'];
         _showStatus(
-          '${tr('audit_missing_confirmed')}: $missingItems ${tr('audit_items')}',
+          status == 'VerifiedByScan'
+              ? tr('audit_scan_completed')
+              : '${tr('audit_missing_confirmed')}: $missingItems ${tr('audit_items')}',
           isError: false,
         );
         if (missingItems > 0 && partNumber != null) {
@@ -1571,21 +1388,9 @@ class _MobileAuditScreenState extends State<MobileAuditScreen> {
           progress['pending'] == 0 &&
           progress['mismatch'] == 0) {
         _showStatus('✓ ${tr('audit_location_completed')}', isError: false);
-
-        // Volver a modo ubicación
-        Future.delayed(const Duration(seconds: 2), () {
-          if (mounted) {
-            setState(() {
-              _currentLocation = null;
-              _locationStatus = null;
-              _partSummary = [];
-              _selectedPartForScan = null;
-              _partLabels = [];
-              _scanMode = 'location';
-            });
-            _restoreScannerFocus();
-          }
-        });
+        // Mantener la ubicación activa aunque ya no tenga pendientes.
+        // El operador puede seguir escaneando materiales en la misma ubicación
+        // y cambiarla explícitamente con el botón "Cambiar ubicación".
       }
     }
   }
@@ -1703,9 +1508,7 @@ class _MobileAuditScreenState extends State<MobileAuditScreen> {
   }
 
   Widget _buildAuditContent() {
-    final canScan = _scanMode == 'location' ||
-        _scanMode == 'summary' ||
-        _scanMode == 'mismatch_scan';
+    final canScan = canUseMobileAuditScanner(_scanMode);
     return Column(
       children: [
         // Status bar
@@ -1826,8 +1629,10 @@ class _MobileAuditScreenState extends State<MobileAuditScreen> {
             child: _buildPartSummaryList(),
           ),
 
-        if (_scanMode == 'summary' && _currentLocation != null)
-          _buildPhysicalAuditActions(),
+        if (_scanMode == 'summary' &&
+            _currentLocation != null &&
+            _partSummary.isEmpty)
+          _buildEmptyLocationAction(),
 
         // ========== MODO MISMATCH_SCAN (v2) ==========
         if (_scanMode == 'mismatch_scan')
@@ -1871,44 +1676,24 @@ class _MobileAuditScreenState extends State<MobileAuditScreen> {
 
   // ========== UI FLUJO V2 ==========
 
-  Widget _buildPhysicalAuditActions() {
-    final isEmpty = _partSummary.isEmpty;
+  Widget _buildEmptyLocationAction() {
     return SafeArea(
       top: false,
       child: Container(
         padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
         color: AppColors.gridBackground,
-        child: Row(
-          children: [
-            if (isEmpty) ...[
-              Expanded(
-                child: OutlinedButton.icon(
-                  onPressed: _isProcessing ? null : _completeLocation,
-                  icon: const Icon(Icons.inbox_outlined),
-                  label: Text(tr('audit_confirm_empty_location')),
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: Colors.green,
-                    side: const BorderSide(color: Colors.green),
-                    padding: const EdgeInsets.symmetric(vertical: 13),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-            ],
-            Expanded(
-              child: ElevatedButton.icon(
-                onPressed:
-                    _isProcessing ? null : () => _showPhysicalItemDialog(),
-                icon: const Icon(Icons.add_box_outlined),
-                label: Text(tr('audit_register_physical_item')),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: AppColors.headerTab,
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(vertical: 13),
-                ),
-              ),
+        child: SizedBox(
+          width: double.infinity,
+          child: OutlinedButton.icon(
+            onPressed: _isProcessing ? null : _completeLocation,
+            icon: const Icon(Icons.inbox_outlined),
+            label: Text(tr('audit_confirm_empty_location')),
+            style: OutlinedButton.styleFrom(
+              foregroundColor: Colors.green,
+              side: const BorderSide(color: Colors.green),
+              padding: const EdgeInsets.symmetric(vertical: 13),
             ),
-          ],
+          ),
         ),
       ),
     );
@@ -2327,7 +2112,7 @@ class _MobileAuditScreenState extends State<MobileAuditScreen> {
                     size: 60, color: Colors.white.withValues(alpha: 0.3)),
                 const SizedBox(height: 12),
                 Text(
-                  tr('audit_scan_all_or_confirm'),
+                  tr('audit_scan_all_then_finish'),
                   style: const TextStyle(color: Colors.white54, fontSize: 14),
                   textAlign: TextAlign.center,
                 ),
@@ -2484,69 +2269,35 @@ class _MobileAuditScreenState extends State<MobileAuditScreen> {
             top: false,
             child: Container(
               padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  SizedBox(
-                    width: double.infinity,
-                    child: ElevatedButton.icon(
-                      onPressed:
-                          _isProcessing ? null : _undoMismatchAndConfirmOk,
-                      icon: const Icon(Icons.check_circle, size: 18),
-                      label: Text(tr('audit_confirm_ok'),
-                          maxLines: 1, overflow: TextOverflow.ellipsis),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.green,
-                        foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(vertical: 12),
-                      ),
-                    ),
+              child: SizedBox(
+                width: double.infinity,
+                child: ElevatedButton.icon(
+                  onPressed: canFinishMobileAuditMismatchScan(
+                    mode: _scanMode,
+                    isProcessing: _isProcessing,
+                    isQueueProcessing: _isQueueProcessing,
+                    hasPendingScans: _scanQueue.isNotEmpty,
+                  )
+                      ? _finishMismatchScan
+                      : null,
+                  icon: _isProcessing || _isQueueProcessing
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.done_all, size: 18),
+                  label: Text(
+                    tr('audit_finish_scan'),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                   ),
-                  const SizedBox(height: 6),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: OutlinedButton(
-                          onPressed: () {
-                            setState(() {
-                              _selectedPartForScan = null;
-                              _scanQueue.clear();
-                              _partLabels = [];
-                              _scanMode = 'summary';
-                            });
-                          },
-                          style: OutlinedButton.styleFrom(
-                            foregroundColor: Colors.white54,
-                            padding: const EdgeInsets.symmetric(vertical: 12),
-                          ),
-                          child: Text(tr('back'),
-                              maxLines: 1, overflow: TextOverflow.ellipsis),
-                        ),
-                      ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        flex: 2,
-                        child: ElevatedButton.icon(
-                          onPressed: _isProcessing ? null : _confirmMissing,
-                          icon: _isProcessing
-                              ? const SizedBox(
-                                  width: 16,
-                                  height: 16,
-                                  child:
-                                      CircularProgressIndicator(strokeWidth: 2))
-                              : const Icon(Icons.report_problem, size: 16),
-                          label: Text(tr('audit_confirm_missing'),
-                              maxLines: 1, overflow: TextOverflow.ellipsis),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.red,
-                            foregroundColor: Colors.white,
-                            padding: const EdgeInsets.symmetric(vertical: 12),
-                          ),
-                        ),
-                      ),
-                    ],
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.orange,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
                   ),
-                ],
+                ),
               ),
             ),
           ),

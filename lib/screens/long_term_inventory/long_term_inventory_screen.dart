@@ -5,6 +5,7 @@ import 'package:material_warehousing_flutter/core/theme/app_colors.dart';
 import 'package:material_warehousing_flutter/core/services/api_service.dart';
 import 'package:material_warehousing_flutter/core/services/auth_service.dart';
 import 'package:material_warehousing_flutter/core/services/excel_export_service.dart';
+import 'package:material_warehousing_flutter/core/widgets/excel_column_filter_dialog.dart';
 import 'package:material_warehousing_flutter/core/widgets/grid_footer.dart';
 import 'package:material_warehousing_flutter/core/widgets/resizable_grid_header.dart';
 
@@ -35,12 +36,14 @@ class LongTermInventoryScreenState extends State<LongTermInventoryScreen> with S
   Set<int> _selectedDetailIndices = {}; // Multi-selección para Details
   
   // Ordenamiento
-  String? _sortColumn;
-  bool _sortAscending = true;
+  String? _summarySortColumn;
+  bool _summarySortAscending = true;
+  String? _detailSortColumn;
+  bool _detailSortAscending = true;
   
   // Filtros por columna
-  Map<String, String?> _summaryFilters = {};
-  Map<String, String?> _detailFilters = {};
+  final Map<String, Set<String>> _summaryFilters = {};
+  final Map<String, Set<String>> _detailFilters = {};
   
   // Búsqueda con Ctrl+F
   bool _showSearchBar = false;
@@ -614,208 +617,142 @@ class LongTermInventoryScreenState extends State<LongTermInventoryScreen> with S
   
   void _sortData(String field, bool ascending, bool isSummary) {
     setState(() {
-      _sortColumn = field;
-      _sortAscending = ascending;
-      
+      if (isSummary) {
+        _summarySortColumn = field;
+        _summarySortAscending = ascending;
+      } else {
+        _detailSortColumn = field;
+        _detailSortAscending = ascending;
+      }
+
       final dataList = isSummary ? _summaryData : _detailData;
-      dataList.sort((a, b) {
-        var aValue = a[field];
-        var bValue = b[field];
-        
-        // Manejar números
-        if (aValue is num && bValue is num) {
-          return ascending ? aValue.compareTo(bValue) : bValue.compareTo(aValue);
-        }
-        
-        // Convertir a string para comparar
-        String aStr = aValue?.toString() ?? '';
-        String bStr = bValue?.toString() ?? '';
-        
-        return ascending 
-          ? aStr.toLowerCase().compareTo(bStr.toLowerCase())
-          : bStr.toLowerCase().compareTo(aStr.toLowerCase());
-      });
+      _sortRows(dataList, field, ascending);
     });
   }
 
-  // Mostrar menú contextual de columna
-  void _showColumnContextMenu(BuildContext context, Offset position, String field, String header, bool isSummary) {
-    final RenderBox overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
-    final filters = isSummary ? _summaryFilters : _detailFilters;
-    
-    showMenu<String>(
-      context: context,
-      position: RelativeRect.fromRect(
-        position & const Size(1, 1),
-        Offset.zero & overlay.size,
-      ),
-      color: const Color(0xFF2D2D30),
-      items: [
-        PopupMenuItem(
-          value: 'sort_asc',
-          height: 32,
-          child: Row(
-            children: [
-              Icon(Icons.arrow_upward, size: 16, 
-                color: _sortColumn == field && _sortAscending ? Colors.blue : Colors.white70),
-              const SizedBox(width: 8),
-              Text(tr('sort_ascending'), 
-                style: TextStyle(fontSize: 12, 
-                  color: _sortColumn == field && _sortAscending ? Colors.blue : Colors.white)),
-            ],
-          ),
-        ),
-        PopupMenuItem(
-          value: 'sort_desc',
-          height: 32,
-          child: Row(
-            children: [
-              Icon(Icons.arrow_downward, size: 16,
-                color: _sortColumn == field && !_sortAscending ? Colors.blue : Colors.white70),
-              const SizedBox(width: 8),
-              Text(tr('sort_descending'),
-                style: TextStyle(fontSize: 12,
-                  color: _sortColumn == field && !_sortAscending ? Colors.blue : Colors.white)),
-            ],
-          ),
-        ),
-        PopupMenuItem(
-          value: 'clear_sort',
-          enabled: _sortColumn != null,
-          height: 32,
-          child: Row(
-            children: [
-              Icon(Icons.clear, size: 16, color: _sortColumn != null ? Colors.white70 : Colors.white30),
-              const SizedBox(width: 8),
-              Text(tr('clear_sorting'), 
-                style: TextStyle(fontSize: 12, color: _sortColumn != null ? Colors.white : Colors.white30)),
-            ],
-          ),
-        ),
-        const PopupMenuDivider(height: 8),
-        PopupMenuItem(
-          value: 'filter',
-          height: 32,
-          child: Row(
-            children: [
-              Icon(Icons.filter_list, size: 16, 
-                color: filters.containsKey(field) ? Colors.blue : Colors.white70),
-              const SizedBox(width: 8),
-              Text(tr('filter_by_column'), 
-                style: TextStyle(fontSize: 12, 
-                  color: filters.containsKey(field) ? Colors.blue : Colors.white)),
-            ],
-          ),
-        ),
-        PopupMenuItem(
-          value: 'clear_filter',
-          enabled: filters.containsKey(field),
-          height: 32,
-          child: Row(
-            children: [
-              Icon(Icons.filter_list_off, size: 16, 
-                color: filters.containsKey(field) ? Colors.white70 : Colors.white30),
-              const SizedBox(width: 8),
-              Text(tr('clear_filter'), 
-                style: TextStyle(fontSize: 12, 
-                  color: filters.containsKey(field) ? Colors.white : Colors.white30)),
-            ],
-          ),
-        ),
-      ],
-    ).then((value) {
-      if (value == null) return;
-      
-      switch (value) {
-        case 'sort_asc':
-          _sortData(field, true, isSummary);
-          break;
-        case 'sort_desc':
-          _sortData(field, false, isSummary);
-          break;
-        case 'clear_sort':
-          _clearSorting(isSummary);
-          break;
-        case 'filter':
-          _showFilterDialog(context, field, header, isSummary);
-          break;
-        case 'clear_filter':
-          _clearColumnFilter(field, isSummary);
-          break;
-      }
+  void _sortRows(
+    List<Map<String, dynamic>> rows,
+    String field,
+    bool ascending,
+  ) {
+    rows.sort((a, b) {
+      final aValue = a[field];
+      final bValue = b[field];
+      final comparison = _compareValues(aValue, bValue);
+      return ascending ? comparison : -comparison;
     });
   }
-  
-  void _clearSorting(bool isSummary) {
-    setState(() {
-      _sortColumn = null;
-      _sortAscending = true;
-      if (isSummary) {
-        _summaryData = List.from(_originalSummaryData);
-        _applyFilters(true);
-      } else {
-        _detailData = List.from(_originalDetailData);
-        _applyFilters(false);
-      }
-    });
+
+  int _compareValues(dynamic aValue, dynamic bValue) {
+    if (aValue == null && bValue == null) return 0;
+    if (aValue == null) return -1;
+    if (bValue == null) return 1;
+    if (aValue is num && bValue is num) return aValue.compareTo(bValue);
+
+    final aText = aValue.toString().trim();
+    final bText = bValue.toString().trim();
+    final aNumber = num.tryParse(aText);
+    final bNumber = num.tryParse(bText);
+    if (aNumber != null && bNumber != null) {
+      return aNumber.compareTo(bNumber);
+    }
+    return aText.toLowerCase().compareTo(bText.toLowerCase());
   }
-  
-  void _showFilterDialog(BuildContext context, String field, String header, bool isSummary) {
-    final filterController = TextEditingController();
+
+  String _columnFilterValue(dynamic value) => value?.toString().trim() ?? '';
+
+  List<Map<String, dynamic>> _rowsMatchingOtherFilters(
+    String excludedField,
+    bool isSummary,
+  ) {
     final filters = isSummary ? _summaryFilters : _detailFilters;
-    filterController.text = filters[field] ?? '';
-    
-    showDialog(
+    final originalData =
+        isSummary ? _originalSummaryData : _originalDetailData;
+    return originalData.where((row) {
+      for (final entry in filters.entries) {
+        if (entry.key == excludedField) continue;
+        final cellValue = _columnFilterValue(row[entry.key]);
+        if (!entry.value.contains(cellValue)) return false;
+      }
+      return true;
+    }).toList();
+  }
+
+  Future<void> _showExcelColumnFilter(
+    BuildContext context,
+    String field,
+    String header,
+    bool isSummary,
+  ) async {
+    final filters = isSummary ? _summaryFilters : _detailFilters;
+    final rows = _rowsMatchingOtherFilters(field, isSummary);
+    final values = rows
+        .map((row) => _columnFilterValue(row[field]))
+        .toSet()
+        .toList()
+      ..sort(_compareValues);
+    final availableValueSet = values.toSet();
+    final selectedValues = filters.containsKey(field)
+        ? filters[field]!.intersection(availableValueSet)
+        : availableValueSet;
+    final sortColumn =
+        isSummary ? _summarySortColumn : _detailSortColumn;
+    final sortAscending =
+        isSummary ? _summarySortAscending : _detailSortAscending;
+
+    final result = await showDialog<ExcelColumnFilterResult>(
       context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: const Color(0xFF2D2D30),
-        title: Text('${tr('filter_by')}: $header', style: const TextStyle(color: Colors.white, fontSize: 14)),
-        content: SizedBox(
-          width: 300,
-          child: TextField(
-            controller: filterController,
-            autofocus: true,
-            style: const TextStyle(color: Colors.white, fontSize: 12),
-            decoration: InputDecoration(
-              hintText: 'Enter filter value...',
-              hintStyle: const TextStyle(color: Colors.white54, fontSize: 12),
-              filled: true,
-              fillColor: AppColors.fieldBackground,
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(4),
-                borderSide: const BorderSide(color: AppColors.border),
-              ),
-            ),
-            onSubmitted: (value) {
-              Navigator.pop(context);
-              _applyColumnFilter(field, value, isSummary);
-            },
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: Text(tr('cancel')),
-          ),
-          TextButton(
-            onPressed: () {
-              Navigator.pop(context);
-              _applyColumnFilter(field, filterController.text, isSummary);
-            },
-            child: Text(tr('save')),
-          ),
-        ],
+      builder: (dialogContext) => ExcelColumnFilterDialog(
+        columnLabel: header,
+        values: values,
+        selectedValues: selectedValues,
+        hasActiveFilter: filters.containsKey(field),
+        currentSortAscending:
+            sortColumn == field ? sortAscending : null,
+        sortAscendingLabel: tr('sort_a_to_z'),
+        sortDescendingLabel: tr('sort_z_to_a'),
+        clearFilterLabel: tr('clear_filter'),
+        searchLabel: tr('search'),
+        selectAllLabel: tr('select_all'),
+        emptyValueLabel: tr('filter_empty_value'),
+        applyLabel: tr('apply'),
+        cancelLabel: tr('cancel'),
+        noValuesLabel: tr('no_data'),
       ),
     );
+
+    if (!mounted || result == null) return;
+    switch (result.action) {
+      case ExcelColumnFilterAction.sortAscending:
+        _sortData(field, true, isSummary);
+      case ExcelColumnFilterAction.sortDescending:
+        _sortData(field, false, isSummary);
+      case ExcelColumnFilterAction.clearFilter:
+        _clearColumnFilter(field, isSummary);
+      case ExcelColumnFilterAction.apply:
+        _applyColumnFilter(
+          field,
+          result.selectedValues,
+          values,
+          isSummary,
+        );
+    }
   }
-  
-  void _applyColumnFilter(String field, String value, bool isSummary) {
+
+  void _applyColumnFilter(
+    String field,
+    Set<String> selectedValues,
+    List<String> availableValues,
+    bool isSummary,
+  ) {
     setState(() {
       final filters = isSummary ? _summaryFilters : _detailFilters;
-      if (value.isEmpty) {
+      final allSelected = selectedValues.length == availableValues.length &&
+          selectedValues.containsAll(availableValues);
+      if (allSelected) {
         filters.remove(field);
       } else {
-        filters[field] = value;
+        filters[field] = Set<String>.from(selectedValues);
       }
       _applyFilters(isSummary);
     });
@@ -831,31 +768,30 @@ class LongTermInventoryScreenState extends State<LongTermInventoryScreen> with S
   
   void _applyFilters(bool isSummary) {
     final filters = isSummary ? _summaryFilters : _detailFilters;
-    final originalData = isSummary ? _originalSummaryData : _originalDetailData;
-    
-    if (filters.isEmpty) {
-      if (isSummary) {
-        _summaryData = List.from(originalData);
-      } else {
-        _detailData = List.from(originalData);
+    final originalData =
+        isSummary ? _originalSummaryData : _originalDetailData;
+    final filtered = originalData.where((row) {
+      for (final entry in filters.entries) {
+        final cellValue = _columnFilterValue(row[entry.key]);
+        if (!entry.value.contains(cellValue)) return false;
       }
+      return true;
+    }).toList();
+
+    final sortColumn =
+        isSummary ? _summarySortColumn : _detailSortColumn;
+    final sortAscending =
+        isSummary ? _summarySortAscending : _detailSortAscending;
+    if (sortColumn != null) {
+      _sortRows(filtered, sortColumn, sortAscending);
+    }
+
+    if (isSummary) {
+      _selectedSummaryIndex = -1;
+      _summaryData = filtered;
     } else {
-      final filtered = originalData.where((row) {
-        for (var entry in filters.entries) {
-          final field = entry.key;
-          final filterValue = entry.value?.toLowerCase() ?? '';
-          final cellValue = row[field]?.toString().toLowerCase() ?? '';
-          
-          if (!cellValue.contains(filterValue)) return false;
-        }
-        return true;
-      }).toList();
-      
-      if (isSummary) {
-        _summaryData = filtered;
-      } else {
-        _detailData = filtered;
-      }
+      _selectedDetailIndices.clear();
+      _detailData = filtered;
     }
   }
 
@@ -920,7 +856,7 @@ class LongTermInventoryScreenState extends State<LongTermInventoryScreen> with S
                   borderRadius: BorderRadius.circular(6),
                   boxShadow: [
                     BoxShadow(
-                      color: Colors.black.withOpacity(0.4),
+                      color: Colors.black.withValues(alpha: 0.4),
                       blurRadius: 6,
                       offset: const Offset(0, 3),
                     ),
@@ -937,7 +873,8 @@ class LongTermInventoryScreenState extends State<LongTermInventoryScreen> with S
                             borderRadius: BorderRadius.circular(6),
                             boxShadow: _tabController.index == 0 ? [
                               BoxShadow(
-                                color: AppColors.headerTab.withOpacity(0.5),
+                                color:
+                                    AppColors.headerTab.withValues(alpha: 0.5),
                                 blurRadius: 4,
                                 offset: const Offset(0, 2),
                               ),
@@ -964,7 +901,8 @@ class LongTermInventoryScreenState extends State<LongTermInventoryScreen> with S
                             borderRadius: BorderRadius.circular(6),
                             boxShadow: _tabController.index == 1 ? [
                               BoxShadow(
-                                color: AppColors.headerTab.withOpacity(0.5),
+                                color:
+                                    AppColors.headerTab.withValues(alpha: 0.5),
                                 blurRadius: 4,
                                 offset: const Offset(0, 2),
                               ),
@@ -1455,7 +1393,7 @@ class LongTermInventoryScreenState extends State<LongTermInventoryScreen> with S
                   ),
                 ),
           ),
-          GridFooter(text: '${tr('total_rows')} : ${displayData.length}${displayData.length != _summaryData.length ? ' / ${_summaryData.length}' : ''}'),
+          GridFooter(text: '${tr('total_rows')} : ${displayData.length}${displayData.length != _originalSummaryData.length ? ' / ${_originalSummaryData.length}' : ''}'),
         ],
       ),
     );
@@ -1581,17 +1519,20 @@ class LongTermInventoryScreenState extends State<LongTermInventoryScreen> with S
                   ),
                 ),
           ),
-          GridFooter(text: '${tr('total_rows')} : ${displayData.length}${displayData.length != _detailData.length ? ' / ${_detailData.length}' : ''}'),
+          GridFooter(text: '${tr('total_rows')} : ${displayData.length}${displayData.length != _originalDetailData.length ? ' / ${_originalDetailData.length}' : ''}'),
         ],
       ),
     );
   }
   
   Widget _buildHeaderCell(String label, String field, bool isSummary, int index) {
-    final isSorted = _sortColumn == field;
+    final sortColumn =
+        isSummary ? _summarySortColumn : _detailSortColumn;
+    final sortAscending =
+        isSummary ? _summarySortAscending : _detailSortAscending;
+    final isSorted = sortColumn == field;
     final filters = isSummary ? _summaryFilters : _detailFilters;
     final hasFilter = filters.containsKey(field);
-    final filterKey = GlobalKey();
     
     return Expanded(
       flex: getColumnFlex(index),
@@ -1608,10 +1549,14 @@ class LongTermInventoryScreenState extends State<LongTermInventoryScreen> with S
           children: [
             // Título de columna (clicable para ordenar)
             Expanded(
-              child: GestureDetector(
-                onTap: () => _sortData(field, isSorted ? !_sortAscending : true, isSummary),
+               child: GestureDetector(
+                onTap: () => _sortData(
+                  field,
+                  isSorted ? !sortAscending : true,
+                  isSummary,
+                ),
                 onSecondaryTapDown: (details) {
-                  _showColumnContextMenu(context, details.globalPosition, field, label, isSummary);
+                  _showExcelColumnFilter(context, field, label, isSummary);
                 },
                 child: Text(
                   label,
@@ -1627,20 +1572,14 @@ class LongTermInventoryScreenState extends State<LongTermInventoryScreen> with S
             // Ícono de ordenamiento
             if (isSorted)
               Icon(
-                _sortAscending ? Icons.arrow_upward : Icons.arrow_downward,
+                sortAscending ? Icons.arrow_upward : Icons.arrow_downward,
                 size: 10,
                 color: Colors.blue,
               ),
             // Ícono de filtro (clicable) - mismo estilo que warehousing grid
             GestureDetector(
-              key: filterKey,
-              onTap: () {
-                final RenderBox? renderBox = filterKey.currentContext?.findRenderObject() as RenderBox?;
-                if (renderBox != null) {
-                  final position = renderBox.localToGlobal(Offset.zero);
-                  _showColumnContextMenu(context, position, field, label, isSummary);
-                }
-              },
+              onTap: () =>
+                  _showExcelColumnFilter(context, field, label, isSummary),
               child: Padding(
                 padding: const EdgeInsets.only(left: 2),
                 child: Icon(

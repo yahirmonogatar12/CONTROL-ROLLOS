@@ -27,6 +27,21 @@ const adjustmentError = (statusCode, code, message) => {
   return error;
 };
 
+// inventario_lotes_smd es la fuente autoritativa de filas y cantidades.
+// Al enriquecer la respuesta con datos de almacén, usar una sola fila por
+// etiqueta evita que registros históricos repetidos multipliquen el stock.
+const latestWarehousingRowsQuery = `
+  SELECT cma.*
+  FROM control_material_almacen_smd cma
+  INNER JOIN (
+    SELECT codigo_material_recibido, MAX(id) AS latest_id
+    FROM control_material_almacen_smd
+    WHERE codigo_material_recibido IS NOT NULL
+      AND TRIM(codigo_material_recibido) <> ''
+    GROUP BY codigo_material_recibido
+  ) latest ON latest.latest_id = cma.id
+`;
+
 // GET /api/inventory/summary - Inventario agrupado por numero_parte
 exports.getSummary = async (req, res, next) => {
   try {
@@ -111,7 +126,8 @@ exports.getSummary = async (req, res, next) => {
         MAX(IFNULL(m.unidad_medida, 'EA')) as unidad_medida,
         MAX(COALESCE(cma.ubicacion_destino, cma.ubicacion_salida)) as ubicacion
       FROM inventario_lotes_smd il
-      LEFT JOIN control_material_almacen_smd cma ON il.codigo_material_recibido = cma.codigo_material_recibido
+      LEFT JOIN (${latestWarehousingRowsQuery}) cma
+        ON il.codigo_material_recibido = cma.codigo_material_recibido
       LEFT JOIN materiales m ON il.numero_parte = m.numero_parte
     `;
     
@@ -264,7 +280,8 @@ exports.getLots = async (req, res, next) => {
             AND (cms.cancelado = 0 OR cms.cancelado IS NULL)
         ) as usuario_salida
       FROM inventario_lotes_smd il
-      LEFT JOIN control_material_almacen_smd cma ON il.codigo_material_recibido = cma.codigo_material_recibido
+      LEFT JOIN (${latestWarehousingRowsQuery}) cma
+        ON il.codigo_material_recibido = cma.codigo_material_recibido
       LEFT JOIN materiales m ON il.numero_parte = m.numero_parte
     `;
     
@@ -419,7 +436,8 @@ exports.mobileSearch = async (req, res, next) => {
         COALESCE(cma.ubicacion_destino, cma.ubicacion_salida) AS ubicacion,
         il.codigo_material_recibido
       FROM inventario_lotes_smd il
-      LEFT JOIN control_material_almacen_smd cma ON il.codigo_material_recibido = cma.codigo_material_recibido
+      LEFT JOIN (${latestWarehousingRowsQuery}) cma
+        ON il.codigo_material_recibido = cma.codigo_material_recibido
       LEFT JOIN materiales m ON il.numero_parte = m.numero_parte
       WHERE UPPER(il.codigo_material_recibido) = ?
         AND il.stock_actual > 0
@@ -445,7 +463,8 @@ exports.mobileSearch = async (req, res, next) => {
         MAX(IFNULL(m.unidad_medida, 'EA')) AS unidad_medida,
         MAX(COALESCE(cma.ubicacion_destino, cma.ubicacion_salida)) AS ubicacion
       FROM inventario_lotes_smd il
-      LEFT JOIN control_material_almacen_smd cma ON il.codigo_material_recibido = cma.codigo_material_recibido
+      LEFT JOIN (${latestWarehousingRowsQuery}) cma
+        ON il.codigo_material_recibido = cma.codigo_material_recibido
       LEFT JOIN materiales m ON il.numero_parte = m.numero_parte
       WHERE il.stock_actual > 0
         AND UPPER(il.numero_parte) LIKE ?

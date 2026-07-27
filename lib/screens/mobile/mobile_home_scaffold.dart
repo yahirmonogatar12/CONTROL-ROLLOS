@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:material_warehousing_flutter/core/services/auth_service.dart';
 import 'package:material_warehousing_flutter/core/services/scanner_config_service.dart';
+import 'package:material_warehousing_flutter/core/services/update_service.dart';
 import 'package:material_warehousing_flutter/core/localization/app_translations.dart';
 import 'package:material_warehousing_flutter/core/theme/app_colors.dart';
 import 'package:material_warehousing_flutter/core/widgets/server_config_widget.dart';
@@ -34,8 +35,30 @@ class MobileHomeScaffold extends StatefulWidget {
 
 class _MobileHomeScaffoldState extends State<MobileHomeScaffold> {
   int _selectedIndex = 0;
+  bool _checkingForUpdates = false;
 
   String tr(String key) => widget.languageProvider.tr(key);
+
+  Future<void> _checkForUpdates({bool closeDrawer = false}) async {
+    if (_checkingForUpdates) return;
+
+    if (closeDrawer) {
+      Navigator.of(context).pop();
+    }
+    if (!mounted) return;
+
+    setState(() => _checkingForUpdates = true);
+    try {
+      await UpdateService.checkAndPrompt(
+        context,
+        showNoUpdateMessage: true,
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _checkingForUpdates = false);
+      }
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -75,6 +98,18 @@ class _MobileHomeScaffoldState extends State<MobileHomeScaffold> {
         ),
       ),
       actions: [
+        IconButton(
+          key: const Key('mobile_check_updates_button'),
+          tooltip: tr('check_updates'),
+          onPressed: _checkingForUpdates ? null : () => _checkForUpdates(),
+          icon: _checkingForUpdates
+              ? const SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.system_update, color: Colors.blue),
+        ),
         // Indicador de servidor
         const Padding(
           padding: EdgeInsets.only(right: 8),
@@ -394,6 +429,28 @@ class _MobileHomeScaffoldState extends State<MobileHomeScaffold> {
                         Navigator.pop(context);
                       },
                     ),
+                  ),
+                  ListTile(
+                    key: const Key('mobile_check_updates_drawer'),
+                    leading: _checkingForUpdates
+                        ? const SizedBox(
+                            width: 22,
+                            height: 22,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.system_update, color: Colors.blue),
+                    title: Text(
+                      tr('check_updates'),
+                      style: const TextStyle(color: Colors.white),
+                    ),
+                    subtitle: Text(
+                      '${tr('installed_version')}: ${UpdateService.currentVersion}',
+                      style:
+                          const TextStyle(color: Colors.white54, fontSize: 12),
+                    ),
+                    onTap: _checkingForUpdates
+                        ? null
+                        : () => _checkForUpdates(closeDrawer: true),
                   ),
                   const Divider(color: Colors.white24),
 

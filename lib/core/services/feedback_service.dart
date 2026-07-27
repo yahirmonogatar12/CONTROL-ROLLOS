@@ -108,6 +108,11 @@ class FeedbackService {
     await _vibrateOnly(100);
   }
 
+  /// Vibración larga: avisos que exigen que el operador mire la pantalla
+  static Future<void> vibrateLong() async {
+    await _vibrateOnly(800);
+  }
+
   /// Vibración de error (doble rápida)
   static Future<void> vibrateError() async {
     try {

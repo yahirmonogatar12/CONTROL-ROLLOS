@@ -23,7 +23,10 @@ param(
     [switch]$Clean = $false,
     [string]$DefaultServerName = "SERVER",
     [string]$DefaultServerIp = "192.168.1.10",
-    [int]$DefaultServerPort = 3010
+    [int]$DefaultServerPort = 3010,
+    # Carpeta de red donde los clientes buscan el instalador más nuevo.
+    [string]$UpdateShare = "\\192.168.1.10\updates\SMT\PC",
+    [switch]$SkipPublishShare = $false
 )
 
 # Configuración
@@ -529,6 +532,23 @@ Filename: "{app}\Detener.bat"; Flags: runhidden; RunOnceId: "StopControlInventar
     }
 
     Write-Success "Instalador creado: $InstallerPath"
+
+    # Publicar en la carpeta de red: los clientes se actualizan desde aquí.
+    if (-not $SkipPublishShare -and $UpdateShare -and $UpdateShare.Trim() -ne "") {
+        Write-Info "Publicando instalador en el share de actualizaciones..."
+        try {
+            if (-not (Test-Path -LiteralPath $UpdateShare)) {
+                New-Item -ItemType Directory -Path $UpdateShare -Force -ErrorAction Stop | Out-Null
+            }
+            $SharedInstaller = Join-Path $UpdateShare "$InstallerName.exe"
+            Copy-Item -Force -LiteralPath $InstallerPath -Destination $SharedInstaller -ErrorAction Stop
+            Write-Success "Instalador publicado en: $SharedInstaller"
+        }
+        catch {
+            Write-Warning "No se pudo publicar en el share ($UpdateShare): $($_.Exception.Message)"
+            Write-Warning "Copia manualmente '$InstallerPath' a '$UpdateShare'."
+        }
+    }
 }
 
 # Resumen final
@@ -543,6 +563,9 @@ Write-Host "Archivos generados:" -ForegroundColor White
 Write-Host "  - Aplicación: $OutputDir" -ForegroundColor Gray
 if (-not $SkipInstaller -and (Test-Path "$DistDir\$InstallerName.exe")) {
     Write-Host "  - Instalador: $DistDir\$InstallerName.exe" -ForegroundColor Gray
+}
+if (-not $SkipInstaller -and -not $SkipPublishShare -and (Test-Path -LiteralPath (Join-Path $UpdateShare "$InstallerName.exe"))) {
+    Write-Host "  - Publicado en share: $UpdateShare\$InstallerName.exe" -ForegroundColor Gray
 }
 Write-Host ""
 Write-Host "Servidor por defecto: $DefaultServerName ($DefaultServerIp`:$DefaultServerPort)" -ForegroundColor White

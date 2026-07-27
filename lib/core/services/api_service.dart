@@ -3495,7 +3495,8 @@ class ApiService {
         if (body['success'] == false) {
           return {
             'success': false,
-            'error': body['error'] ?? 'Error al escanear'
+            'error': body['error'] ?? 'Error al escanear',
+            'code': body['code'],
           };
         }
         return {'success': true, 'data': body};
@@ -3503,7 +3504,8 @@ class ApiService {
       final error = json.decode(response.body);
       return {
         'success': false,
-        'error': error['error'] ?? 'Error al escanear material'
+        'error': error['error'] ?? 'Error al escanear material',
+        'code': error['code'],
       };
     } catch (e) {
       print('Error en scanAuditPartItem: $e');

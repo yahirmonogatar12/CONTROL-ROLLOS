@@ -5,6 +5,10 @@
 const { pool, getMexicoDate } = require('../config/database');
 const { findMaterialConfig } = require('../utils/partNumberHelper');
 const { getNextLabelSequenceSafe, getNextLabelSequencePreview, getNextInternalLotSequenceSafe, reserveLabelSequences } = require('../utils/sequenceService');
+const {
+  normalizeWarehouseLocation,
+  warehouseLocationKey,
+} = require('../utils/warehouseLocations');
 
 const WAREHOUSE_OUTGOING_START_DATE = process.env.WAREHOUSE_OUTGOING_START_DATE || getMexicoDate();
 const WAREHOUSE_OUTGOING_START_DATETIME = `${WAREHOUSE_OUTGOING_START_DATE} 00:00:00`;
@@ -233,30 +237,92 @@ const smartSearch = async (req, res, next) => {
 // GET /api/warehousing/parts-by-location/:location - Partes con stock en una ubicación
 const getPartsByLocation = async (req, res, next) => {
   try {
-    const location = String(req.params.location || '').trim().toUpperCase();
+    const location = normalizeWarehouseLocation(req.params.location);
     if (!location) {
       return res.status(400).json({ error: 'Se requiere ubicación' });
     }
+    const locationKey = warehouseLocationKey(location);
 
     const [rows] = await pool.query(`
+      WITH canonical_lots AS (
+        SELECT
+          codigo_material_recibido,
+          MAX(stock_actual) AS stock_actual
+        FROM inventario_lotes_smd
+        GROUP BY codigo_material_recibido
+      ),
+      latest_warehouse AS (
+        SELECT cma.*
+        FROM control_material_almacen_smd cma
+        INNER JOIN (
+          SELECT codigo_material_recibido, MAX(id) AS latest_id
+          FROM control_material_almacen_smd
+          GROUP BY codigo_material_recibido
+        ) latest ON latest.latest_id = cma.id
+        WHERE cma.cancelado = 0
+      ),
+      location_stock AS (
+        SELECT
+          lw.numero_parte,
+          COUNT(*) AS rollos,
+          SUM(cl.stock_actual) AS cantidad_total,
+          MAX(lw.especificacion) AS especificacion
+        FROM latest_warehouse lw
+        INNER JOIN canonical_lots cl
+          ON cl.codigo_material_recibido = lw.codigo_material_recibido
+        WHERE cl.stock_actual > 0
+          AND REPLACE(
+            UPPER(
+              TRIM(
+                COALESCE(
+                  NULLIF(TRIM(lw.ubicacion_destino), ''),
+                  lw.ubicacion_salida
+                )
+              )
+            ),
+            ' ',
+            ''
+          ) = ?
+        GROUP BY lw.numero_parte
+      ),
+      candidate_parts AS (
+        SELECT m.numero_parte
+        FROM materiales m
+        WHERE m.activo = 1
+          AND (
+            FIND_IN_SET(
+              ?,
+              REPLACE(UPPER(COALESCE(m.ubicacion_rollos, '')), ' ', '')
+            ) > 0
+            OR FIND_IN_SET(
+              ?,
+              REPLACE(UPPER(COALESCE(m.ubicacion_material, '')), ' ', '')
+            ) > 0
+          )
+
+        UNION
+
+        SELECT ls.numero_parte
+        FROM location_stock ls
+      )
       SELECT
-        cma.numero_parte,
-        MAX(COALESCE(m.especificacion_material, cma.especificacion)) AS especificacion_material,
-        MAX(m.codigo_material) AS codigo_material,
-        MAX(IFNULL(m.unidad_medida, 'EA')) AS unidad_medida,
-        COUNT(*) AS rollos,
-        SUM(cma.cantidad_actual) AS cantidad_total
-      FROM control_material_almacen_smd cma
-      LEFT JOIN materiales m ON m.numero_parte = cma.numero_parte
-      WHERE UPPER(COALESCE(cma.ubicacion_destino, cma.ubicacion_salida)) = ?
-        AND cma.cancelado = 0
-        AND cma.cantidad_actual > 0
-      GROUP BY cma.numero_parte
-      ORDER BY cma.numero_parte
-    `, [location]);
+        cp.numero_parte,
+        COALESCE(m.especificacion_material, ls.especificacion)
+          AS especificacion_material,
+        m.codigo_material,
+        COALESCE(m.unidad_medida, 'EA') AS unidad_medida,
+        COALESCE(ls.rollos, 0) AS rollos,
+        COALESCE(ls.cantidad_total, 0) AS cantidad_total
+      FROM candidate_parts cp
+      LEFT JOIN materiales m ON m.numero_parte = cp.numero_parte
+      LEFT JOIN location_stock ls ON ls.numero_parte = cp.numero_parte
+      ORDER BY cp.numero_parte
+    `, [locationKey, locationKey, locationKey]);
 
     if (rows.length === 0) {
-      return res.status(404).json({ error: 'No hay materiales en esa ubicación' });
+      return res.status(404).json({
+        error: 'No hay materiales configurados ni con stock en esa ubicación'
+      });
     }
 
     res.json({ location, count: rows.length, parts: rows });

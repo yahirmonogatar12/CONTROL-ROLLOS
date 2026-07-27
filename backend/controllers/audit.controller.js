@@ -209,6 +209,9 @@ function auditRecoveryError(code, error, extra = {}) {
   return { success: false, code, error, ...extra };
 }
 
+// La etiqueta escaneada en la auditoria existe fisicamente, asi que un registro
+// cancelado o rechazado no la oculta: solo se prefiere el registro limpio si hay
+// varios. Al darle entrada se reactiva (ver insertAutomaticAuditWarehouseEntry).
 async function findAutomaticAuditEntrySource(connection, warehousingCode) {
   const [warehouseRows] = await connection.query(`
     SELECT
@@ -217,12 +220,12 @@ async function findAutomaticAuditEntrySource(connection, warehousingCode) {
       m.unidad_medida AS catalog_unidad_medida,
       m.ubicacion_material,
       m.vendedor AS material_vendedor,
+      m.propiedad_material AS catalog_propiedad_material,
       'control_material_almacen' AS source_table
     FROM control_material_almacen cma
     LEFT JOIN materiales m ON m.numero_parte = cma.numero_parte
     WHERE cma.codigo_material_recibido = ?
-      AND (cma.cancelado = 0 OR cma.cancelado IS NULL)
-    ORDER BY cma.id DESC
+    ORDER BY COALESCE(cma.cancelado, 0) ASC, cma.id DESC
     LIMIT 1
     FOR UPDATE
   `, [warehousingCode]);
@@ -242,6 +245,8 @@ async function findAutomaticAuditEntrySource(connection, warehousingCode) {
       cms.vendedor,
       cms.fecha_salida AS fecha_recibo,
       cms.usuario_registro,
+      cms.cancelado,
+      cms.rechazado,
       m.codigo_material,
       m.codigo_material AS codigo_material_final,
       m.propiedad_material,
@@ -256,9 +261,7 @@ async function findAutomaticAuditEntrySource(connection, warehousingCode) {
     FROM control_material_salida cms
     LEFT JOIN materiales m ON m.numero_parte = cms.numero_parte
     WHERE cms.codigo_material_recibido = ?
-      AND (cms.cancelado = 0 OR cms.cancelado IS NULL)
-      AND (cms.rechazado = 0 OR cms.rechazado IS NULL)
-    ORDER BY cms.id DESC
+    ORDER BY COALESCE(cms.cancelado, 0) ASC, COALESCE(cms.rechazado, 0) ASC, cms.id DESC
     LIMIT 1
     FOR UPDATE
   `, [warehousingCode]);
@@ -297,13 +300,17 @@ async function insertAutomaticAuditWarehouseEntry(
     );
   }
 
-  if (
-    source.propiedad_material
-    && String(source.propiedad_material).trim().toUpperCase() !== 'SMD'
-  ) {
+  // El dueño del material vive en el catálogo `materiales`. En
+  // control_material_almacen la columna propiedad_material siempre vale
+  // 'Customer Supply' (tipo de suministro), asi que no sirve para este filtro.
+  const ownership = String(
+    source.catalog_propiedad_material ?? source.propiedad_material ?? ''
+  ).trim().toUpperCase();
+
+  if (ownership && ownership !== 'SMD' && ownership !== 'CUSTOMER SUPPLY') {
     return auditRecoveryError(
       'MATERIAL_NOT_SMD',
-      'El material no pertenece al almacén SMD'
+      `El material pertenece al almacén ${ownership}, no a SMD`
     );
   }
 
@@ -357,7 +364,7 @@ async function insertAutomaticAuditWarehouseEntry(
     partNumber,
     source.cantidad_estandarizada || null,
     source.codigo_material_final || source.codigo_material || null,
-    source.propiedad_material || 'SMD',
+    'SMD', // el resto de control_material_almacen_smd usa 'SMD' sin excepcion
     source.especificacion || source.especificacion_material || null,
     source.material_importacion_local_final || null,
     location,
@@ -372,10 +379,16 @@ async function insertAutomaticAuditWarehouseEntry(
     source.inspection_lot_sequence || 1
   ]);
 
+  // El conteo fisico manda: si el registro origen estaba cancelado/rechazado se
+  // reactiva junto con la entrada, para que almacen e inventario coincidan.
+  const sourceWasVoided = Number(source.cancelado || 0) === 1
+    || Number(source.rechazado || 0) === 1;
+
   if (source.source_table === 'control_material_almacen') {
     await connection.query(`
       UPDATE control_material_almacen
-      SET confirmado_smd = 1,
+      SET cancelado = 0,
+          confirmado_smd = 1,
           confirmado_smd_por = ?,
           confirmado_smd_at = NOW()
       WHERE id = ?
@@ -383,7 +396,9 @@ async function insertAutomaticAuditWarehouseEntry(
   } else if (source.source_table === 'control_material_salida') {
     await connection.query(`
       UPDATE control_material_salida
-      SET confirmado = 1,
+      SET cancelado = 0,
+          rechazado = 0,
+          confirmado = 1,
           confirmado_por = ?,
           confirmado_at = NOW()
       WHERE id = ?
@@ -393,7 +408,8 @@ async function insertAutomaticAuditWarehouseEntry(
   return {
     success: true,
     warehousingId: insertResult.insertId,
-    quantity
+    quantity,
+    sourceWasVoided
   };
 }
 
@@ -544,6 +560,88 @@ async function ensureAutomaticMaterialInAudit(
   return true;
 }
 
+// Confirmacion fisica durante la auditoria: si la etiqueta se escanea en una
+// ubicacion distinta a la registrada, el material se mueve a la escaneada en
+// lugar de rechazar el escaneo (el operador tiene el material en la mano).
+// Devuelve true si hubo reubicacion.
+async function relocateAuditMaterial(db, auditId, {
+  warehousingId,
+  warehousingCode,
+  numeroParte,
+  fromLocation,
+  toLocation,
+  usuario
+}) {
+  const from = String(fromLocation || '').trim();
+  const to = String(toLocation || '').trim();
+  if (!from || !to || from === to) return false;
+
+  if (warehousingId) {
+    await db.query(`
+      UPDATE control_material_almacen_smd
+      SET tiene_salida = 0,
+          ubicacion_anterior = ?,
+          ubicacion_salida = ?,
+          ubicacion_destino = ?,
+          fecha_reingreso = NOW(),
+          usuario_reingreso = ?
+      WHERE id = ?
+    `, [from, to, to, usuario || 'Mobile', warehousingId]);
+  }
+
+  await db.query(`
+    UPDATE inventory_audit_item_smd
+    SET location = ?,
+        notas = CONCAT_WS(' | ', NULLIF(notas, ''), ?)
+    WHERE audit_id = ? AND warehousing_code = ?
+  `, [to, `Reubicado de ${from} a ${to} por confirmacion fisica en auditoria`, auditId, warehousingCode]);
+
+  await db.query(`
+    INSERT IGNORE INTO inventory_audit_part_smd (
+      audit_id, location, numero_parte, expected_items, expected_qty,
+      status, flagged_by, flagged_at
+    ) VALUES (?, ?, ?, 0, 0, 'Mismatch', ?, NOW())
+  `, [auditId, to, numeroParte, usuario || 'Mobile']);
+
+  // Contadores esperados de origen y destino: recalcular desde los items.
+  await db.query(`
+    UPDATE inventory_audit_part_smd iap
+    SET expected_items = (
+          SELECT COUNT(*)
+          FROM inventory_audit_item_smd iai
+          LEFT JOIN control_material_almacen_smd cma ON cma.id = iai.warehousing_id
+          WHERE iai.audit_id = iap.audit_id
+            AND iai.location = iap.location
+            AND ${AUDIT_ITEM_PART_EXPR} = iap.numero_parte
+        ),
+        expected_qty = (
+          SELECT COALESCE(SUM(${AUDIT_ITEM_QTY_EXPR}), 0)
+          FROM inventory_audit_item_smd iai
+          LEFT JOIN control_material_almacen_smd cma ON cma.id = iai.warehousing_id
+          WHERE iai.audit_id = iap.audit_id
+            AND iai.location = iap.location
+            AND ${AUDIT_ITEM_PART_EXPR} = iap.numero_parte
+        )
+    WHERE iap.audit_id = ? AND iap.numero_parte = ? AND iap.location IN (?, ?)
+  `, [auditId, numeroParte, from, to]);
+
+  await db.query(`
+    UPDATE inventory_audit_location_smd ial
+    SET total_items = (
+          SELECT COUNT(*) FROM inventory_audit_item_smd iai
+          WHERE iai.audit_id = ial.audit_id AND iai.location = ial.location
+        ),
+        total_qty = (
+          SELECT COALESCE(SUM(COALESCE(iai.physical_quantity, iai.cantidad_snapshot)), 0)
+          FROM inventory_audit_item_smd iai
+          WHERE iai.audit_id = ial.audit_id AND iai.location = ial.location
+        )
+    WHERE ial.audit_id = ? AND ial.location IN (?, ?)
+  `, [auditId, from, to]);
+
+  return true;
+}
+
 async function recoverAuditMaterialForScan(
   auditId,
   warehousingCode,
@@ -569,21 +667,13 @@ async function recoverAuditMaterialForScan(
     `, [auditId, normalizedCode]);
 
     const snapshotLocation = String(snapshotRows[0]?.location || '').trim();
-    if (
+    // El escaneo confirma fisicamente donde esta el material: si el snapshot lo
+    // tenia en otra ubicacion, se reubica a la escaneada (no se rechaza).
+    const relocatedFrom = (
       snapshotLocation
       && normalizedRequestedLocation
       && snapshotLocation !== normalizedRequestedLocation
-    ) {
-      await connection.rollback();
-      return auditRecoveryError(
-        'WRONG_LOCATION',
-        `El material está registrado en ${snapshotLocation}, no en ${normalizedRequestedLocation}`,
-        {
-          expectedLocation: snapshotLocation,
-          scannedLocation: normalizedRequestedLocation
-        }
-      );
-    }
+    ) ? snapshotLocation : null;
 
     const [existingRows] = await connection.query(`
       SELECT
@@ -602,7 +692,8 @@ async function recoverAuditMaterialForScan(
     `, [normalizedCode]);
 
     let action = 'none';
-    let targetLocation = snapshotLocation || normalizedRequestedLocation;
+    // La ubicacion escaneada manda sobre el snapshot: es la fisica confirmada.
+    let targetLocation = normalizedRequestedLocation || snapshotLocation;
     let warehousingId = null;
 
     if (existingRows.length > 0) {
@@ -725,7 +816,7 @@ async function recoverAuditMaterialForScan(
         action === 'none'
         && (
           Number(material.tiene_salida || 0) === 1
-          || (!snapshotLocation && currentLocation !== targetLocation)
+          || currentLocation !== targetLocation
         )
       ) {
         action = 'automatic_reentry';
@@ -824,12 +915,24 @@ async function recoverAuditMaterialForScan(
       action
     );
 
+    if (relocatedFrom) {
+      await relocateAuditMaterial(connection, auditId, {
+        warehousingId: recoveredMaterial.warehousing_id,
+        warehousingCode: normalizedCode,
+        numeroParte: recoveredMaterial.numero_parte,
+        fromLocation: relocatedFrom,
+        toLocation: targetLocation,
+        usuario: userName
+      });
+    }
+
     await connection.commit();
     return {
       success: true,
-      material: recoveredMaterial,
+      material: { ...recoveredMaterial, location: targetLocation },
       action,
-      automaticEntry: action !== 'none'
+      automaticEntry: action !== 'none',
+      relocatedFrom
     };
   } catch (err) {
     await connection.rollback();
@@ -2108,16 +2211,23 @@ const scanItem = async (req, res, next) => {
     mat.id = mat.warehousing_id;
     mat.ubicacion_salida = mat.location;
 
-    // Verificar si la ubicacion coincide (si se proporciono)
-    // Esto evita que se marque Found en ubicacion equivocada
-    if (location && mat.location !== location) {
-      return res.json({
-        success: false,
-        error: `El material está registrado en ${mat.ubicacion_salida}, no en ${location}`,
-        code: 'WRONG_LOCATION',
-        expectedLocation: mat.ubicacion_salida,
-        scannedLocation: location
+    // El escaneo confirma fisicamente el material en esta ubicacion: si estaba
+    // registrado en otra, se reubica (reingreso) en vez de rechazar el escaneo.
+    const directRelocationFrom = location && mat.location !== location
+      ? String(mat.location || '').trim()
+      : null;
+    const relocatedFrom = automaticRecovery?.relocatedFrom || directRelocationFrom;
+    if (directRelocationFrom) {
+      await relocateAuditMaterial(pool, auditId, {
+        warehousingId: mat.id,
+        warehousingCode: warehousing_code,
+        numeroParte: mat.numero_parte,
+        fromLocation: directRelocationFrom,
+        toLocation: location,
+        usuario
       });
+      mat.location = location;
+      mat.ubicacion_salida = location;
     }
 
     // Verificar si ya fue escaneado para evitar duplicados
@@ -2188,13 +2298,17 @@ const scanItem = async (req, res, next) => {
 
     res.json({
       success: true,
-      message: automaticRecovery?.automaticEntry
-        ? 'Material ingresado automáticamente y verificado'
-        : 'Material verificado',
+      message: relocatedFrom
+        ? `Material reubicado de ${relocatedFrom} a ${location} y verificado`
+        : automaticRecovery?.automaticEntry
+          ? 'Material ingresado automáticamente y verificado'
+          : 'Material verificado',
       warehousingCode: warehousing_code,
       partNumber: mat.numero_parte,
       location: mat.ubicacion_salida,
-      automaticEntry: automaticRecovery?.automaticEntry === true,
+      relocated: relocatedFrom !== null,
+      relocatedFrom,
+      automaticEntry: automaticRecovery?.automaticEntry === true || relocatedFrom !== null,
       inventoryAction: automaticRecovery?.action || 'none',
       locationComplete: isLocationComplete,
       locationStats: {
@@ -3181,16 +3295,18 @@ const scanPartItem = async (req, res, next) => {
       });
     }
 
-    // Verificar ubicaci??n
+    // Ubicacion: el escaneo confirma fisicamente el material aqui, asi que si
+    // estaba registrado en otra ubicacion se reubica en vez de rechazarlo.
     const matLocation = String(mat.ubicacion_salida ?? '').trim();
-
-    if (matLocation !== normalizedLocation) {
-      return res.json({
-        success: false,
-        error: `El material est?? en ${matLocation}, no en ${normalizedLocation}`,
-        code: 'WRONG_LOCATION'
-      });
-    }
+    const relocated = await relocateAuditMaterial(pool, auditId, {
+      warehousingId: mat.id,
+      warehousingCode: normalizedCode,
+      numeroParte: normalizedPart,
+      fromLocation: matLocation,
+      toLocation: normalizedLocation,
+      usuario
+    });
+    if (relocated) mat.ubicacion_salida = normalizedLocation;
 
     // Verificar si ya fue escaneado
     const [existing] = await pool.query(`
@@ -3228,14 +3344,20 @@ const scanPartItem = async (req, res, next) => {
       SELECT expected_items, scanned_items FROM inventory_audit_part_smd WHERE id = ?
     `, [partRecord[0].id]);
 
+    const relocatedFrom = automaticRecovery?.relocatedFrom
+      || (relocated ? matLocation : null);
     const response = {
       success: true,
-      message: automaticRecovery?.automaticEntry
-        ? 'Material ingresado automáticamente y escaneado'
-        : 'Material escaneado',
+      message: relocatedFrom
+        ? `Material reubicado de ${relocatedFrom} a ${normalizedLocation} y escaneado`
+        : automaticRecovery?.automaticEntry
+          ? 'Material ingresado automáticamente y escaneado'
+          : 'Material escaneado',
       warehousingCode: normalizedCode,
       partNumber: mat.numero_parte,
-      automaticEntry: automaticRecovery?.automaticEntry === true,
+      relocated: relocatedFrom !== null,
+      relocatedFrom,
+      automaticEntry: automaticRecovery?.automaticEntry === true || relocatedFrom !== null,
       inventoryAction: automaticRecovery?.action || 'none',
       progress: {
         scanned: updatedPart[0].scanned_items,
@@ -3847,6 +3969,7 @@ const rejectDiscrepancy = async (req, res, next) => {
 module.exports = {
   setWebSocketServer,
   broadcastAuditUpdate,
+  relocateAuditMaterial,
   getActiveAudit,
   startAudit,
   endAudit,

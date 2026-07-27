@@ -16,5 +16,18 @@ void main() {
     );
 
     expect(find.text('Sin acceso'), findsOneWidget);
+    expect(
+      find.byKey(const Key('mobile_check_updates_button')),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.byIcon(Icons.menu));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const Key('mobile_check_updates_drawer')),
+      findsOneWidget,
+    );
+    expect(find.text('Check for updates'), findsOneWidget);
   });
 }

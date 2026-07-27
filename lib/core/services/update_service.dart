@@ -1,8 +1,10 @@
 import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
+import 'package:smb_connect/smb_connect.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 /// Configuración de GitHub (se conserva solo para UpdateInfo.fromGitHub / tests).
@@ -37,6 +39,20 @@ class UpdateShareConfig {
     if (parts.length < 2) return pcSharePath;
     return '\\\\${parts[0]}\\${parts[1]}';
   }
+}
+
+/// En Android la ruta UNC se consume mediante SMB 2.x. `updates` es el recurso
+/// compartido y `SMT/ANDROID` es la carpeta relativa dentro de ese recurso.
+class AndroidUpdateShareConfig {
+  static const String host = '192.168.1.10';
+  static const String share = 'updates';
+  static const String directory = 'SMT/ANDROID';
+  static const String apkPrefix = 'Control_inventario_SMD_v';
+
+  static String remotePath(String fileName) => '/$share/$directory/$fileName';
+
+  static String downloadUrl(String fileName) =>
+      'smb://$host/$share/$directory/${Uri.encodeComponent(fileName)}';
 }
 
 /// Información de una actualización disponible
@@ -163,11 +179,17 @@ class _UpdateCheckAttempt {
 class _UpdateShareCredentials {
   final String username;
   final String password;
+  final String domain;
 
   const _UpdateShareCredentials({
     required this.username,
     required this.password,
+    required this.domain,
   });
+
+  String get windowsUsername => domain.isNotEmpty && !username.contains('@')
+      ? '$domain\\$username'
+      : username;
 }
 
 /// Servicio para manejar actualizaciones de la aplicación
@@ -178,6 +200,10 @@ class UpdateService {
   static double _downloadProgress = 0.0;
   static String? _lastCheckError;
   static String? _lastDownloadError;
+  static String? _lastAndroidApkPath;
+  static String? _lastAndroidApkVersion;
+  static const MethodChannel _androidUpdateChannel =
+      MethodChannel('control_inventario_smd/app_update');
 
   /// Versión actual de la aplicación
   static String get currentVersion => _currentVersion ?? '0.0.0';
@@ -200,15 +226,19 @@ class UpdateService {
   /// Cargar la versión actual desde VERSION.txt
   static Future<void> loadCurrentVersion() async {
     try {
+      final versionFileName =
+          Platform.isAndroid ? 'VERSION_ANDROID.txt' : 'VERSION.txt';
       // En modo release, el VERSION.txt está en el directorio de la app
       final exePath = Platform.resolvedExecutable;
       final exeDir = File(exePath).parent.path;
 
       // Intentar diferentes ubicaciones
       final possiblePaths = [
-        '$exeDir\\data\\flutter_assets\\assets\\VERSION.txt',
-        '$exeDir\\VERSION.txt',
-        'assets/VERSION.txt',
+        '$exeDir\\data\\flutter_assets\\assets\\$versionFileName',
+        '$exeDir\\data\\flutter_assets\\$versionFileName',
+        '$exeDir\\$versionFileName',
+        'assets/$versionFileName',
+        versionFileName,
       ];
 
       for (final path in possiblePaths) {
@@ -219,6 +249,14 @@ class UpdateService {
           return;
         }
       }
+
+      try {
+        _currentVersion = (await rootBundle.loadString(versionFileName)).trim();
+        debugPrint(
+          '📱 App version loaded from Flutter asset $versionFileName: $_currentVersion',
+        );
+        return;
+      } catch (_) {}
 
       // Si no se encuentra, usar versión por defecto
       _currentVersion = '1.0.0';
@@ -243,10 +281,15 @@ class UpdateService {
         await loadCurrentVersion();
       }
 
-      final attempt = await _attemptUpdateCheck(
-        'servidor de actualizaciones',
-        _checkNetworkShare,
-      );
+      final attempt = Platform.isAndroid
+          ? await _attemptUpdateCheck(
+              'servidor de actualizaciones Android',
+              _checkAndroidNetworkShare,
+            )
+          : await _attemptUpdateCheck(
+              'servidor de actualizaciones',
+              _checkNetworkShare,
+            );
       if (attempt.info != null) {
         _logUpdateInfo(attempt.source, attempt.info!);
         return attempt.info;
@@ -309,6 +352,41 @@ class UpdateService {
     );
   }
 
+  /// Consulta por SMB los APKs de \\192.168.1.10\updates\SMT\ANDROID.
+  static Future<UpdateInfo> _checkAndroidNetworkShare() async {
+    final connection = await _connectToAndroidUpdateShare();
+    try {
+      final folder = await connection.file(
+        '/${AndroidUpdateShareConfig.share}/${AndroidUpdateShareConfig.directory}/',
+      );
+      final files = await connection.listFiles(folder);
+      final apkFiles = files
+          .where((file) =>
+              file.isFile() && file.name.toLowerCase().endsWith('.apk'))
+          .toList();
+      final latest = pickLatestAndroidApk(
+        apkFiles.map((file) => file.name),
+      );
+      if (latest == null) {
+        throw const FormatException(
+          'no hay APKs con versión en la carpeta de actualizaciones Android',
+        );
+      }
+
+      final hasUpdate =
+          UpdateInfo._compareVersions(latest.version, currentVersion) > 0;
+      return UpdateInfo(
+        updateAvailable: hasUpdate,
+        currentVersion: currentVersion,
+        latestVersion: latest.version,
+        downloadUrl: AndroidUpdateShareConfig.downloadUrl(latest.fileName),
+        isMandatory: false,
+      );
+    } finally {
+      await connection.close();
+    }
+  }
+
   /// De una lista de nombres de archivo, regresa la versión más alta de un
   /// instalador Control_inventario_SMD_Setup_vX.Y.Z.exe, o null si no hay.
   /// Público para poder testear el parseo sin tocar el sistema de archivos.
@@ -325,6 +403,29 @@ class UpdateService {
       final version = match.group(1)!;
       if (best == null || UpdateInfo._compareVersions(version, best) > 0) {
         best = version;
+      }
+    }
+    return best;
+  }
+
+  /// Acepta nombres como Control_inventario_SMD_v1.2.3.apk,
+  /// app-release-1.2.3.apk o cualquier APK que termine con una versión.
+  static ({String fileName, String version})? pickLatestAndroidApk(
+    Iterable<String> fileNames,
+  ) {
+    final versionPattern = RegExp(
+      r'(\d+(?:\.\d+){1,3})(?=[^0-9]*\.apk$)',
+      caseSensitive: false,
+    );
+    ({String fileName, String version})? best;
+    for (final rawName in fileNames) {
+      final fileName = rawName.trim();
+      final match = versionPattern.firstMatch(fileName);
+      if (match == null) continue;
+      final version = match.group(1)!;
+      if (best == null ||
+          UpdateInfo._compareVersions(version, best.version) > 0) {
+        best = (fileName: fileName, version: version);
       }
     }
     return best;
@@ -358,7 +459,7 @@ class UpdateService {
         'use',
         UpdateShareConfig.shareRoot,
         credentials.password,
-        '/user:${credentials.username}',
+        '/user:${credentials.windowsUsername}',
         '/persistent:no',
       ],
       runInShell: false,
@@ -385,26 +486,64 @@ class UpdateService {
       if (!await file.exists()) continue;
 
       final values = parseEnvContent(await file.readAsString());
-      final rawUsername = values[UpdateShareConfig.usernameKey]?.trim();
-      final password = values[UpdateShareConfig.passwordKey];
-      if (rawUsername == null ||
-          rawUsername.isEmpty ||
-          password == null ||
-          password.isEmpty) {
-        continue;
-      }
+      final credentials = _credentialsFromValues(values);
+      if (credentials != null) return credentials;
+    }
 
-      final domain = values[UpdateShareConfig.domainKey]?.trim();
-      final username = domain != null &&
-              domain.isNotEmpty &&
-              !rawUsername.contains('\\') &&
-              !rawUsername.contains('@')
-          ? '$domain\\$rawUsername'
-          : rawUsername;
-      return _UpdateShareCredentials(username: username, password: password);
+    // En Android no existe un archivo junto al ejecutable. El build incorpora
+    // el mismo .env como asset para que el cliente SMB pueda autenticarse.
+    if (Platform.isAndroid) {
+      try {
+        final values = parseEnvContent(await rootBundle.loadString('.env'));
+        return _credentialsFromValues(values);
+      } catch (_) {
+        return null;
+      }
     }
 
     return null;
+  }
+
+  static _UpdateShareCredentials? _credentialsFromValues(
+    Map<String, String> values,
+  ) {
+    var username = values[UpdateShareConfig.usernameKey]?.trim();
+    final password = values[UpdateShareConfig.passwordKey];
+    var domain = values[UpdateShareConfig.domainKey]?.trim() ?? '';
+    if (username == null ||
+        username.isEmpty ||
+        password == null ||
+        password.isEmpty) {
+      return null;
+    }
+
+    final separator = username.indexOf('\\');
+    if (separator > 0 && separator < username.length - 1) {
+      if (domain.isEmpty) domain = username.substring(0, separator);
+      username = username.substring(separator + 1);
+    }
+
+    return _UpdateShareCredentials(
+      username: username,
+      password: password,
+      domain: domain,
+    );
+  }
+
+  static Future<SmbConnect> _connectToAndroidUpdateShare() async {
+    final credentials = await _loadShareCredentials();
+    if (credentials == null) {
+      throw const FileSystemException(
+        'faltan las credenciales SMB de actualizaciones en el .env del APK',
+      );
+    }
+
+    return SmbConnect.connectAuth(
+      host: AndroidUpdateShareConfig.host,
+      username: credentials.username,
+      password: credentials.password,
+      domain: credentials.domain,
+    ).timeout(const Duration(seconds: 15));
   }
 
   /// Parser pequeño para no agregar otra dependencia solo para leer `.env`.
@@ -457,6 +596,13 @@ class UpdateService {
     Function(double)? onProgress,
   }) async {
     if (_isDownloading) return false;
+    if (Platform.isAndroid) {
+      return _downloadAndInstallAndroidApk(
+        version,
+        downloadUrl: downloadUrl,
+        onProgress: onProgress,
+      );
+    }
 
     http.Client? client;
     IOSink? sink;
@@ -588,6 +734,164 @@ class UpdateService {
     }
   }
 
+  static Future<bool> _downloadAndInstallAndroidApk(
+    String version, {
+    String? downloadUrl,
+    Function(double)? onProgress,
+  }) async {
+    File? partialFile;
+    IOSink? sink;
+    SmbConnect? connection;
+    try {
+      _isDownloading = true;
+      _downloadProgress = 0.0;
+      _lastDownloadError = null;
+
+      final normalizedVersion =
+          version.startsWith('v') ? version.substring(1) : version;
+      final remoteFileName = _androidApkFileName(
+        downloadUrl,
+        normalizedVersion,
+      );
+      final downloadsDir =
+          await getExternalStorageDirectory() ?? await getTemporaryDirectory();
+      final generatedApkPath =
+          '${downloadsDir.path}${Platform.pathSeparator}Control_inventario_SMD_$normalizedVersion.apk';
+      final shouldReuseDownloadedApk =
+          _lastAndroidApkVersion == normalizedVersion &&
+              _lastAndroidApkPath != null;
+      final apkPath =
+          shouldReuseDownloadedApk ? _lastAndroidApkPath! : generatedApkPath;
+      final apkFile = File(apkPath);
+
+      if (shouldReuseDownloadedApk &&
+          await apkFile.exists() &&
+          await apkFile.length() >= 1024 * 1024) {
+        _downloadProgress = 1.0;
+        onProgress?.call(1.0);
+        debugPrint('📦 Reintentando APK ya descargado: $apkPath');
+      } else {
+        partialFile = File('$apkPath.part');
+        if (await partialFile.exists()) await partialFile.delete();
+
+        connection = await _connectToAndroidUpdateShare();
+        final remoteFile = await connection.file(
+          AndroidUpdateShareConfig.remotePath(remoteFileName),
+        );
+        final stream = await connection.openRead(remoteFile);
+        sink = partialFile.openWrite();
+        final totalBytes = remoteFile.size;
+        var downloadedBytes = 0;
+
+        await for (final chunk in stream.timeout(const Duration(seconds: 30))) {
+          sink.add(chunk);
+          downloadedBytes += chunk.length;
+          if (totalBytes > 0) {
+            _downloadProgress = downloadedBytes / totalBytes;
+            onProgress?.call(_downloadProgress);
+          }
+        }
+
+        await sink.flush();
+        await sink.close();
+        sink = null;
+
+        if (downloadedBytes < 1024 * 1024) {
+          throw const FormatException(
+            'el APK copiado es demasiado pequeño o está incompleto',
+          );
+        }
+        if (totalBytes > 0 && downloadedBytes != totalBytes) {
+          throw FileSystemException(
+            'copia SMB incompleta: $downloadedBytes de $totalBytes bytes',
+          );
+        }
+
+        final randomAccess = await partialFile.open();
+        final signature = await randomAccess.read(2);
+        await randomAccess.close();
+        if (signature.length != 2 ||
+            signature[0] != 0x50 ||
+            signature[1] != 0x4B) {
+          throw const FormatException(
+            'el archivo del servidor no es un APK válido',
+          );
+        }
+
+        if (await apkFile.exists()) await apkFile.delete();
+        await partialFile.rename(apkPath);
+        partialFile = null;
+        _lastAndroidApkPath = apkPath;
+        _lastAndroidApkVersion = normalizedVersion;
+        _downloadProgress = 1.0;
+        onProgress?.call(1.0);
+      }
+
+      final installResult = await _openAndroidApkInstaller(apkPath);
+      if (installResult == 'opened') return true;
+      if (installResult == 'permissionRequired') {
+        _lastDownloadError =
+            'Activa "Permitir de esta fuente" y presiona Descargar e Instalar otra vez. El APK ya quedó descargado.';
+      } else {
+        _lastDownloadError ??= 'Android no pudo abrir el instalador del APK.';
+      }
+      return false;
+    } catch (error) {
+      _lastDownloadError =
+          'No se pudo descargar o abrir el APK: ${_friendlyNetworkError(error)}';
+      debugPrint('❌ Error updating Android from SMB: $error');
+      return false;
+    } finally {
+      try {
+        await sink?.close();
+      } catch (_) {}
+      try {
+        await connection?.close();
+      } catch (_) {}
+      if (partialFile != null) {
+        try {
+          if (await partialFile.exists()) await partialFile.delete();
+        } catch (_) {}
+      }
+      _isDownloading = false;
+      _downloadProgress = 0.0;
+    }
+  }
+
+  static String _androidApkFileName(
+    String? downloadUrl,
+    String normalizedVersion,
+  ) {
+    if (downloadUrl != null && downloadUrl.trim().isNotEmpty) {
+      final uri = Uri.tryParse(downloadUrl.trim());
+      if (uri != null && uri.pathSegments.isNotEmpty) {
+        final fileName = Uri.decodeComponent(uri.pathSegments.last);
+        if (fileName.toLowerCase().endsWith('.apk')) return fileName;
+      }
+    }
+    return '${AndroidUpdateShareConfig.apkPrefix}$normalizedVersion.apk';
+  }
+
+  static Future<String?> _openAndroidApkInstaller(String apkPath) async {
+    try {
+      return await _androidUpdateChannel.invokeMethod<String>(
+        'installApk',
+        {'path': apkPath},
+      );
+    } on PlatformException catch (error) {
+      debugPrint(
+        '⚠️ Android APK installer failed: ${error.code} ${error.message}',
+      );
+      _lastDownloadError = error.message;
+      return null;
+    } on MissingPluginException catch (error) {
+      debugPrint('⚠️ Android APK installer channel missing: $error');
+      _lastDownloadError =
+          'Esta APK todavía no incluye el instalador interno. Instala manualmente esta versión una vez.';
+      return null;
+    }
+  }
+
   /// Copia el instalador desde la carpeta de red (ruta UNC/local) a TEMP y lo
   /// ejecuta. Correr desde TEMP evita bloqueos y advertencias de ejecutar un
   /// .exe directamente desde un recurso de red.
@@ -668,6 +972,12 @@ class UpdateService {
     } catch (e) {
       debugPrint('❌ Error opening download URL: $e');
     }
+  }
+
+  static bool canOpenDownloadUrl(String? url) {
+    final normalized = url?.trim().toLowerCase() ?? '';
+    return normalized.startsWith('http://') ||
+        normalized.startsWith('https://');
   }
 
   /// Mostrar diálogo de actualización disponible
@@ -945,7 +1255,7 @@ class _UpdateDialogState extends State<_UpdateDialog> {
               ),
             ),
           if (_error != null &&
-              widget.updateInfo.downloadUrl != null &&
+              UpdateService.canOpenDownloadUrl(widget.updateInfo.downloadUrl) &&
               !_isDownloading)
             TextButton.icon(
               onPressed: () => UpdateService.openDownloadUrl(

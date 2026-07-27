@@ -8,6 +8,11 @@ import 'package:material_warehousing_flutter/core/services/excel_export_service.
 
 enum _AuditEndMode { closeOnly, processOutgoing }
 
+/// Una ubicación queda cerrada (verde) cuando el operador termina el escaneo,
+/// con o sin faltantes. Al reabrirla vuelve a InProgress/Pending (rojo).
+bool isAuditLocationClosed(Object? status) =>
+    status == 'Verified' || status == 'Discrepancy';
+
 /// Pantalla de Auditoría de Inventario para PC (Supervisores)
 class InventoryAuditScreen extends StatefulWidget {
   final LanguageProvider languageProvider;
@@ -28,6 +33,8 @@ class _InventoryAuditScreenState extends State<InventoryAuditScreen>
   // Tab 0: Auditoría Activa
   Map<String, dynamic>? _activeAudit;
   List<Map<String, dynamic>> _locations = [];
+  final TextEditingController _locationSearchController =
+      TextEditingController();
   Map<String, dynamic>? _summary;
   bool _isLoading = false;
   bool _isStarting = false;
@@ -73,6 +80,7 @@ class _InventoryAuditScreenState extends State<InventoryAuditScreen>
     _tabController.removeListener(_onTabChanged);
     _tabController.dispose();
     _refreshTimer?.cancel();
+    _locationSearchController.dispose();
     _compareSearchController.dispose();
     super.dispose();
   }
@@ -286,7 +294,7 @@ class _InventoryAuditScreenState extends State<InventoryAuditScreen>
     }
 
     final pendingLocs =
-        _locations.where((l) => l['status'] != 'Verified').length;
+        _locations.where((l) => !isAuditLocationClosed(l['status'])).length;
     final endMode = await showDialog<_AuditEndMode>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -304,7 +312,7 @@ class _InventoryAuditScreenState extends State<InventoryAuditScreen>
                 Colors.blue),
             _statRow(
                 tr('audit_verified'),
-                '${_locations.where((l) => l['status'] == 'Verified').length}',
+                '${_locations.where((l) => isAuditLocationClosed(l['status'])).length}',
                 Colors.green),
             _statRow(tr('audit_pending'), '$pendingLocs', Colors.red),
             if (pendingLocs > 0) ...[
@@ -577,13 +585,13 @@ class _InventoryAuditScreenState extends State<InventoryAuditScreen>
             const SizedBox(width: 12),
             _quickStat(
                 Icons.check_circle,
-                '${_locations.where((l) => l['status'] == 'Verified').length}',
+                '${_locations.where((l) => isAuditLocationClosed(l['status'])).length}',
                 Colors.green,
                 tr('audit_verified')),
             const SizedBox(width: 12),
             _quickStat(
                 Icons.pending,
-                '${_locations.where((l) => l['status'] != 'Verified').length}',
+                '${_locations.where((l) => !isAuditLocationClosed(l['status'])).length}',
                 Colors.red,
                 tr('audit_pending')),
             const SizedBox(width: 16),
@@ -631,6 +639,15 @@ class _InventoryAuditScreenState extends State<InventoryAuditScreen>
       );
 
   Widget _buildLocationsGrid() {
+    final searchQuery = _locationSearchController.text.trim().toLowerCase();
+    final filteredLocations = searchQuery.isEmpty
+        ? _locations
+        : _locations.where((location) {
+            final locationCode =
+                (location['location'] ?? '').toString().toLowerCase();
+            return locationCode.contains(searchQuery);
+          }).toList();
+
     return Container(
       margin: const EdgeInsets.all(8),
       decoration: BoxDecoration(
@@ -649,16 +666,51 @@ class _InventoryAuditScreenState extends State<InventoryAuditScreen>
             child: Row(children: [
               const Icon(Icons.location_on, size: 20, color: Colors.white),
               const SizedBox(width: 8),
-              Text('${tr('audit_locations')} (${_locations.length})',
+              Text(
+                  searchQuery.isEmpty
+                      ? '${tr('audit_locations')} (${_locations.length})'
+                      : '${tr('audit_locations')} (${filteredLocations.length}/${_locations.length})',
                   style: const TextStyle(
                       fontWeight: FontWeight.bold, color: Colors.white)),
             ]),
           ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(8, 8, 8, 0),
+            child: TextField(
+              controller: _locationSearchController,
+              onChanged: (_) => setState(() {}),
+              style: const TextStyle(color: Colors.white),
+              decoration: InputDecoration(
+                hintText: tr('audit_search_locations'),
+                hintStyle: const TextStyle(color: Colors.white38),
+                prefixIcon:
+                    const Icon(Icons.search, size: 20, color: Colors.white54),
+                suffixIcon: searchQuery.isEmpty
+                    ? null
+                    : IconButton(
+                        tooltip: tr('clear'),
+                        onPressed: () {
+                          _locationSearchController.clear();
+                          setState(() {});
+                        },
+                        icon: const Icon(Icons.close,
+                            size: 18, color: Colors.white54),
+                      ),
+                isDense: true,
+                filled: true,
+                fillColor: AppColors.fieldBackground,
+                border: const OutlineInputBorder(),
+              ),
+            ),
+          ),
           // Grid visual de ubicaciones
           Expanded(
-            child: _locations.isEmpty
+            child: filteredLocations.isEmpty
                 ? Center(
-                    child: Text(tr('audit_no_locations'),
+                    child: Text(
+                        searchQuery.isEmpty
+                            ? tr('audit_no_locations')
+                            : tr('audit_no_location_matches'),
                         style: const TextStyle(color: Colors.white54)))
                 : Padding(
                     padding: const EdgeInsets.all(8),
@@ -670,11 +722,11 @@ class _InventoryAuditScreenState extends State<InventoryAuditScreen>
                         crossAxisSpacing: 8,
                         mainAxisSpacing: 8,
                       ),
-                      itemCount: _locations.length,
+                      itemCount: filteredLocations.length,
                       itemBuilder: (context, index) {
-                        final loc = _locations[index];
+                        final loc = filteredLocations[index];
                         final status = loc['status'] as String? ?? 'Pending';
-                        final isVerified = status == 'Verified';
+                        final isClosed = isAuditLocationClosed(status);
                         final isSelected = _selectedLocation == loc['location'];
 
                         return InkWell(
@@ -684,14 +736,14 @@ class _InventoryAuditScreenState extends State<InventoryAuditScreen>
                           },
                           child: Container(
                             decoration: BoxDecoration(
-                              color: isVerified
+                              color: isClosed
                                   ? Colors.green.withValues(alpha: 0.3)
                                   : Colors.red.withValues(alpha: 0.3),
                               borderRadius: BorderRadius.circular(8),
                               border: Border.all(
                                 color: isSelected
                                     ? Colors.white
-                                    : (isVerified ? Colors.green : Colors.red),
+                                    : (isClosed ? Colors.green : Colors.red),
                                 width: isSelected ? 3 : 2,
                               ),
                             ),
@@ -699,10 +751,14 @@ class _InventoryAuditScreenState extends State<InventoryAuditScreen>
                               mainAxisAlignment: MainAxisAlignment.center,
                               children: [
                                 Icon(
-                                  isVerified
-                                      ? Icons.check_circle
-                                      : Icons.radio_button_unchecked,
-                                  color: isVerified ? Colors.green : Colors.red,
+                                  !isClosed
+                                      ? Icons.radio_button_unchecked
+                                      : status == 'Discrepancy'
+                                          // Cerrada con faltantes: verde, pero
+                                          // se distingue del conteo limpio.
+                                          ? Icons.assignment_turned_in
+                                          : Icons.check_circle,
+                                  color: isClosed ? Colors.green : Colors.red,
                                   size: 24,
                                 ),
                                 const SizedBox(height: 4),
@@ -719,9 +775,8 @@ class _InventoryAuditScreenState extends State<InventoryAuditScreen>
                                   '${loc['scanned_items'] ?? 0}/${loc['total_items'] ?? 0}',
                                   style: TextStyle(
                                       fontSize: 11,
-                                      color: isVerified
-                                          ? Colors.green
-                                          : Colors.red),
+                                      color:
+                                          isClosed ? Colors.green : Colors.red),
                                 ),
                               ],
                             ),

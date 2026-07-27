@@ -23,6 +23,7 @@ dependencies:
   printing: ^5.14.2
   qr_flutter: ^4.1.0
   shared_preferences: ^2.5.3
+  smb_connect: ^0.0.9
   url_launcher: ^6.2.5
   vibration: ^2.0.1
   web_socket_channel: ^3.0.2
@@ -47,5 +48,7 @@ flutter_launcher_icons:
 flutter:
   uses-material-design: true
   assets:
+    - .env
     - assets/logo.png
+    - VERSION_ANDROID.txt
     - VERSION.txt

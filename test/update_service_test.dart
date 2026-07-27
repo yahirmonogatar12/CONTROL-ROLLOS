@@ -75,6 +75,53 @@ void main() {
     });
   });
 
+  group('UpdateService.pickLatestAndroidApk', () {
+    test('elige el APK con la versión semántica más alta', () {
+      final best = UpdateService.pickLatestAndroidApk([
+        'Control_inventario_SMD_v1.2.9.apk',
+        'app-release-1.10.0.apk',
+        'Control_inventario_SMD_v1.3.0.apk',
+        'app-release.apk',
+        'notas.txt',
+      ]);
+
+      expect(best?.fileName, 'app-release-1.10.0.apk');
+      expect(best?.version, '1.10.0');
+    });
+
+    test('regresa null si ningún APK contiene versión', () {
+      expect(
+        UpdateService.pickLatestAndroidApk([
+          'app-release.apk',
+          'archivo.exe',
+        ]),
+        isNull,
+      );
+    });
+
+    test('construye la ruta relativa dentro del recurso updates', () {
+      expect(
+        AndroidUpdateShareConfig.remotePath(
+          'Control_inventario_SMD_v1.2.3.apk',
+        ),
+        '/updates/SMT/ANDROID/Control_inventario_SMD_v1.2.3.apk',
+      );
+    });
+
+    test('no intenta abrir una ruta SMB en el navegador', () {
+      expect(
+        UpdateService.canOpenDownloadUrl(
+          'smb://192.168.1.10/updates/SMT/ANDROID/app-v1.2.3.apk',
+        ),
+        isFalse,
+      );
+      expect(
+        UpdateService.canOpenDownloadUrl('https://example.test/app.apk'),
+        isTrue,
+      );
+    });
+  });
+
   group('UpdateService.parseEnvContent', () {
     test('lee valores con comillas, espacios y caracteres especiales', () {
       final values = UpdateService.parseEnvContent('''
