@@ -3,7 +3,8 @@
     "allow": [
       "Bash(find:*)",
       "Bash(flutter analyze:*)",
-      "Bash(xargs grep:*)"
+      "Bash(xargs grep:*)",
+      "mcp__mysql-mes__describe_table"
     ]
   }
 }

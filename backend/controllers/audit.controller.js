@@ -755,7 +755,6 @@ async function recoverAuditMaterialForScan(
           INSERT INTO material_return_smd (
             warehousing_id,
             material_warehousing_code,
-            material_code,
             part_number,
             material_lot_no,
             material_spec,
@@ -764,11 +763,10 @@ async function recoverAuditMaterialForScan(
             remarks,
             returned_by,
             return_datetime
-          ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, NOW())
+          ) VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, NOW())
         `, [
           material.id,
           material.codigo_material_recibido,
-          material.codigo_material || null,
           material.numero_parte,
           material.numero_lote_material,
           material.especificacion || null,

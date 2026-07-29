@@ -1280,6 +1280,10 @@ async function runMigrations() {
   await addAuditSnapshotColumns();
   await createAuditPartTable();
   await reconcileActiveAuditReturns();
+  // El lote viene de la etiqueta y supera los 100 chars originales.
+  try {
+    await pool.query(`ALTER TABLE material_return_smd MODIFY COLUMN material_lot_no VARCHAR(150) NULL`);
+  } catch (e) { }
   await createLotDivisionTable();
   await createRequirementsTables();
   await addReentryColumns();
