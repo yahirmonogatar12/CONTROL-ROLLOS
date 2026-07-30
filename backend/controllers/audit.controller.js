@@ -201,6 +201,271 @@ async function getAuditInventoryMaterialByWarehousingId(warehousingId) {
   return rows[0] || null;
 }
 
+// Sincroniza una ubicación de la auditoría con el inventario activo. Incorpora
+// materiales registrados después del snapshot, refleja reubicaciones y retira
+// del snapshot los materiales que tuvieron una salida completa. La
+// trazabilidad de esas salidas permanece en control_material_salida_smd.
+async function syncAuditLocationWithInventory(
+  connection,
+  auditId,
+  location,
+  usuario = 'Mobile'
+) {
+  const normalizedLocation = normalizeAuditLocation(location);
+  const [liveItems] = await connection.query(`
+    SELECT *
+    FROM (${getAuditInventorySnapshotQuery()}) ai
+    WHERE UPPER(TRIM(ai.location)) = ?
+    ORDER BY ai.codigo_material_recibido
+  `, [normalizedLocation]);
+
+  const affectedLocations = new Set([normalizedLocation]);
+  let insertedItems = 0;
+  let relocatedItems = 0;
+
+  for (const material of liveItems) {
+    const [existingItems] = await connection.query(`
+      SELECT id, location
+      FROM inventory_audit_item_smd
+      WHERE audit_id = ?
+        AND (warehousing_id = ? OR warehousing_code = ?)
+      ORDER BY (warehousing_id = ?) DESC
+      LIMIT 1
+      FOR UPDATE
+    `, [
+      auditId,
+      material.warehousing_id,
+      material.codigo_material_recibido,
+      material.warehousing_id
+    ]);
+
+    if (existingItems.length === 0) {
+      await connection.query(`
+        INSERT INTO inventory_audit_item_smd (
+          audit_id,
+          warehousing_id,
+          warehousing_code,
+          location,
+          numero_parte_snapshot,
+          numero_lote_material_snapshot,
+          cantidad_snapshot,
+          especificacion_snapshot,
+          fecha_recibo_snapshot,
+          status,
+          notas
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending', ?)
+      `, [
+        auditId,
+        material.warehousing_id,
+        material.codigo_material_recibido,
+        normalizedLocation,
+        material.numero_parte,
+        material.numero_lote_material,
+        material.cantidad_actual,
+        material.especificacion || null,
+        material.fecha_recibo || null,
+        'Sincronizado desde inventario activo durante la auditoría'
+      ]);
+      insertedItems += 1;
+      continue;
+    }
+
+    const previousLocation = normalizeAuditLocation(existingItems[0].location);
+    if (previousLocation && previousLocation !== normalizedLocation) {
+      affectedLocations.add(previousLocation);
+      await connection.query(`
+        UPDATE inventory_audit_item_smd
+        SET location = ?,
+            numero_parte_snapshot = ?,
+            numero_lote_material_snapshot = ?,
+            cantidad_snapshot = ?,
+            especificacion_snapshot = ?,
+            fecha_recibo_snapshot = ?,
+            physical_quantity = NULL,
+            physical_quantity_recorded_at = NULL,
+            physical_quantity_recorded_by = NULL,
+            status = 'Pending',
+            scanned_at = NULL,
+            scanned_by = NULL,
+            processed_at = NULL,
+            processed_by = NULL,
+            notas = CONCAT_WS(
+              ' | ',
+              NULLIF(notas, ''),
+              ?
+            )
+        WHERE id = ?
+      `, [
+        normalizedLocation,
+        material.numero_parte,
+        material.numero_lote_material,
+        material.cantidad_actual,
+        material.especificacion || null,
+        material.fecha_recibo || null,
+        `Sincronizado de ${previousLocation} a ${normalizedLocation} desde inventario activo`,
+        existingItems[0].id
+      ]);
+      relocatedItems += 1;
+    }
+  }
+
+  // Un material desaparece del inventario activo cuando su salida deja el
+  // stock en cero. Retirarlo únicamente del snapshot activo evita mostrarlo
+  // como pendiente o faltante; el movimiento de salida conserva la
+  // trazabilidad operativa.
+  const [inactiveItems] = await connection.query(`
+    SELECT iai.id
+    FROM inventory_audit_item_smd iai
+    LEFT JOIN inventario_lotes_smd active_inventory
+      ON active_inventory.codigo_material_recibido = iai.warehousing_code
+      AND active_inventory.stock_actual > 0
+    WHERE iai.audit_id = ?
+      AND iai.location = ?
+      AND iai.status <> 'ProcessedOut'
+      AND active_inventory.codigo_material_recibido IS NULL
+    FOR UPDATE
+  `, [auditId, normalizedLocation]);
+
+  let removedItems = 0;
+  if (inactiveItems.length > 0) {
+    const inactiveIds = inactiveItems.map(item => item.id);
+    const placeholders = inactiveIds.map(() => '?').join(', ');
+    const [deleteResult] = await connection.query(`
+      DELETE FROM inventory_audit_item_smd
+      WHERE audit_id = ? AND id IN (${placeholders})
+    `, [auditId, ...inactiveIds]);
+    removedItems = Number(deleteResult.affectedRows || 0);
+  }
+
+  if (insertedItems === 0 && relocatedItems === 0 && removedItems === 0) {
+    return {
+      insertedItems,
+      relocatedItems,
+      removedItems,
+      affectedLocations: [normalizedLocation]
+    };
+  }
+
+  for (const affectedLocation of affectedLocations) {
+    // Crear las partes nuevas y recalcular las ya existentes. Si cambió la
+    // cantidad esperada, se reabre la parte para que el operador la confirme.
+    await connection.query(`
+      INSERT INTO inventory_audit_part_smd (
+        audit_id,
+        location,
+        numero_parte,
+        expected_items,
+        expected_qty,
+        status
+      )
+      SELECT
+        iai.audit_id,
+        iai.location,
+        ${AUDIT_ITEM_PART_EXPR} AS numero_parte,
+        COUNT(*) AS expected_items,
+        SUM(${AUDIT_ITEM_QTY_EXPR}) AS expected_qty,
+        'Pending'
+      FROM inventory_audit_item_smd iai
+      LEFT JOIN control_material_almacen_smd cma ON cma.id = iai.warehousing_id
+      WHERE iai.audit_id = ? AND iai.location = ?
+      GROUP BY iai.audit_id, iai.location, ${AUDIT_ITEM_PART_EXPR}
+      ON DUPLICATE KEY UPDATE
+        status = IF(
+          expected_items <> VALUES(expected_items)
+            OR expected_qty <> VALUES(expected_qty),
+          'Pending',
+          status
+        ),
+        scanned_items = IF(
+          expected_items <> VALUES(expected_items)
+            OR expected_qty <> VALUES(expected_qty),
+          0,
+          scanned_items
+        ),
+        scanned_qty = IF(
+          expected_items <> VALUES(expected_items)
+            OR expected_qty <> VALUES(expected_qty),
+          0,
+          scanned_qty
+        ),
+        confirmed_by = IF(
+          expected_items <> VALUES(expected_items)
+            OR expected_qty <> VALUES(expected_qty),
+          NULL,
+          confirmed_by
+        ),
+        confirmed_at = IF(
+          expected_items <> VALUES(expected_items)
+            OR expected_qty <> VALUES(expected_qty),
+          NULL,
+          confirmed_at
+        ),
+        expected_items = VALUES(expected_items),
+        expected_qty = VALUES(expected_qty)
+    `, [auditId, affectedLocation]);
+
+    await connection.query(`
+      DELETE iap
+      FROM inventory_audit_part_smd iap
+      WHERE iap.audit_id = ?
+        AND iap.location = ?
+        AND NOT EXISTS (
+          SELECT 1
+          FROM inventory_audit_item_smd iai
+          LEFT JOIN control_material_almacen_smd cma
+            ON cma.id = iai.warehousing_id
+          WHERE iai.audit_id = iap.audit_id
+            AND iai.location = iap.location
+            AND ${AUDIT_ITEM_PART_EXPR} = iap.numero_parte
+        )
+    `, [auditId, affectedLocation]);
+
+    await connection.query(`
+      UPDATE inventory_audit_location_smd ial
+      SET total_items = (
+            SELECT COUNT(*)
+            FROM inventory_audit_item_smd iai
+            WHERE iai.audit_id = ial.audit_id
+              AND iai.location = ial.location
+          ),
+          total_qty = (
+            SELECT COALESCE(SUM(iai.cantidad_snapshot), 0)
+            FROM inventory_audit_item_smd iai
+            WHERE iai.audit_id = ial.audit_id
+              AND iai.location = ial.location
+          ),
+          status = 'InProgress',
+          completed_at = NULL,
+          completed_by = NULL,
+          started_at = COALESCE(started_at, NOW()),
+          started_by = COALESCE(started_by, ?)
+      WHERE ial.audit_id = ? AND ial.location = ?
+    `, [usuario || 'Mobile', auditId, affectedLocation]);
+  }
+
+  await connection.query(`
+    UPDATE inventory_audit_smd ia
+    SET total_locations = (
+          SELECT COUNT(*)
+          FROM inventory_audit_location_smd ial
+          WHERE ial.audit_id = ia.id
+        ),
+        total_items = (
+          SELECT COUNT(*)
+          FROM inventory_audit_item_smd iai
+          WHERE iai.audit_id = ia.id
+        )
+    WHERE ia.id = ?
+  `, [auditId]);
+
+  return {
+    insertedItems,
+    relocatedItems,
+    removedItems,
+    affectedLocations: [...affectedLocations]
+  };
+}
+
 function isInventoryCountableIqcStatus(status) {
   return ['Released', 'NotRequired'].includes(String(status || 'NotRequired'));
 }
@@ -2049,6 +2314,27 @@ const scanLocation = async (req, res, next) => {
       `, [usuario || 'Mobile', loc[0].id]);
     }
 
+    // El snapshot se creó al iniciar la auditoría. Antes de devolver la
+    // ubicación, incorporar materiales que hayan entrado o cambiado de
+    // ubicación mientras la auditoría seguía abierta.
+    const syncConnection = await pool.getConnection();
+    let inventorySync;
+    try {
+      await syncConnection.beginTransaction();
+      inventorySync = await syncAuditLocationWithInventory(
+        syncConnection,
+        auditId,
+        normalizedLocation,
+        usuario || 'Mobile'
+      );
+      await syncConnection.commit();
+    } catch (syncError) {
+      await syncConnection.rollback();
+      throw syncError;
+    } finally {
+      syncConnection.release();
+    }
+
     // Obtener items de la ubicación
     const [items] = await pool.query(`
       SELECT 
@@ -2083,6 +2369,7 @@ const scanLocation = async (req, res, next) => {
     };
     response.createdLocation = createdLocation;
     response.emptyLocation = items.length === 0;
+    response.inventorySync = inventorySync;
 
     if (shouldReturnLocationSummary(req)) {
       const summary = await buildLocationSummaryPayload(auditId, normalizedLocation);
@@ -3968,6 +4255,7 @@ module.exports = {
   setWebSocketServer,
   broadcastAuditUpdate,
   relocateAuditMaterial,
+  syncAuditLocationWithInventory,
   getActiveAudit,
   startAudit,
   endAudit,
