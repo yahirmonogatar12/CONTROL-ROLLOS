@@ -2,6 +2,9 @@
 
 const { pool } = require('../config/database');
 const { FULL_ACCESS_DEPARTMENTS } = require('../config/permissions');
+const {
+  signalSolderPasteEventsAvailable,
+} = require('./solderPasteLocalNotificationHub');
 
 const STATUS = Object.freeze({
   TEMPERING: 'TEMPERING',
@@ -282,6 +285,13 @@ async function withTransaction(callback) {
     await connection.beginTransaction();
     const result = await callback(connection);
     await connection.commit();
+    // El evento ya está confirmado en MySQL: avisar a los móviles conectados.
+    // El móvil usa su cursor para decidir si realmente hay algo que mostrar.
+    try {
+      signalSolderPasteEventsAvailable();
+    } catch (error) {
+      console.error(`No se pudo señalizar Control de pasta por WebSocket: ${error.message}`);
+    }
     return result;
   } catch (error) {
     await connection.rollback();

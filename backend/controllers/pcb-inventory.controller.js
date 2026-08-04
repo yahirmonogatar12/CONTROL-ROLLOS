@@ -1004,7 +1004,7 @@ exports.getSummary = async (req, res, next) => {
 // ============================================
 exports.getScans = async (req, res, next) => {
   try {
-    const { inventory_date, proceso, area, tipo_movimiento, limit } = req.query;
+    const { inventory_date, inventory_date_end, proceso, area, tipo_movimiento, limit } = req.query;
 
     if (!inventory_date) {
       return res.status(400).json({
@@ -1042,9 +1042,9 @@ exports.getScans = async (req, res, next) => {
         DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s') as created_at_fmt,
         DATE_FORMAT(created_at, '%H:%i:%s') as hora
       FROM pcb_inventory_scan_smd
-      WHERE inventory_date = ? AND tipo_movimiento = ?
+      WHERE inventory_date BETWEEN ? AND ? AND tipo_movimiento = ?
     `;
-    const params = [inventory_date, tipo];
+    const params = [inventory_date, inventory_date_end || inventory_date, tipo];
 
     if (proceso && proceso !== 'ALL') {
       query += ` AND proceso = ?`;

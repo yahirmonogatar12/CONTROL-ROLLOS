@@ -1,6 +1,10 @@
 'use strict';
 
 const service = require('../services/solderPasteLifecycleService');
+const { pool } = require('../config/database');
+const {
+  getLocalNotificationFeed,
+} = require('../services/solderPasteLocalNotificationService');
 
 function actorFromBody(body = {}) {
   return {
@@ -47,6 +51,18 @@ exports.getEvents = async (req, res, next) => {
       limit: req.query.limit,
     });
     res.json({ success: true, events });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.getLocalNotifications = async (req, res, next) => {
+  try {
+    const feed = await getLocalNotificationFeed(pool, {
+      afterId: req.query.after_id,
+      limit: req.query.limit,
+    });
+    res.json({ success: true, ...feed });
   } catch (error) {
     next(error);
   }

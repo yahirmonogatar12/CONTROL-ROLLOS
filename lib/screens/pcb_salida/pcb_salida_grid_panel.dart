@@ -71,6 +71,9 @@ class PcbSalidaGridPanelState extends State<PcbSalidaGridPanel>
     _loadTodayData();
   }
 
+  static String _fmtDate(DateTime d) =>
+      '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+
   void _loadTodayData() {
     final now = DateTime.now();
     searchByDate(now, now);
@@ -92,22 +95,17 @@ class PcbSalidaGridPanelState extends State<PcbSalidaGridPanel>
       // Load both SALIDA and SCRAP for each day
       final tipos = (tipoFilter != null) ? [tipoFilter] : ['SALIDA', 'SCRAP'];
 
-      DateTime current = s;
-      while (!current.isAfter(e)) {
-        final dateStr =
-            '${current.year}-${current.month.toString().padLeft(2, '0')}-${current.day.toString().padLeft(2, '0')}';
-        for (final tipo in tipos) {
-          final result = await ApiService.getPcbInventoryScans(
-            inventoryDate: dateStr,
-            tipoMovimiento: tipo,
-            limit: 5000,
-          );
-          if (result['success'] == true && result['data'] != null) {
-            allRows
-                .addAll((result['data'] as List).cast<Map<String, dynamic>>());
-          }
+      // Un request por tipo para todo el rango (antes: uno por día y tipo)
+      for (final tipo in tipos) {
+        final result = await ApiService.getPcbInventoryScans(
+          inventoryDate: _fmtDate(s),
+          inventoryDateEnd: _fmtDate(e),
+          tipoMovimiento: tipo,
+          limit: 5000,
+        );
+        if (result['success'] == true && result['data'] != null) {
+          allRows.addAll((result['data'] as List).cast<Map<String, dynamic>>());
         }
-        current = current.add(const Duration(days: 1));
       }
 
       // Sort by date desc

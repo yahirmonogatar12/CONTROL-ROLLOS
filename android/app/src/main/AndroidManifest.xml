@@ -12,6 +12,8 @@
     <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_REMOTE_MESSAGING" />
     
     <!-- Permiso para vibración -->
     <uses-permission android:name="android.permission.VIBRATE" />
@@ -56,6 +58,10 @@
         <meta-data
             android:name="com.google.firebase.messaging.default_notification_channel_id"
             android:value="smt_material_requests" />
+        <service
+            android:name=".SolderPasteNotificationService"
+            android:exported="false"
+            android:foregroundServiceType="remoteMessaging" />
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"

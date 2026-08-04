@@ -47,5 +47,6 @@ flutter {
 
 dependencies {
     implementation("androidx.core:core:1.13.1")
+    implementation("com.squareup.okhttp3:okhttp:5.3.0")
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
 }

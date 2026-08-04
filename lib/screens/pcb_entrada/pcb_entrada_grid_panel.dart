@@ -113,6 +113,9 @@ class PcbEntradaGridPanelState extends State<PcbEntradaGridPanel>
     _loadTodayData();
   }
 
+  static String _fmtDate(DateTime d) =>
+      '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+
   void _loadTodayData() {
     final now = DateTime.now();
     searchByDate(now, now);
@@ -129,21 +132,16 @@ class PcbEntradaGridPanelState extends State<PcbEntradaGridPanel>
     setState(() => _isLoading = true);
 
     try {
-      // Load data for each day in the range via the scans endpoint
+      // Un solo request para todo el rango (antes: uno por día)
       List<Map<String, dynamic>> allRows = [];
-      DateTime current = s;
-      while (!current.isAfter(e)) {
-        final dateStr =
-            '${current.year}-${current.month.toString().padLeft(2, '0')}-${current.day.toString().padLeft(2, '0')}';
-        final result = await ApiService.getPcbInventoryScans(
-          inventoryDate: dateStr,
-          tipoMovimiento: 'ENTRADA',
-          limit: 5000,
-        );
-        if (result['success'] == true && result['data'] != null) {
-          allRows.addAll((result['data'] as List).cast<Map<String, dynamic>>());
-        }
-        current = current.add(const Duration(days: 1));
+      final result = await ApiService.getPcbInventoryScans(
+        inventoryDate: _fmtDate(s),
+        inventoryDateEnd: _fmtDate(e),
+        tipoMovimiento: 'ENTRADA',
+        limit: 5000,
+      );
+      if (result['success'] == true && result['data'] != null) {
+        allRows.addAll((result['data'] as List).cast<Map<String, dynamic>>());
       }
 
       // Filter by part number if provided

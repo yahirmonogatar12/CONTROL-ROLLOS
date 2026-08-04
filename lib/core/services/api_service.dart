@@ -4706,6 +4706,7 @@ class ApiService {
   // GET - Historial detallado de escaneos PCB por tipo_movimiento
   static Future<Map<String, dynamic>> getPcbInventoryScans({
     required String inventoryDate,
+    String? inventoryDateEnd,
     String? proceso,
     String tipoMovimiento = 'ENTRADA',
     int limit = 300,
@@ -4713,6 +4714,9 @@ class ApiService {
     try {
       String url =
           '$baseUrl/pcb-inventory/scans?inventory_date=$inventoryDate&limit=$limit&tipo_movimiento=$tipoMovimiento';
+      if (inventoryDateEnd != null && inventoryDateEnd != inventoryDate) {
+        url += '&inventory_date_end=$inventoryDateEnd';
+      }
       if (proceso != null && proceso.isNotEmpty && proceso != 'ALL') {
         url += '&proceso=$proceso';
       }

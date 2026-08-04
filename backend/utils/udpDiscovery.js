@@ -50,7 +50,8 @@ function getBroadcastAddress() {
  * @returns {object} - Objeto con método stop() para detener el servicio
  */
 function startDiscoveryService(httpPort) {
-  const server = dgram.createSocket('udp4');
+  // reuseAddr: permite rebind tras reinicio y convivir con otra instancia local
+  const server = dgram.createSocket({ type: 'udp4', reuseAddr: true });
   let beaconInterval = null;
   
   const localIP = getLocalIP();

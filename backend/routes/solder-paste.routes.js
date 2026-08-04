@@ -7,6 +7,7 @@ const router = express.Router();
 
 router.get('/processes', controller.getAll);
 router.get('/events', controller.getEvents);
+router.get('/local-notifications', controller.getLocalNotifications);
 router.get('/status/:code', controller.getStatus);
 router.post('/scan', controller.scan);
 router.post('/:id/agitation/start', controller.startAgitation);

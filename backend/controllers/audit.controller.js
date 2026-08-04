@@ -470,6 +470,17 @@ function isInventoryCountableIqcStatus(status) {
   return ['Released', 'NotRequired'].includes(String(status || 'NotRequired'));
 }
 
+function auditMaterialNeedsRecovery(material) {
+  return !material
+    || Number(material.tiene_salida || 0) === 1
+    || Number(material.total_salida || 0) > 0
+    || Number(material.estado_desecho || 0) === 1;
+}
+
+function canScanAuditPart(partStatus, needsRecovery) {
+  return partStatus === 'Mismatch' || needsRecovery;
+}
+
 function auditRecoveryError(code, error, extra = {}) {
   return { success: false, code, error, ...extra };
 }
@@ -975,12 +986,41 @@ async function recoverAuditMaterialForScan(
         );
       }
 
-      if (Number(material.cancelado || 0) === 1 || Number(material.estado_desecho || 0) === 1) {
+      if (Number(material.cancelado || 0) === 1) {
         await connection.rollback();
         return auditRecoveryError(
           'MATERIAL_NOT_ELIGIBLE',
-          'El material está cancelado o marcado como desecho y no puede entrar automáticamente'
+          'El material está cancelado y no puede entrar automáticamente'
         );
+      }
+
+      // Un faltante procesado por auditoría queda marcado como desecho, pero si
+      // vuelve a encontrarse físicamente debe retornar. Solo el scrap real de
+      // calidad (cuarentena) permanece bloqueado.
+      if (Number(material.estado_desecho || 0) === 1) {
+        const [qualityScrapRows] = await connection.query(`
+          SELECT 1
+          FROM quarantine_smd
+          WHERE codigo_material_recibido = ?
+            AND status IN ('Scrapped', 'Returned')
+          LIMIT 1
+          FOR UPDATE
+        `, [normalizedCode]);
+
+        if (qualityScrapRows.length > 0) {
+          await connection.rollback();
+          return auditRecoveryError(
+            'MATERIAL_NOT_ELIGIBLE',
+            'El material fue desechado por calidad y no puede retornar automáticamente'
+          );
+        }
+
+        await connection.query(`
+          UPDATE control_material_almacen_smd
+          SET estado_desecho = 0
+          WHERE id = ?
+        `, [material.id]);
+        material.estado_desecho = 0;
       }
 
       if (!isInventoryCountableIqcStatus(material.iqc_status)) {
@@ -3537,18 +3577,20 @@ const scanPartItem = async (req, res, next) => {
 
     const auditId = active[0].id;
 
-    // Validar la parte seleccionada antes de cualquier recuperación de
-    // inventario, para que un código de otra parte no genere una entrada.
-    const [partRecord] = await pool.query(`
+    // Consultar la parte seleccionada. Si el código requiere retorno, la
+    // recuperación validará primero que realmente pertenezca a esta parte.
+    let [partRecord] = await pool.query(`
       SELECT id, status FROM inventory_audit_part_smd
       WHERE audit_id = ? AND location = ? AND numero_parte = ?
     `, [auditId, normalizedLocation, normalizedPart]);
 
-    if (partRecord.length === 0) {
-      return res.json({ success: false, error: 'No se encontró la parte en la auditoría' });
-    }
+    // Resolver primero si el código necesita retorno. Un material encontrado
+    // después de confirmar faltantes puede tener la parte en MissingConfirmed
+    // (o no existir aún en esta ubicación); el retorno debe reabrirla.
+    let mat = await getAuditInventoryMaterialByCode(normalizedCode);
+    const needsRecovery = auditMaterialNeedsRecovery(mat);
 
-    if (partRecord[0].status !== 'Mismatch') {
+    if (!canScanAuditPart(partRecord[0]?.status, needsRecovery)) {
       return res.json({
         success: false,
         error: 'Solo se pueden escanear etiquetas de partes marcadas como discrepancia',
@@ -3558,14 +3600,9 @@ const scanPartItem = async (req, res, next) => {
 
     // Buscar el material en el inventario consolidado. Los códigos con salida
     // o todavía no ingresados a SMD se recuperan en esta ubicación.
-    let mat = await getAuditInventoryMaterialByCode(normalizedCode);
     let automaticRecovery = null;
 
-    if (
-      !mat
-      || Number(mat.tiene_salida || 0) === 1
-      || Number(mat.total_salida || 0) > 0
-    ) {
+    if (needsRecovery) {
       automaticRecovery = await recoverAuditMaterialForScan(
         auditId,
         normalizedCode,
@@ -3578,6 +3615,29 @@ const scanPartItem = async (req, res, next) => {
         return res.json(automaticRecovery);
       }
       mat = automaticRecovery.material;
+
+      // La recuperación crea o reabre el registro de la parte en la ubicación
+      // física. Volver a leerlo evita usar el estado MissingConfirmed anterior.
+      [partRecord] = await pool.query(`
+        SELECT id, status FROM inventory_audit_part_smd
+        WHERE audit_id = ? AND location = ? AND numero_parte = ?
+      `, [auditId, normalizedLocation, normalizedPart]);
+    }
+
+    if (partRecord.length === 0) {
+      return res.json({
+        success: false,
+        error: 'No se encontró la parte en la auditoría después de recuperar el material',
+        code: 'AUDIT_PART_NOT_FOUND'
+      });
+    }
+
+    if (partRecord[0].status !== 'Mismatch') {
+      return res.json({
+        success: false,
+        error: 'La parte no pudo reabrirse para registrar el retorno',
+        code: 'PART_NOT_REOPENED'
+      });
     }
 
     mat.id = mat.warehousing_id;
@@ -4293,6 +4353,8 @@ module.exports = {
   relocateAuditMaterial,
   syncAuditLocationWithInventory,
   resolveAuditPartStatus,
+  auditMaterialNeedsRecovery,
+  canScanAuditPart,
   getActiveAudit,
   startAudit,
   endAudit,

@@ -2,9 +2,12 @@ package ilsan.mes
 
 import android.content.ActivityNotFoundException
 import android.content.Intent
+import android.Manifest
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -13,6 +16,8 @@ import java.io.File
 
 class MainActivity : FlutterActivity() {
     private val updateChannel = "control_inventario_smd/app_update"
+    private val localNotificationChannel =
+        "control_inventario_smd/local_solder_paste_notifications"
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -39,6 +44,41 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
+
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, localNotificationChannel)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "configure" -> {
+                        val baseUrl = call.argument<String>("baseUrl")?.trim()
+                        if (baseUrl.isNullOrBlank()) {
+                            result.error("INVALID_SERVER", "La URL del backend está vacía.", null)
+                            return@setMethodCallHandler
+                        }
+
+                        requestNotificationPermissionIfNeeded()
+                        val intent = Intent(this, SolderPasteNotificationService::class.java).apply {
+                            action = SolderPasteNotificationService.ACTION_CONFIGURE
+                            putExtra(SolderPasteNotificationService.EXTRA_BASE_URL, baseUrl)
+                        }
+                        ContextCompat.startForegroundService(this, intent)
+                        result.success(true)
+                    }
+                    "stop" -> {
+                        stopService(Intent(this, SolderPasteNotificationService::class.java))
+                        result.success(true)
+                    }
+                    else -> result.notImplemented()
+                }
+            }
+    }
+
+    private fun requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 4101)
+        }
     }
 
     private fun openApkInstaller(path: String): String {

@@ -96,6 +96,9 @@ const scrapRoutes = require('./routes/scrap.routes');
 const scrapMotivosRoutes = require('./routes/scrap-motivos.routes');
 const solderPasteRoutes = require('./routes/solder-paste.routes');
 const { reconcileAll: reconcileSolderPasteLifecycle } = require('./services/solderPasteLifecycleService');
+const {
+  attachSolderPasteNotificationHub,
+} = require('./services/solderPasteLocalNotificationHub');
 
 const app = express();
 const jsonParser = express.json({
@@ -339,7 +342,7 @@ async function startServer() {
   }, 30000);
   solderPasteTimer.unref?.();
 
-  app.listen(PORT, HOST, () => {
+  const httpServer = app.listen(PORT, HOST, () => {
     const localIP = getLocalIP();
     console.log(`API escuchando en:`);
     console.log(`   - Local:   http://localhost:${PORT}`);
@@ -350,6 +353,7 @@ async function startServer() {
     const discovery = startDiscoveryService(PORT);
     console.log(`📡 Auto-descubrimiento UDP activo en puerto ${discovery.getInfo().discoveryPort}`);
   });
+  attachSolderPasteNotificationHub(httpServer);
 }
 
 // Solo iniciar servidor si no es Vercel (serverless)

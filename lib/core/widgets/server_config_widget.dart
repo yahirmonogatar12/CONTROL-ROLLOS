@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import '../config/server_config.dart';
 import '../services/fcm_service.dart';
+import '../services/solder_paste_local_notification_service.dart';
 import '../services/server_discovery_service.dart';
 
 /// Widget para mostrar y configurar el servidor activo
@@ -445,6 +446,9 @@ class _ServerConfigWidgetState extends State<ServerConfigWidget> {
                             );
                             await ServerConfig.addServer(newServer);
                             await ServerConfig.setActiveServer(newServer.id);
+                            await SolderPasteLocalNotificationService.configure(
+                              server: newServer,
+                            );
 
                             if (mounted) {
                               Navigator.pop(dialogContext);
@@ -539,6 +543,7 @@ class _ServerConfigWidgetState extends State<ServerConfigWidget> {
 
   Future<void> _selectServer(ServerProfile server) async {
     await ServerConfig.setActiveServer(server.id);
+    await SolderPasteLocalNotificationService.configure(server: server);
     setState(() {
       _connectionStatus = null;
     });
@@ -1200,6 +1205,12 @@ class _ServerConfigWidgetState extends State<ServerConfigWidget> {
                           await ServerConfig.updateServer(serverToSave);
                         } else {
                           await ServerConfig.addServer(serverToSave);
+                        }
+
+                        if (ServerConfig.activeServer?.id == serverToSave.id) {
+                          await SolderPasteLocalNotificationService.configure(
+                            server: serverToSave,
+                          );
                         }
 
                         if (!mounted) return;

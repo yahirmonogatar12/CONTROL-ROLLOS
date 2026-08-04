@@ -11,6 +11,7 @@ import 'package:material_warehousing_flutter/core/services/mobile_printer_servic
 import 'package:material_warehousing_flutter/core/services/scanner_config_service.dart';
 import 'package:material_warehousing_flutter/core/services/update_service.dart';
 import 'package:material_warehousing_flutter/core/services/fcm_service.dart';
+import 'package:material_warehousing_flutter/core/services/solder_paste_local_notification_service.dart';
 import 'package:material_warehousing_flutter/core/services/desktop_window_service.dart';
 import 'package:material_warehousing_flutter/firebase_options.dart';
 import 'package:material_warehousing_flutter/screens/solder_paste/solder_paste_display_window.dart';
@@ -66,6 +67,7 @@ void main(List<String> args) async {
     }
     runApp(const MesTabsApp());
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(SolderPasteLocalNotificationService.configure());
       unawaited(_initializeMobileFcm());
     });
   }
