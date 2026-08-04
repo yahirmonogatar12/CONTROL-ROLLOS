@@ -82,9 +82,15 @@ const getByCode = async (req, res, next) => {
     
     // Primero verificar si existe el registro (para dar mejor mensaje de error)
     const [checkRows] = await pool.query(`
-      SELECT cancelado, cantidad_actual, tiene_salida
-      FROM control_material_almacen_smd
-      WHERE UPPER(codigo_material_recibido) = ?
+      SELECT
+        cma.cancelado,
+        cma.cantidad_actual,
+        cma.tiene_salida,
+        COALESCE(il.stock_actual, 0) AS stock_actual
+      FROM control_material_almacen_smd cma
+      LEFT JOIN inventario_lotes_smd il
+        ON il.codigo_material_recibido = cma.codigo_material_recibido
+      WHERE UPPER(cma.codigo_material_recibido) = ?
       LIMIT 1
     `, [code]);
     
@@ -128,16 +134,20 @@ const getByCode = async (req, res, next) => {
       if (record.cancelado === 1) {
         return res.status(400).json({ error: 'Este registro está cancelado', code: 'CANCELLED' });
       }
-      if (record.cantidad_actual <= 0) {
-        return res.status(400).json({ error: 'Este lote no tiene cantidad disponible (qty = 0)', code: 'NO_QUANTITY' });
+      if (Number(record.stock_actual || 0) <= 0) {
+        return res.status(400).json({ error: 'Este lote no tiene stock disponible', code: 'NO_AVAILABLE_STOCK' });
       }
     }
 
     // Si pasa todas las validaciones, obtener datos completos
     const [rows] = await pool.query(`
-      SELECT cma.*, COALESCE(cma.ubicacion_destino, cma.ubicacion_salida) as location,
+      SELECT cma.*,
+             COALESCE(il.stock_actual, 0) AS stock_actual,
+             COALESCE(cma.ubicacion_destino, cma.ubicacion_salida) as location,
              CASE WHEN q.id IS NOT NULL AND q.status NOT IN ('Released', 'Scrapped', 'Returned') THEN 1 ELSE 0 END as in_quarantine
       FROM control_material_almacen_smd cma
+      LEFT JOIN inventario_lotes_smd il
+        ON il.codigo_material_recibido = cma.codigo_material_recibido
       LEFT JOIN quarantine_smd q ON cma.id = q.warehousing_id
       WHERE UPPER(cma.codigo_material_recibido) = ?
       LIMIT 1

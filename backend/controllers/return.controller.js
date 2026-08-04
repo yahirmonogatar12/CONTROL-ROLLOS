@@ -1,4 +1,5 @@
 const { pool } = require('../config/database');
+const { assertReturnAllowed } = require('../services/solderPasteLifecycleService');
 
 // GET /api/return - Obtener todas las devoluciones
 exports.getAll = async (req, res, next) => {
@@ -76,6 +77,7 @@ exports.search = async (req, res, next) => {
 exports.getWarehousingInfo = async (req, res, next) => {
   try {
     const { code } = req.params;
+    await assertReturnAllowed(pool, code);
     
     const [rows] = await pool.query(`
       SELECT 
@@ -157,6 +159,8 @@ exports.create = async (req, res, next) => {
     const realPartNumber = material.numero_parte || part_number;
     const realLotNo = material.numero_lote_material || material_lot_no;
     const realCode = material.codigo_material_recibido || material_warehousing_code;
+
+    await assertReturnAllowed(connection, realCode, { lock: true });
 
     const [lotRows] = await connection.query(`
       SELECT id, total_entrada, total_salida

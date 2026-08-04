@@ -11,10 +11,30 @@ import 'package:material_warehousing_flutter/core/services/mobile_printer_servic
 import 'package:material_warehousing_flutter/core/services/scanner_config_service.dart';
 import 'package:material_warehousing_flutter/core/services/update_service.dart';
 import 'package:material_warehousing_flutter/core/services/fcm_service.dart';
+import 'package:material_warehousing_flutter/core/services/desktop_window_service.dart';
 import 'package:material_warehousing_flutter/firebase_options.dart';
+import 'package:material_warehousing_flutter/screens/solder_paste/solder_paste_display_window.dart';
 
-void main() async {
+void main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  final isDesktop = Platform.isWindows || Platform.isLinux || Platform.isMacOS;
+  if (isDesktop) {
+    await windowManager.ensureInitialized();
+    final currentWindow = await DesktopWindowService.initializeCurrentWindow();
+    if (DesktopWindowService.isSolderPasteDisplay(
+      currentWindow.arguments,
+    )) {
+      await ServerConfig.init();
+      await _initSolderPasteDisplayWindow();
+      runApp(const SolderPasteDisplayApp());
+      WidgetsBinding.instance.addPostFrameCallback((_) async {
+        await windowManager.show();
+        await windowManager.focus();
+      });
+      return;
+    }
+  }
 
   // Inicializar configuración de servidor (antes de cualquier llamada API)
   await ServerConfig.init();
@@ -82,4 +102,22 @@ Future<void> _showDesktopWindow() async {
   await windowManager.show();
   await windowManager.maximize();
   await windowManager.focus();
+}
+
+Future<void> _initSolderPasteDisplayWindow() async {
+  // La ventana secundaria se reutiliza. Destruir y volver a crear su engine
+  // puede cerrar el proceso principal en Windows.
+  await windowManager.setPreventClose(true);
+  await windowManager.setTitle('Monitor de pasta de soldadura');
+
+  const windowOptions = WindowOptions(
+    minimumSize: Size(1000, 600),
+    size: Size(1500, 820),
+    center: true,
+    backgroundColor: Color(0xFF343B4F),
+    skipTaskbar: false,
+    titleBarStyle: TitleBarStyle.normal,
+  );
+
+  await windowManager.waitUntilReadyToShow(windowOptions, () async {});
 }

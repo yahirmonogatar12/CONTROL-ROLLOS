@@ -341,6 +341,7 @@ async function createControlMaterialSalidaTable() {
         numero_parte TEXT,
         numero_lote TEXT,
         modelo TEXT,
+        linea_proceso TEXT NULL,
         vendedor VARCHAR(100),
         depto_salida TEXT,
         proceso_salida TEXT,
@@ -371,6 +372,7 @@ async function createControlMaterialSalidaTable() {
     await addColumnIfNotExists('control_material_salida', 'rechazado_por', 'VARCHAR(150) NULL');
     await addColumnIfNotExists('control_material_salida', 'rechazado_at', 'DATETIME NULL');
     await addColumnIfNotExists('control_material_salida', 'rechazado_motivo', 'TEXT NULL');
+    await addColumnIfNotExists('control_material_salida', 'linea_proceso', 'TEXT NULL AFTER modelo');
 
     console.log('✓ Tabla control_material_salida verificada/creada');
   } catch (err) {
@@ -761,6 +763,60 @@ async function reconcileActiveAuditReturns() {
     }
   } catch (err) {
     console.log('Nota: Error reconciliando retornos de auditoria:', err.message);
+  }
+}
+
+// Reparar auditorias activas donde una parte quedo en Mismatch aunque todas
+// sus etiquetas ya estan Found o ProcessedOut: la ubicacion nunca se cerraba
+// (no se ponia en verde) porque checkLocationCompletion exige partes cerradas.
+async function reconcileStuckAuditParts() {
+  try {
+    const [partsResult] = await pool.query(`
+      UPDATE inventory_audit_part_smd iap
+      JOIN inventory_audit_smd ia ON ia.id = iap.audit_id
+      SET iap.status = IF(
+            (SELECT COUNT(*) FROM inventory_audit_item_smd iai
+             WHERE iai.audit_id = iap.audit_id AND iai.location = iap.location
+               AND iai.numero_parte_snapshot = iap.numero_parte
+               AND iai.status = 'ProcessedOut') > 0,
+            'MissingConfirmed', 'VerifiedByScan'
+          ),
+          iap.confirmed_at = COALESCE(iap.confirmed_at, NOW())
+      WHERE ia.status = 'InProgress'
+        AND iap.status = 'Mismatch'
+        AND (SELECT COUNT(*) FROM inventory_audit_item_smd iai
+             WHERE iai.audit_id = iap.audit_id AND iai.location = iap.location
+               AND iai.numero_parte_snapshot = iap.numero_parte) > 0
+        AND (SELECT COUNT(*) FROM inventory_audit_item_smd iai
+             WHERE iai.audit_id = iap.audit_id AND iai.location = iap.location
+               AND iai.numero_parte_snapshot = iap.numero_parte
+               AND iai.status NOT IN ('Found', 'ProcessedOut')) = 0
+    `);
+
+    const [locResult] = await pool.query(`
+      UPDATE inventory_audit_location_smd ial
+      JOIN inventory_audit_smd ia ON ia.id = ial.audit_id
+      SET ial.status = IF(
+            (SELECT COUNT(*) FROM inventory_audit_part_smd iap
+             WHERE iap.audit_id = ial.audit_id AND iap.location = ial.location
+               AND iap.status = 'MissingConfirmed') > 0,
+            'Discrepancy', 'Verified'
+          ),
+          ial.completed_at = COALESCE(ial.completed_at, NOW())
+      WHERE ia.status = 'InProgress'
+        AND ial.status IN ('Pending', 'InProgress')
+        AND (SELECT COUNT(*) FROM inventory_audit_part_smd iap
+             WHERE iap.audit_id = ial.audit_id AND iap.location = ial.location) > 0
+        AND (SELECT COUNT(*) FROM inventory_audit_part_smd iap
+             WHERE iap.audit_id = ial.audit_id AND iap.location = ial.location
+               AND iap.status NOT IN ('Ok', 'VerifiedByScan', 'MissingConfirmed')) = 0
+    `);
+
+    if (partsResult.affectedRows > 0 || locResult.affectedRows > 0) {
+      console.log(`✓ Auditoria: ${partsResult.affectedRows} parte(s) y ${locResult.affectedRows} ubicacion(es) cerradas por reconciliacion`);
+    }
+  } catch (err) {
+    console.log('Nota: Error reconciliando partes atoradas de auditoria:', err.message);
   }
 }
 
@@ -1257,6 +1313,178 @@ async function enforceNonNegativeSmdInventory() {
   }
 }
 
+// Algunas instalaciones antiguas tienen las tablas de cuarentena, pero no la
+// bandera en almacén. Varias validaciones operativas (incluida pasta de
+// soldadura) dependen de esta columna, por lo que debe existir antes de aceptar
+// solicitudes.
+async function ensureQuarantineWarehouseFlag() {
+  const columnAdded = await addColumnIfNotExists(
+    'control_material_almacen_smd',
+    'en_cuarentena',
+    'TINYINT NOT NULL DEFAULT 0',
+  );
+
+  const [[column]] = await pool.query(`
+    SELECT COUNT(*) AS total
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'control_material_almacen_smd'
+      AND COLUMN_NAME = 'en_cuarentena'
+  `);
+  if (Number(column?.total || 0) === 0) {
+    throw new Error(
+      'No fue posible crear control_material_almacen_smd.en_cuarentena',
+    );
+  }
+
+  if (columnAdded) {
+    // Recuperar la marca para materiales que ya estaban en una cuarentena
+    // activa antes de agregar la columna.
+    await pool.query(`
+      UPDATE control_material_almacen_smd cma
+      SET cma.en_cuarentena = EXISTS (
+        SELECT 1
+        FROM quarantine_smd q
+        WHERE q.codigo_material_recibido = cma.codigo_material_recibido
+          AND q.status IN ('InQuarantine', 'Pending')
+      )
+    `);
+  }
+  console.log('✓ Bandera en_cuarentena verificada y reconciliada');
+}
+
+// ============================================
+// CICLO DE VIDA DE PASTA DE SOLDADURA
+// ============================================
+async function createSolderPasteLifecycleTables() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS solder_paste_process_smd (
+      id BIGINT AUTO_INCREMENT PRIMARY KEY,
+      warehousing_id BIGINT NOT NULL,
+      inventory_lot_id BIGINT NULL,
+      inventory_source VARCHAR(32) NOT NULL DEFAULT 'WAREHOUSE',
+      codigo_material_recibido VARCHAR(180) NOT NULL,
+      numero_parte VARCHAR(150) NULL,
+      numero_lote VARCHAR(150) NULL,
+      cycle_no INT NOT NULL DEFAULT 1,
+      status VARCHAR(32) NOT NULL,
+      removed_from_cold_at DATETIME NOT NULL,
+      ambient_ready_at DATETIME NOT NULL,
+      agitation_deadline_at DATETIME NULL,
+      agitation_started_at DATETIME NULL,
+      agitation_ready_at DATETIME NULL,
+      agitation_completed_at DATETIME NULL,
+      line_code VARCHAR(10) NULL,
+      line_started_at DATETIME NULL,
+      expires_at DATETIME NULL,
+      issued_quantity DECIMAL(15,4) NULL,
+      unit VARCHAR(30) NULL,
+      inventory_outgoing_id BIGINT NULL,
+      consumed_at DATETIME NULL,
+      scrapped_at DATETIME NULL,
+      scrap_record_id BIGINT NULL,
+      cancelled_at DATETIME NULL,
+      cancelled_by VARCHAR(150) NULL,
+      returned_to_cold_at DATETIME NULL,
+      returned_by VARCHAR(150) NULL,
+      started_by VARCHAR(150) NULL,
+      started_by_id INT NULL,
+      updated_by VARCHAR(150) NULL,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE KEY uk_solder_paste_code_cycle (codigo_material_recibido, cycle_no),
+      INDEX idx_solder_paste_code (codigo_material_recibido),
+      INDEX idx_solder_paste_status (status),
+      INDEX idx_solder_paste_ambient_ready (status, ambient_ready_at),
+      INDEX idx_solder_paste_ready_deadline (status, agitation_deadline_at),
+      INDEX idx_solder_paste_agitation_ready (status, agitation_ready_at),
+      INDEX idx_solder_paste_expires (status, expires_at)
+    )
+  `);
+
+  // Los ciclos creados antes de enlazar la pasta con el inventario general de
+  // almacén conservan su origen para poder terminarse sin alterar su salida.
+  const sourceColumnAdded = await addColumnIfNotExists(
+    'solder_paste_process_smd',
+    'inventory_source',
+    "VARCHAR(32) NULL AFTER inventory_lot_id",
+  );
+  if (sourceColumnAdded) {
+    await pool.query(`
+      UPDATE solder_paste_process_smd
+      SET inventory_source = 'SMD_LEGACY'
+      WHERE inventory_source IS NULL
+    `);
+    await pool.query(`
+      ALTER TABLE solder_paste_process_smd
+      MODIFY COLUMN inventory_source VARCHAR(32) NOT NULL DEFAULT 'WAREHOUSE'
+    `);
+  }
+
+  await addColumnIfNotExists(
+    'solder_paste_process_smd',
+    'agitation_deadline_at',
+    'DATETIME NULL AFTER ambient_ready_at',
+  );
+  await addColumnIfNotExists(
+    'solder_paste_process_smd',
+    'returned_to_cold_at',
+    'DATETIME NULL AFTER cancelled_by',
+  );
+  await addColumnIfNotExists(
+    'solder_paste_process_smd',
+    'returned_by',
+    'VARCHAR(150) NULL AFTER returned_to_cold_at',
+  );
+  await pool.query(`
+    UPDATE solder_paste_process_smd
+    SET agitation_deadline_at = DATE_ADD(ambient_ready_at, INTERVAL 8 HOUR)
+    WHERE agitation_deadline_at IS NULL
+  `);
+
+  const [readyDeadlineIndex] = await pool.query(`
+    SELECT INDEX_NAME
+    FROM INFORMATION_SCHEMA.STATISTICS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'solder_paste_process_smd'
+      AND INDEX_NAME = 'idx_solder_paste_ready_deadline'
+    LIMIT 1
+  `);
+  if (readyDeadlineIndex.length === 0) {
+    await pool.query(`
+      CREATE INDEX idx_solder_paste_ready_deadline
+      ON solder_paste_process_smd (status, agitation_deadline_at)
+    `);
+  }
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS solder_paste_event_smd (
+      id BIGINT AUTO_INCREMENT PRIMARY KEY,
+      process_id BIGINT NOT NULL,
+      event_type VARCHAR(50) NOT NULL,
+      from_status VARCHAR(32) NULL,
+      to_status VARCHAR(32) NULL,
+      usuario VARCHAR(150) NULL,
+      metadata JSON NULL,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_solder_paste_event_process (process_id, id),
+      INDEX idx_solder_paste_event_created (created_at),
+      CONSTRAINT fk_solder_paste_event_process
+        FOREIGN KEY (process_id) REFERENCES solder_paste_process_smd(id)
+        ON DELETE CASCADE
+    )
+  `);
+
+  await pool.query(`
+    INSERT IGNORE INTO scrap_motivos
+      (motivo, activo, creado_por, fecha_creacion)
+    VALUES
+      ('Pasta de soldadura vencida en línea (12 h)', 1, 'Sistema', NOW()),
+      ('Pasta de soldadura excedió 8 h lista para agitación', 1, 'Sistema', NOW())
+  `);
+  console.log('✓ Tablas de ciclo de vida de pasta de soldadura verificadas/creadas');
+}
+
 // Ejecutar todas las migraciones
 async function runMigrations() {
   console.log('🔄 Ejecutando migraciones de base de datos...');
@@ -1272,6 +1500,7 @@ async function runMigrations() {
   await enforceNonNegativeSmdInventory();
   await createInventoryAdjustmentSmdTable();
   await createQuarantineTables();
+  await ensureQuarantineWarehouseFlag();
   await createCancellationRequestsTable();
   await addIqcColumns();
   await createIqcTables();
@@ -1279,6 +1508,9 @@ async function runMigrations() {
   await createAuditTables();
   await addAuditSnapshotColumns();
   await createAuditPartTable();
+  // Primero cierra lo que ya estaba completo, luego los retornos reabren lo
+  // que corresponda (el reconcile de retornos debe tener la ultima palabra).
+  await reconcileStuckAuditParts();
   await reconcileActiveAuditReturns();
   // El lote viene de la etiqueta y supera los 100 chars originales.
   try {
@@ -1294,6 +1526,7 @@ async function runMigrations() {
   await createScrapMotivosTable();
   await createScrapRecordsTable();
   await createScrapRecordEditsTable();
+  await createSolderPasteLifecycleTables();
   await migrateScrapAreaColumn();
   await addColumnIfNotExists('scrap_records', 'cantidad', 'INT NOT NULL DEFAULT 1 AFTER usuario_registro');
   await addColumnIfNotExists('scrap_records', 'raw_barcode', 'VARCHAR(180) NULL AFTER part_no');

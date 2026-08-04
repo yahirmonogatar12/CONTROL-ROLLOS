@@ -25,6 +25,7 @@ import 'package:material_warehousing_flutter/screens/pcb_defects/pcb_defects_scr
 import 'package:material_warehousing_flutter/screens/scrap/scrap_screen.dart';
 import 'package:material_warehousing_flutter/screens/scrap_motivos/scrap_motivos_screen.dart';
 import 'package:material_warehousing_flutter/screens/smt_requests/smt_requests_screen.dart';
+import 'package:material_warehousing_flutter/screens/solder_paste/solder_paste_screen.dart';
 import 'package:material_warehousing_flutter/core/widgets/smt_notification_overlay.dart';
 import 'dart:async';
 
@@ -74,6 +75,7 @@ class _MainTabbedScreenState extends State<MainTabbedScreen> {
   final GlobalKey<LongTermInventoryScreenState> _inventoryScreenKey =
       GlobalKey();
   final GlobalKey<SMTRequestsScreenState> _smtRequestsScreenKey = GlobalKey();
+  final GlobalKey<SolderPasteScreenState> _solderPasteScreenKey = GlobalKey();
 
   // Lista de tabs visibles según permisos
   List<_TabInfo> _visibleTabs = [];
@@ -219,6 +221,14 @@ class _MainTabbedScreenState extends State<MainTabbedScreen> {
       _visibleTabs.add(_TabInfo(
         key: 'material_shortage',
         titleKey: 'material_shortage',
+      ));
+    }
+
+    // Control de pasta - requiere view_solder_paste
+    if (AuthService.canViewSolderPaste) {
+      _visibleTabs.add(_TabInfo(
+        key: 'solder_paste',
+        titleKey: 'solder_paste',
       ));
     }
 
@@ -459,6 +469,9 @@ class _MainTabbedScreenState extends State<MainTabbedScreen> {
         case 'material_return':
           _returnScreenKey.currentState?.requestScanFocus();
           break;
+        case 'solder_paste':
+          _solderPasteScreenKey.currentState?.requestScanFocus();
+          break;
       }
     });
   }
@@ -554,6 +567,11 @@ class _MainTabbedScreenState extends State<MainTabbedScreen> {
       case 'smt_requests':
         return SMTRequestsScreen(
           key: _smtRequestsScreenKey,
+          languageProvider: widget.languageProvider,
+        );
+      case 'solder_paste':
+        return SolderPasteScreen(
+          key: _solderPasteScreenKey,
           languageProvider: widget.languageProvider,
         );
       case 'user_management':

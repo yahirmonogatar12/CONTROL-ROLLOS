@@ -94,6 +94,8 @@ const defectDataRoutes = require('./routes/defect-data.routes');
 // Fase 14: Scrap (Control de scrap por escaneo QR)
 const scrapRoutes = require('./routes/scrap.routes');
 const scrapMotivosRoutes = require('./routes/scrap-motivos.routes');
+const solderPasteRoutes = require('./routes/solder-paste.routes');
+const { reconcileAll: reconcileSolderPasteLifecycle } = require('./services/solderPasteLifecycleService');
 
 const app = express();
 const jsonParser = express.json({
@@ -190,6 +192,7 @@ app.use('/api/defect-data', defectDataRoutes);
 // Fase 14: Scrap (catálogo compartido en scrap_motivos)
 app.use('/api/scrap', scrapRoutes);
 app.use('/api/scrap-motivos', scrapMotivosRoutes);
+app.use('/api/solder-paste', solderPasteRoutes);
 
 // ============================================
 // RUTA DE PRUEBA (Health Check)
@@ -325,6 +328,16 @@ async function startServer() {
 
   // No aceptar escaneos mientras se reparan datos o se reemplazan triggers.
   await runMigrations();
+
+  // Reconciliar inmediatamente y después cada 30 segundos. Todas las
+  // transiciones son idempotentes y se protegen con bloqueos de MySQL.
+  await reconcileSolderPasteLifecycle();
+  const solderPasteTimer = setInterval(() => {
+    reconcileSolderPasteLifecycle().catch((err) => {
+      console.error('Error reconciliando pasta de soldadura:', err.message);
+    });
+  }, 30000);
+  solderPasteTimer.unref?.();
 
   app.listen(PORT, HOST, () => {
     const localIP = getLocalIP();

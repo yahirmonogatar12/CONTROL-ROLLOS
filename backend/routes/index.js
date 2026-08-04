@@ -25,6 +25,7 @@ const quarantineRoutes = require('./quarantine.routes');
 
 // Fase 3: Inventory y Customers
 const inventoryRoutes = require('./inventory.routes');
+const solderPasteRoutes = require('./solder-paste.routes');
 const customersRoutes = require('./customers.routes');
 
 // Fase 4: Cancellation (Solicitudes de cancelación)
@@ -61,6 +62,7 @@ router.use('/quarantine', quarantineRoutes);
 
 // Fase 3
 router.use('/inventory', inventoryRoutes);
+router.use('/solder-paste', solderPasteRoutes);
 router.use('/customers', customersRoutes);
 
 // Fase 4

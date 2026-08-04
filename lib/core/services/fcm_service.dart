@@ -100,7 +100,12 @@ class FCMService {
 
   FCMService._();
 
-  final FirebaseMessaging _messaging = FirebaseMessaging.instance;
+  // Firebase Messaging se obtiene de forma diferida. En Windows/macOS/Linux
+  // Firebase no se inicializa y solo consultar el estado de FCM no debe lanzar
+  // [core/no-app] ni impedir abrir la configuración del servidor.
+  FirebaseMessaging? _messaging;
+  FirebaseMessaging get _messagingClient =>
+      _messaging ??= FirebaseMessaging.instance;
   final FlutterLocalNotificationsPlugin _localNotifications =
       FlutterLocalNotificationsPlugin();
 
@@ -196,7 +201,7 @@ class FCMService {
           options: DefaultFirebaseOptions.currentPlatform,
         );
       }
-      await _messaging.setAutoInitEnabled(true);
+      await _messagingClient.setAutoInitEnabled(true);
 
       if (!_backgroundHandlerRegistered) {
         FirebaseMessaging.onBackgroundMessage(
@@ -208,7 +213,7 @@ class FCMService {
       await _ensureLocalNotificationsInitialized();
       _registerRealtimeListeners();
 
-      final settings = await _messaging.requestPermission(
+      final settings = await _messagingClient.requestPermission(
         alert: true,
         badge: true,
         sound: true,
@@ -216,7 +221,7 @@ class FCMService {
       _permissionStatus = settings.authorizationStatus;
       debugPrint('[FCM] Permission: ${settings.authorizationStatus}');
 
-      _token = await _messaging.getToken();
+      _token = await _messagingClient.getToken();
       debugPrint('[FCM] Token: $_token');
       if (_token != null) {
         await _registerToken(_token!, serverOverride: serverOverride);
@@ -227,7 +232,7 @@ class FCMService {
 
       await _subscribeToMaterialRequestsTopic();
 
-      final initialMessage = await _messaging.getInitialMessage();
+      final initialMessage = await _messagingClient.getInitialMessage();
       if (initialMessage != null) {
         _handleMessageOpenedApp(initialMessage);
       }
@@ -281,7 +286,7 @@ class FCMService {
 
   Future<void> _subscribeToMaterialRequestsTopic() async {
     try {
-      await _messaging
+      await _messagingClient
           .subscribeToTopic('smt_material_requests')
           .timeout(const Duration(seconds: 8));
       _topicSubscribed = true;
@@ -301,7 +306,7 @@ class FCMService {
 
     FirebaseMessaging.onMessage.listen(_handleForegroundMessage);
     FirebaseMessaging.onMessageOpenedApp.listen(_handleMessageOpenedApp);
-    _messaging.onTokenRefresh.listen((newToken) {
+    _messagingClient.onTokenRefresh.listen((newToken) {
       _token = newToken;
       unawaited(_registerToken(newToken));
     });

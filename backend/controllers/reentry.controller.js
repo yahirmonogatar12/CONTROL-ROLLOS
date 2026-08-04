@@ -4,6 +4,7 @@
  */
 
 const { pool } = require('../config/database');
+const { assertReturnAllowed } = require('../services/solderPasteLifecycleService');
 
 async function findMaterialByCode(code) {
   const normalizedCode = String(code || '').trim();
@@ -26,6 +27,7 @@ async function findMaterialByCode(code) {
     FROM control_material_almacen_smd
     WHERE codigo_material_recibido = ?
       AND (cancelado IS NULL OR cancelado = 0)
+      AND (tiene_salida IS NULL OR tiene_salida = 0)
       AND cantidad_actual > 0
     LIMIT 1
   `, [normalizedCode]);
@@ -49,6 +51,7 @@ async function findMaterialByCode(code) {
     FROM control_material_almacen_smd
     WHERE codigo_material_recibido LIKE ?
       AND (cancelado IS NULL OR cancelado = 0)
+      AND (tiene_salida IS NULL OR tiene_salida = 0)
       AND cantidad_actual > 0
     ORDER BY fecha_recibo DESC
     LIMIT 1
@@ -69,6 +72,7 @@ const getByCode = async (req, res, next) => {
       return res.status(400).json({ error: 'Codigo requerido' });
     }
 
+    await assertReturnAllowed(pool, code);
     console.log('[Reentry] Buscando material con codigo:', code.trim());
 
     const material = await findMaterialByCode(code);
@@ -102,13 +106,24 @@ const getByCodes = async (req, res, next) => {
     )].slice(0, 20);
 
     const results = await Promise.all(uniqueCodes.map(async (code) => {
-      const material = await findMaterialByCode(code);
-      return {
-        inputCode: code,
-        found: !!material,
-        material: material || null,
-        error: material ? null : 'Material no encontrado o sin stock'
-      };
+      try {
+        await assertReturnAllowed(pool, code);
+        const material = await findMaterialByCode(code);
+        return {
+          inputCode: code,
+          found: !!material,
+          material: material || null,
+          error: material ? null : 'Material no encontrado o sin stock'
+        };
+      } catch (error) {
+        return {
+          inputCode: code,
+          found: false,
+          material: null,
+          error: error.message,
+          code: error.code || 'REENTRY_NOT_ALLOWED'
+        };
+      }
     }));
 
     res.json({
@@ -127,6 +142,7 @@ const getByCodes = async (req, res, next) => {
  * Guarda historial: ubicacion_anterior, fecha_reingreso, usuario_reingreso
  */
 const updateLocation = async (req, res, next) => {
+  let connection;
   try {
     const { id } = req.params;
     const { nueva_ubicacion, usuario_reingreso } = req.body;
@@ -140,18 +156,22 @@ const updateLocation = async (req, res, next) => {
 
     console.log('[Reentry] Actualizando ubicacion del material ID:', id, '-> Nueva ubicacion:', nueva_ubicacion);
 
-    const [current] = await pool.query(
-      'SELECT ubicacion_salida, codigo_material_recibido FROM control_material_almacen_smd WHERE id = ?',
+    connection = await pool.getConnection();
+    await connection.beginTransaction();
+    const [current] = await connection.query(
+      'SELECT ubicacion_salida, codigo_material_recibido FROM control_material_almacen_smd WHERE id = ? FOR UPDATE',
       [id]
     );
 
     if (current.length === 0) {
+      await connection.rollback();
       return res.status(404).json({ error: 'Registro no encontrado' });
     }
 
     const ubicacion_anterior = current[0].ubicacion_salida;
+    await assertReturnAllowed(connection, current[0].codigo_material_recibido, { lock: true });
 
-    await pool.query(`
+    await connection.query(`
       UPDATE control_material_almacen_smd
       SET ubicacion_salida = ?,
           ubicacion_destino = ?,
@@ -160,6 +180,7 @@ const updateLocation = async (req, res, next) => {
           usuario_reingreso = ?
       WHERE id = ?
     `, [nueva_ubicacion.trim(), nueva_ubicacion.trim(), ubicacion_anterior, usuario_reingreso || null, id]);
+    await connection.commit();
 
     console.log('[Reentry] Ubicacion actualizada correctamente');
 
@@ -171,8 +192,11 @@ const updateLocation = async (req, res, next) => {
       nueva_ubicacion: nueva_ubicacion.trim()
     });
   } catch (err) {
+    if (connection) await connection.rollback();
     console.error('[Reentry] Error en updateLocation:', err);
     next(err);
+  } finally {
+    connection?.release();
   }
 };
 
@@ -219,6 +243,7 @@ const bulkReentry = async (req, res, next) => {
         }
 
         const ubicacion_anterior = current[0].ubicacion_salida;
+        await assertReturnAllowed(connection, current[0].codigo_material_recibido, { lock: true });
 
         await connection.query(`
           UPDATE control_material_almacen_smd

@@ -792,7 +792,11 @@ class ApiService {
         body: json.encode(data),
       );
       if (response.statusCode == 201) {
-        return {'success': true};
+        final body = json.decode(response.body);
+        return {
+          'success': true,
+          if (body is Map<String, dynamic>) ...body,
+        };
       } else if (response.statusCode == 400) {
         final body = json.decode(response.body);
         return {
@@ -5074,4 +5078,155 @@ class ApiService {
       return [];
     }
   }
+
+  static Map<String, dynamic> _solderPasteResponse(dynamic response) {
+    try {
+      final decoded = json.decode(response.body);
+      if (decoded is Map<String, dynamic>) {
+        if (response.statusCode >= 200 && response.statusCode < 300) {
+          return decoded;
+        }
+        return {
+          'success': false,
+          ...decoded,
+          'message': decoded['message'] ??
+              decoded['error'] ??
+              'Error ${response.statusCode}',
+          'statusCode': response.statusCode,
+        };
+      }
+    } catch (_) {}
+    return {
+      'success': false,
+      'message': 'Respuesta inválida del servidor (${response.statusCode})',
+      'statusCode': response.statusCode,
+    };
+  }
+
+  static Future<Map<String, dynamic>> scanSolderPaste({
+    required String code,
+    required String usuario,
+    int? usuarioId,
+    bool enforceFifo = true,
+  }) async {
+    try {
+      final response = await http.post(
+        Uri.parse('$baseUrl/solder-paste/scan'),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode({
+          'code': code,
+          'usuario': usuario,
+          if (usuarioId != null) 'usuario_id': usuarioId,
+          'enforce_fifo': enforceFifo,
+        }),
+      );
+      return _solderPasteResponse(response);
+    } catch (e) {
+      return {'success': false, 'message': 'Error de conexión: $e'};
+    }
+  }
+
+  static Future<Map<String, dynamic>> getSolderPasteProcesses({
+    String? status,
+    String? search,
+    int limit = 200,
+  }) async {
+    try {
+      final uri = Uri.parse('$baseUrl/solder-paste/processes').replace(
+        queryParameters: {
+          if (status != null && status.isNotEmpty) 'status': status,
+          if (search != null && search.isNotEmpty) 'search': search,
+          'limit': '$limit',
+        },
+      );
+      return _solderPasteResponse(await http.get(uri));
+    } catch (e) {
+      return {'success': false, 'message': 'Error de conexión: $e'};
+    }
+  }
+
+  static Future<Map<String, dynamic>> getSolderPasteEvents({
+    int afterId = 0,
+    int limit = 200,
+  }) async {
+    try {
+      final uri = Uri.parse('$baseUrl/solder-paste/events').replace(
+        queryParameters: {'after_id': '$afterId', 'limit': '$limit'},
+      );
+      return _solderPasteResponse(await http.get(uri));
+    } catch (e) {
+      return {'success': false, 'message': 'Error de conexión: $e'};
+    }
+  }
+
+  static Future<Map<String, dynamic>> getSolderPasteStatus(String code) async {
+    try {
+      final encoded = Uri.encodeComponent(code.trim());
+      return _solderPasteResponse(
+        await http.get(Uri.parse('$baseUrl/solder-paste/status/$encoded')),
+      );
+    } catch (e) {
+      return {'success': false, 'message': 'Error de conexión: $e'};
+    }
+  }
+
+  static Future<Map<String, dynamic>> _solderPasteAction(
+    int processId,
+    String action, {
+    required String usuario,
+    Map<String, dynamic> extra = const {},
+  }) async {
+    try {
+      final response = await http.post(
+        Uri.parse('$baseUrl/solder-paste/$processId/$action'),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode({'usuario': usuario, ...extra}),
+      );
+      return _solderPasteResponse(response);
+    } catch (e) {
+      return {'success': false, 'message': 'Error de conexión: $e'};
+    }
+  }
+
+  static Future<Map<String, dynamic>> startSolderPasteAgitation(
+    int processId, {
+    required String usuario,
+  }) =>
+      _solderPasteAction(processId, 'agitation/start', usuario: usuario);
+
+  static Future<Map<String, dynamic>> assignSolderPasteLine(
+    int processId, {
+    required String line,
+    required String usuario,
+  }) =>
+      _solderPasteAction(
+        processId,
+        'line',
+        usuario: usuario,
+        extra: {'line': line},
+      );
+
+  static Future<Map<String, dynamic>> consumeSolderPaste(
+    int processId, {
+    required String usuario,
+  }) =>
+      _solderPasteAction(processId, 'consume', usuario: usuario);
+
+  static Future<Map<String, dynamic>> returnSolderPasteToCold(
+    int processId, {
+    required String usuario,
+    int? usuarioId,
+  }) =>
+      _solderPasteAction(
+        processId,
+        'return-to-cold',
+        usuario: usuario,
+        extra: {if (usuarioId != null) 'usuario_id': usuarioId},
+      );
+
+  static Future<Map<String, dynamic>> cancelSolderPaste(
+    int processId, {
+    required String usuario,
+  }) =>
+      _solderPasteAction(processId, 'cancel', usuario: usuario);
 }

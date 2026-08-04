@@ -426,6 +426,9 @@ exports.getAvailablePermissions = async (req, res, next) => {
       { key: 'edit_scrap_history', name: 'Editar Historial Scrap', category: 'Scrap', description: 'Puede modificar registros historicos de scrap' },
       { key: 'manage_scrap_motivos', name: 'Gestionar Catalogo de Defectos', category: 'Scrap', description: 'Puede ver y administrar el catalogo de defectos (motivos de scrap)' },
       { key: 'view_smt_requests', name: 'Ver Solicitudes SMT', category: 'SMT', description: 'Puede ver y surtir solicitudes de material de las líneas SMT' },
+      { key: 'view_solder_paste', name: 'Ver Pasta de Soldadura', category: 'SMT', description: 'Puede consultar procesos, tiempos e historial de pasta de soldadura' },
+      { key: 'write_solder_paste', name: 'Operar Pasta de Soldadura', category: 'SMT', description: 'Puede iniciar, avanzar, consumir o cancelar procesos de pasta de soldadura' },
+      { key: 'authorize_solder_paste_scrap_return', name: 'Autorizar Retorno de Scrap de Pasta', category: 'SMT', description: 'Puede retornar al refrigerador una pasta marcada como scrap que nunca llegó a línea' },
     ];
     res.json(permissions);
   } catch (err) {

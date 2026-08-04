@@ -120,11 +120,11 @@ class _ServerConfigWidgetState extends State<ServerConfigWidget> {
         borderRadius: BorderRadius.circular(8),
         border: Border.all(
           color: isMobileLocalhost
-              ? Colors.amber.withOpacity(0.7)
+              ? Colors.amber.withValues(alpha: 0.7)
               : _connectionStatus == true
-                  ? Colors.green.withOpacity(0.5)
+                  ? Colors.green.withValues(alpha: 0.5)
                   : _connectionStatus == false
-                      ? Colors.red.withOpacity(0.5)
+                      ? Colors.red.withValues(alpha: 0.5)
                       : Colors.white24,
         ),
       ),
@@ -168,7 +168,7 @@ class _ServerConfigWidgetState extends State<ServerConfigWidget> {
                               ? '${activeServer.ip}:${activeServer.port}'
                               : 'Tap para configurar',
                           style: TextStyle(
-                            color: Colors.white.withOpacity(0.6),
+                            color: Colors.white.withValues(alpha: 0.6),
                             fontSize: 12,
                           ),
                         ),
@@ -190,7 +190,7 @@ class _ServerConfigWidgetState extends State<ServerConfigWidget> {
                     IconButton(
                       icon: Icon(
                         Icons.refresh,
-                        color: Colors.white.withOpacity(0.7),
+                        color: Colors.white.withValues(alpha: 0.7),
                         size: 20,
                       ),
                       onPressed: _testConnection,
@@ -215,7 +215,7 @@ class _ServerConfigWidgetState extends State<ServerConfigWidget> {
               Container(
                 width: double.infinity,
                 padding: const EdgeInsets.all(12),
-                color: Colors.amber.withOpacity(0.08),
+                color: Colors.amber.withValues(alpha: 0.08),
                 child: const Text(
                   'Advertencia: en Android, "localhost" es el mismo telefono/emulador. Configure la IP de la PC del backend o use "Buscar servidores en red".',
                   style: TextStyle(
@@ -279,15 +279,15 @@ class _ServerConfigWidgetState extends State<ServerConfigWidget> {
               // Edit button
               IconButton(
                 icon: const Icon(Icons.edit, size: 18),
-                color: Colors.white54,
+                color: Colors.cyanAccent,
                 onPressed: () => _showEditServerDialog(server),
-                tooltip: 'Editar',
+                tooltip: 'Editar servidor',
               ),
               // Delete button (no mostrar para el servidor activo si solo hay uno)
               if (servers.length > 1 || !isActive)
                 IconButton(
                   icon: const Icon(Icons.delete, size: 18),
-                  color: Colors.red.withOpacity(0.7),
+                  color: Colors.red.withValues(alpha: 0.7),
                   onPressed: () => _confirmDeleteServer(server),
                   tooltip: 'Eliminar',
                 ),
@@ -378,13 +378,14 @@ class _ServerConfigWidgetState extends State<ServerConfigWidget> {
                     const SizedBox(height: 20),
                     Text(
                       'Escaneando red local...',
-                      style: TextStyle(color: Colors.white.withOpacity(0.7)),
+                      style:
+                          TextStyle(color: Colors.white.withValues(alpha: 0.7)),
                     ),
                     const SizedBox(height: 8),
                     Text(
                       'Asegúrate de estar conectado a la misma red WiFi que el servidor',
                       style: TextStyle(
-                        color: Colors.white.withOpacity(0.5),
+                        color: Colors.white.withValues(alpha: 0.5),
                         fontSize: 12,
                       ),
                       textAlign: TextAlign.center,
@@ -404,7 +405,7 @@ class _ServerConfigWidgetState extends State<ServerConfigWidget> {
                     Text(
                       'Verifica que el servidor esté ejecutándose y conectado a la misma red',
                       style: TextStyle(
-                        color: Colors.white.withOpacity(0.5),
+                        color: Colors.white.withValues(alpha: 0.5),
                         fontSize: 12,
                       ),
                       textAlign: TextAlign.center,
@@ -1174,17 +1175,6 @@ class _ServerConfigWidgetState extends State<ServerConfigWidget> {
                           return;
                         }
 
-                        if (centralHost.isEmpty) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                              content: Text(
-                                  'La IP/Hostname central para FCM es requerida'),
-                              backgroundColor: Colors.red,
-                            ),
-                          );
-                          return;
-                        }
-
                         setDialogState(() {
                           isSaving = true;
                         });
@@ -1212,43 +1202,42 @@ class _ServerConfigWidgetState extends State<ServerConfigWidget> {
                           await ServerConfig.addServer(serverToSave);
                         }
 
-                        final fcmResult =
-                            await ServerConfig.updateSmtRequestsConfig(
-                          serverToSave,
-                          centralHost: centralHost,
-                          centralPort: centralPort,
-                          centralUseHttps: centralUseHttps,
+                        if (!mounted) return;
+                        Navigator.pop(context);
+                        setState(() {
+                          _connectionStatus = null;
+                        });
+                        widget.onServerChanged?.call();
+                        ScaffoldMessenger.of(this.context).showSnackBar(
+                          const SnackBar(
+                            content:
+                                Text('Configuración del servidor guardada'),
+                            backgroundColor: Colors.green,
+                            duration: Duration(seconds: 2),
+                          ),
                         );
 
-                        if (!mounted) return;
-
-                        if (fcmResult['success'] == true) {
-                          Navigator.pop(context);
-                          setState(() {
-                            _connectionStatus = null;
-                          });
-                          widget.onServerChanged?.call();
-                          ScaffoldMessenger.of(this.context).showSnackBar(
-                            SnackBar(
-                              content: Text(
-                                fcmResult['success'] == true
-                                    ? 'Servidor y configuracion FCM guardados'
-                                    : 'Servidor guardado, pero FCM no se pudo actualizar: ${fcmResult['error'] ?? 'error desconocido'}',
+                        // FCM es complementario: nunca debe impedir cambiar el
+                        // servidor usado por la aplicación. Si hay datos del
+                        // central, se sincronizan en segundo plano.
+                        if (centralHost.isNotEmpty) {
+                          ServerConfig.updateSmtRequestsConfig(
+                            serverToSave,
+                            centralHost: centralHost,
+                            centralPort: centralPort,
+                            centralUseHttps: centralUseHttps,
+                          ).then((fcmResult) {
+                            if (!mounted || fcmResult['success'] == true)
+                              return;
+                            ScaffoldMessenger.of(this.context).showSnackBar(
+                              SnackBar(
+                                content: Text(
+                                  'Servidor guardado. FCM no se actualizó: ${fcmResult['error'] ?? 'error desconocido'}',
+                                ),
+                                backgroundColor: Colors.orange,
+                                duration: const Duration(seconds: 4),
                               ),
-                              backgroundColor: fcmResult['success'] == true
-                                  ? Colors.green
-                                  : Colors.orange,
-                              duration: const Duration(seconds: 4),
-                            ),
-                          );
-                        } else {
-                          setDialogState(() {
-                            isSaving = false;
-                            fcmConfigSuccess = false;
-                            fcmConfigMessage =
-                                'No se pudo guardar la configuracion FCM: ${fcmResult['error'] ?? 'error desconocido'}';
-                            deviceFcmMessage =
-                                'Corrige la configuracion central o usa el icono de conectar para probarla.';
+                            );
                           });
                         }
                       },
@@ -1333,7 +1322,7 @@ class ServerStatusBadge extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
         decoration: BoxDecoration(
           color: isMobileLocalhost
-              ? Colors.amber.withOpacity(0.18)
+              ? Colors.amber.withValues(alpha: 0.18)
               : Colors.black26,
           borderRadius: BorderRadius.circular(4),
         ),

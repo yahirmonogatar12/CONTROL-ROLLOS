@@ -3,6 +3,8 @@
  * Corresponde a: screens/material_outgoing/
  */
 const { pool } = require('../config/database');
+const { assertNotReserved } = require('../services/solderPasteLifecycleService');
+const { resolveOutgoingQuantity } = require('../services/outgoingStockService');
 
 function normalizeCode(value) {
   return String(value || '').trim().toUpperCase();
@@ -17,21 +19,9 @@ function outgoingError(message, code, statusCode = 409) {
 
 async function lockAndValidateOutgoingStock(connection, {
   codigoMaterial,
-  cantidad
+  cantidad,
+  useAvailableStock = false
 }) {
-  const isMissingQuantity = cantidad === null
-    || cantidad === undefined
-    || (typeof cantidad === 'string' && cantidad.trim() === '');
-  const outgoingQty = Number(cantidad);
-
-  if (isMissingQuantity || !Number.isFinite(outgoingQty) || outgoingQty < 0) {
-    throw outgoingError(
-      'La cantidad de salida debe ser un número mayor o igual a cero',
-      'INVALID_OUTGOING_QUANTITY',
-      400
-    );
-  }
-
   const [lotRows] = await connection.query(`
     SELECT id, total_entrada, total_salida, stock_actual
     FROM inventario_lotes_smd
@@ -48,13 +38,11 @@ async function lockAndValidateOutgoingStock(connection, {
   }
 
   const availableQty = Number(lotRows[0].stock_actual || 0);
-  if (outgoingQty > availableQty) {
-    throw outgoingError(
-      `Stock insuficiente. Disponible: ${availableQty}; solicitado: ${outgoingQty}`,
-      'INSUFFICIENT_STOCK',
-      409
-    );
-  }
+  const outgoingQty = resolveOutgoingQuantity({
+    availableQty,
+    requestedQty: cantidad,
+    useAvailableStock
+  });
 
   return { outgoingQty, availableQty, inventoryLotId: lotRows[0].id };
 }
@@ -73,12 +61,20 @@ async function validateOutgoingCodes(codes) {
       c.numero_parte,
       c.numero_lote_material,
       c.cantidad_actual,
+      COALESCE(il.stock_actual, 0) AS stock_actual,
       c.especificacion,
       c.ubicacion_salida,
       c.tiene_salida,
       c.cancelado,
+      EXISTS (
+        SELECT 1 FROM solder_paste_process_smd sp
+        WHERE sp.codigo_material_recibido = c.codigo_material_recibido
+          AND sp.status IN ('TEMPERING', 'READY_FOR_AGITATION', 'AGITATING', 'READY_FOR_LINE')
+      ) AS solder_paste_reserved,
       COALESCE(m.standard_pack, 0) as standard_pack
     FROM control_material_almacen_smd c
+    LEFT JOIN inventario_lotes_smd il
+      ON il.codigo_material_recibido = c.codigo_material_recibido
     LEFT JOIN materiales m ON c.numero_parte = m.numero_parte
     WHERE c.codigo_material_recibido IN (${placeholders})
   `, normalizedCodes);
@@ -135,6 +131,24 @@ async function validateOutgoingCodes(codes) {
       };
     }
 
+    if (Number(material.stock_actual || 0) <= 0) {
+      return {
+        inputCode: code,
+        valid: false,
+        error: 'El lote no tiene stock disponible',
+        code: 'NO_AVAILABLE_STOCK'
+      };
+    }
+
+    if (Number(material.solder_paste_reserved || 0) === 1) {
+      return {
+        inputCode: code,
+        valid: false,
+        error: 'Reservado por proceso de pasta de soldadura',
+        code: 'SOLDER_PASTE_RESERVED'
+      };
+    }
+
     if (material.numero_lote_material && blacklistMap.has(material.numero_lote_material)) {
       return {
         inputCode: code,
@@ -151,7 +165,8 @@ async function validateOutgoingCodes(codes) {
         codigo_material_recibido: material.codigo_material_recibido,
         numero_parte: material.numero_parte,
         numero_lote: material.numero_lote_material,
-        cantidad: material.cantidad_actual,
+        cantidad: material.stock_actual,
+        stock_actual: material.stock_actual,
         especificacion: material.especificacion,
         ubicacion: material.ubicacion_salida,
         standard_pack: material.standard_pack || 0
@@ -291,6 +306,8 @@ const createBatch = async (req, res, next) => {
 
         const mat = checkRows[0];
 
+        await assertNotReserved(connection, code, { lock: true });
+
         if (mat.cancelado === 1) {
           results.failed.push({ code, error: 'Cancelado' });
           continue;
@@ -316,7 +333,7 @@ const createBatch = async (req, res, next) => {
 
         const { outgoingQty } = await lockAndValidateOutgoingStock(connection, {
           codigoMaterial: code,
-          cantidad: mat.cantidad_actual
+          useAvailableStock: true
         });
 
         // Insertar salida
@@ -441,7 +458,6 @@ const create = async (req, res, next) => {
       linea_proceso,
       comparacion_escaneada,
       comparacion_resultado,
-      cantidad_salida,
       especificacion_material,
       usuario_registro,
       vendedor
@@ -476,6 +492,8 @@ const create = async (req, res, next) => {
 
     const warehouseMaterial = checkRows[0];
 
+    await assertNotReserved(connection, normalizedMaterialCode, { lock: true });
+
     if (warehouseMaterial.cancelado === 1) {
       throw outgoingError('Este material está cancelado', 'CANCELLED', 409);
     }
@@ -490,17 +508,8 @@ const create = async (req, res, next) => {
 
     const { outgoingQty } = await lockAndValidateOutgoingStock(connection, {
       codigoMaterial: warehouseMaterial.codigo_material_recibido,
-      cantidad: cantidad_salida
+      useAvailableStock: true
     });
-
-    const labelQty = Number(warehouseMaterial.cantidad_actual || 0);
-    if (outgoingQty > labelQty) {
-      throw outgoingError(
-        `La salida excede la cantidad de la etiqueta. Disponible: ${labelQty}; solicitado: ${outgoingQty}`,
-        'INSUFFICIENT_LABEL_STOCK',
-        409
-      );
-    }
 
     // Siempre usar NOW() de MySQL para fecha_salida y fecha_registro
     const [result] = await connection.query(`
@@ -537,8 +546,7 @@ const create = async (req, res, next) => {
       vendedor || ''
     ]);
 
-    // Marcar como tiene salida SOLO si la cantidad_salida es > 0
-    // Si es 0 (comparación NG), no marcar como tiene salida para permitir salida posterior
+    // La cantidad canónica viene del stock actual y siempre es positiva.
     if (outgoingQty > 0) {
       await connection.query(`
         UPDATE control_material_almacen_smd 
@@ -551,6 +559,7 @@ const create = async (req, res, next) => {
 
     res.status(201).json({
       id: result.insertId,
+      cantidad_salida: outgoingQty,
       message: 'Registro de salida creado exitosamente'
     });
   } catch (err) {
@@ -728,6 +737,8 @@ const splitLot = async (req, res, next) => {
     }
 
     const original = originalRows[0];
+
+    await assertNotReserved(connection, original.codigo_material_recibido, { lock: true });
 
     // Validar que no esté cancelado
     if (original.cancelado === 1) {

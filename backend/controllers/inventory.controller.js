@@ -4,6 +4,7 @@
  */
 
 const { pool } = require('../config/database');
+const { assertNotReserved } = require('../services/solderPasteLifecycleService');
 
 const normalizeRequiredText = (value) => String(value ?? '').trim();
 
@@ -565,6 +566,7 @@ exports.adjustInventoryLot = async (req, res, next) => {
     }
 
     const lot = rows[0];
+    await assertNotReserved(connection, lot.codigo_material_recibido, { lock: true });
     if (Number(lot.cancelado) === 1) {
       throw adjustmentError(
         409,

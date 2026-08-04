@@ -12,14 +12,19 @@ import 'package:material_warehousing_flutter/screens/material_outgoing/widgets/r
 
 class OutgoingFormPanel extends StatefulWidget {
   final LanguageProvider languageProvider;
-  final Function(String modelo, List<Map<String, dynamic>> bomData, int planCount)? onModelSelected;
+  final Function(
+          String modelo, List<Map<String, dynamic>> bomData, int planCount)?
+      onModelSelected;
   final Function(Map<String, dynamic> outgoingData)? onOutgoingSaved;
   final List<Map<String, dynamic>> currentBomData;
+
   /// Callback to notify when requirements mode is activated/deactivated
-  final Function(bool isRequirementsMode, RequirementsLoaderResult? requirement)? onRequirementsModeChanged;
-  
+  final Function(
+          bool isRequirementsMode, RequirementsLoaderResult? requirement)?
+      onRequirementsModeChanged;
+
   const OutgoingFormPanel({
-    super.key, 
+    super.key,
     required this.languageProvider,
     this.onModelSelected,
     this.onOutgoingSaved,
@@ -35,52 +40,54 @@ class OutgoingFormPanelState extends State<OutgoingFormPanel> {
   // Lista de planes del día
   List<Map<String, dynamic>> _todayPlans = [];
   Set<int> _selectedPlanIndices = {}; // Multi-selección
-  
+
   // Fecha seleccionada para filtrar planes
   DateTime _selectedDate = DateTime.now();
-  
+
   // Controlador para Lot No (escaneo)
   final TextEditingController _lotNoController = TextEditingController();
   final FocusNode _lotNoFocusNode = FocusNode();
-  
+
   // Controladores para los campos del panel morado
   final TextEditingController _materialCodeController = TextEditingController();
   final TextEditingController _materialSpecController = TextEditingController();
   final TextEditingController _partNumberController = TextEditingController();
   final TextEditingController _currentQtyController = TextEditingController();
-  final TextEditingController _materialLotNoController = TextEditingController();
-  
+  final TextEditingController _materialLotNoController =
+      TextEditingController();
+
   // Controlador para comparación escaneada
   final TextEditingController _comparacionController = TextEditingController();
   final FocusNode _comparacionFocusNode = FocusNode();
-  
+
   // Valores de los dropdowns
   String _outDepartment = 'Almacen';
   String _outProcess = 'SMD';
-  
+
   // Línea de proceso - PERSISTENTE (no se resetea al limpiar)
   String _lineaProceso = 'LINEA A';
-  
+
   // Resultado de validación de comparación
   String? _comparacionResultado; // 'OK', 'NG', null
   String? _comparacionCatalogo; // Comparación registrada en el catálogo
-  
+
   // Datos del material escaneado
   Map<String, dynamic>? _scannedMaterial;
-  
+
   // Validaciones (habilitadas por defecto)
   bool _bomValidation = true;
   bool _fifoValidation = true;
-  
+
   // Dividir lote - se activa según configuración del material
   bool _dividirLote = false;
-  bool _salidaAutomatica = false; // Si está activo, divide automáticamente sin modal
+  bool _salidaAutomatica =
+      false; // Si está activo, divide automáticamente sin modal
   int? _standardPack;
 
   // Requirements mode
   bool _isRequirementsMode = false;
   RequirementsLoaderResult? _loadedRequirement;
-  
+
   // Pending requirements count for badge notification
   int _pendingRequirementsCount = 0;
 
@@ -93,7 +100,7 @@ class OutgoingFormPanelState extends State<OutgoingFormPanel> {
     super.initState();
     _loadTodayPlans();
     _loadPendingRequirementsCount();
-    
+
     // Auto-focus inicial en el campo de escaneo
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _lotNoFocusNode.requestFocus();
@@ -131,12 +138,12 @@ class OutgoingFormPanelState extends State<OutgoingFormPanel> {
   void requestScanFocus() {
     final currentFocus = FocusManager.instance.primaryFocus;
     final isTextFieldFocused = currentFocus?.context?.widget is EditableText;
-    
+
     if (!isTextFieldFocused) {
       _lotNoFocusNode.requestFocus();
     }
   }
-  
+
   /// Forzar focus en el campo de escaneo (después de operaciones importantes)
   void forceScanFocus() {
     _lotNoFocusNode.requestFocus();
@@ -162,36 +169,46 @@ class OutgoingFormPanelState extends State<OutgoingFormPanel> {
         // Clear plan selection when switching to requirements mode
         _selectedPlanIndices = {};
       });
-      
+
       // Notify parent about requirements mode and load items into BOM grid
       widget.onRequirementsModeChanged?.call(true, result);
-      
+
       // Convert requirement items to BOM format for the grid
-      final bomData = result.items.map((item) => {
-        'side': result.areaDestino, // Process = area destino del requerimiento
-        'material_code': item['numero_parte'] ?? '',
-        'codigo_material': item['numero_parte'] ?? '',
-        'numero_parte': item['numero_parte'] ?? '',
-        'descripcion': item['descripcion'] ?? '',
-        'tipo_material': item['especificacion_material'] ?? item['descripcion'] ?? '', // Material Property = spec
-        'required_qty': item['cantidad_requerida'] ?? 0,
-        'cantidad_requerida': item['cantidad_requerida'] ?? 0,
-        'outgoing_qty': item['cantidad_entregada'] ?? 0, // Lo que ya se ha entregado
-        'cantidad_entregada': item['cantidad_entregada'] ?? 0,
-        'in_line': item['cantidad_disponible'] ?? 0, // Inventario disponible
-        'location': item['ubicaciones_disponibles'] ?? item['ubicacion_material'] ?? '',
-        'requirement_item_id': item['id'],
-      }).toList();
-      
+      final bomData = result.items
+          .map((item) => {
+                'side': result
+                    .areaDestino, // Process = area destino del requerimiento
+                'material_code': item['numero_parte'] ?? '',
+                'codigo_material': item['numero_parte'] ?? '',
+                'numero_parte': item['numero_parte'] ?? '',
+                'descripcion': item['descripcion'] ?? '',
+                'tipo_material': item['especificacion_material'] ??
+                    item['descripcion'] ??
+                    '', // Material Property = spec
+                'required_qty': item['cantidad_requerida'] ?? 0,
+                'cantidad_requerida': item['cantidad_requerida'] ?? 0,
+                'outgoing_qty': item['cantidad_entregada'] ??
+                    0, // Lo que ya se ha entregado
+                'cantidad_entregada': item['cantidad_entregada'] ?? 0,
+                'in_line':
+                    item['cantidad_disponible'] ?? 0, // Inventario disponible
+                'location': item['ubicaciones_disponibles'] ??
+                    item['ubicacion_material'] ??
+                    '',
+                'requirement_item_id': item['id'],
+              })
+          .toList();
+
       widget.onModelSelected?.call(
         result.codigoRequerimiento,
         bomData,
         1,
       );
-      
+
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('${widget.languageProvider.tr('requirement_loaded')}: ${result.codigoRequerimiento}'),
+          content: Text(
+              '${widget.languageProvider.tr('requirement_loaded')}: ${result.codigoRequerimiento}'),
           backgroundColor: Colors.green,
         ),
       );
@@ -209,7 +226,8 @@ class OutgoingFormPanelState extends State<OutgoingFormPanel> {
   }
 
   Future<void> _loadTodayPlans() async {
-    final dateStr = '${_selectedDate.year}-${_selectedDate.month.toString().padLeft(2, '0')}-${_selectedDate.day.toString().padLeft(2, '0')}';
+    final dateStr =
+        '${_selectedDate.year}-${_selectedDate.month.toString().padLeft(2, '0')}-${_selectedDate.day.toString().padLeft(2, '0')}';
     final plans = await ApiService.getTodayPlans(date: dateStr);
     if (mounted) {
       setState(() {
@@ -222,7 +240,7 @@ class OutgoingFormPanelState extends State<OutgoingFormPanel> {
   // ========================================
   // SISTEMA DE COLA DE ESCANEOS
   // ========================================
-  
+
   /// Agregar código a la cola de escaneos
   void _addToScanQueue(String code) {
     if (code.isEmpty) return;
@@ -241,29 +259,29 @@ class OutgoingFormPanelState extends State<OutgoingFormPanel> {
 
     _isProcessingQueue = true;
     final code = _scanQueue.removeAt(0);
-    
+
     try {
       // Buscar material
       await _onLotNoScanned(code);
-      
+
       if (_scannedMaterial != null) {
         // Si tiene dividir_lote activo, detener cola y mostrar diálogo
         if (_dividirLote && _standardPack != null && _standardPack! > 0) {
           // Poner el código en el campo para que lo procese el flujo normal con diálogo
           _lotNoController.text = code;
           _isProcessingQueue = false;
-          
+
           // Mostrar notificación indicando que requiere dividir lote
           _showLargeNotification(
             '📦 DIVIDIR LOTE',
             '$code - Presione SAVE para dividir',
             Colors.purple,
           );
-          
+
           // No continuar procesando la cola, esperar a que el usuario complete
           return;
         }
-        
+
         // Guardar salida directamente sin dividir lote en modo rápido
         await _saveOutgoingDirect(code);
       } else {
@@ -281,7 +299,7 @@ class OutgoingFormPanelState extends State<OutgoingFormPanel> {
         Colors.red,
       );
     }
-    
+
     // Procesar siguiente en cola
     if (_scanQueue.isNotEmpty) {
       await _processNextInQueue();
@@ -293,7 +311,7 @@ class OutgoingFormPanelState extends State<OutgoingFormPanel> {
   /// Guardar salida directamente (sin dividir lote) para escaneo rápido
   Future<void> _saveOutgoingDirect(String code) async {
     final tr = widget.languageProvider.tr;
-    
+
     // Validar que el material no tenga ya una salida
     final checkResult = await ApiService.checkMaterialHasOutgoing(code);
     if (checkResult['has_outgoing'] == true) {
@@ -304,18 +322,24 @@ class OutgoingFormPanelState extends State<OutgoingFormPanel> {
       );
       return;
     }
-    
+
     // Validación BOM
     if (_bomValidation && widget.currentBomData.isNotEmpty) {
-      final materialCode = _scannedMaterial!['codigo_material']?.toString() ?? '';
+      final materialCode =
+          _scannedMaterial!['codigo_material']?.toString() ?? '';
       final partNumber = _scannedMaterial!['numero_parte']?.toString() ?? '';
-      
+
       final isInBom = widget.currentBomData.any((bomItem) {
-        final bomMaterialCode = (bomItem['codigo_material']?.toString() ?? bomItem['material_code']?.toString() ?? '').toUpperCase();
-        final bomPartNumber = (bomItem['numero_parte']?.toString() ?? '').toUpperCase();
-        return bomMaterialCode == materialCode.toUpperCase() || bomPartNumber == partNumber.toUpperCase();
+        final bomMaterialCode = (bomItem['codigo_material']?.toString() ??
+                bomItem['material_code']?.toString() ??
+                '')
+            .toUpperCase();
+        final bomPartNumber =
+            (bomItem['numero_parte']?.toString() ?? '').toUpperCase();
+        return bomMaterialCode == materialCode.toUpperCase() ||
+            bomPartNumber == partNumber.toUpperCase();
       });
-      
+
       if (!isInBom) {
         _showLargeNotification(
           '⚠ $code',
@@ -325,13 +349,15 @@ class OutgoingFormPanelState extends State<OutgoingFormPanel> {
         return;
       }
     }
-    
+
     // Validación FIFO
     if (_fifoValidation) {
-      final materialCode = _scannedMaterial!['codigo_material']?.toString() ?? '';
+      final materialCode =
+          _scannedMaterial!['codigo_material']?.toString() ?? '';
       final currentDate = _scannedMaterial!['fecha_recibo']?.toString() ?? '';
-      
-      final olderMaterial = await ApiService.checkFifoValidation(materialCode, currentDate);
+
+      final olderMaterial =
+          await ApiService.checkFifoValidation(materialCode, currentDate);
       if (olderMaterial != null && olderMaterial['has_older'] == true) {
         final olderCode = olderMaterial['older_code'] ?? '';
         final olderDate = olderMaterial['older_date'] ?? '';
@@ -343,47 +369,58 @@ class OutgoingFormPanelState extends State<OutgoingFormPanel> {
         return;
       }
     }
-    
+
     // Obtener los modelos seleccionados
     final modelos = _selectedPlanIndices
         .map((i) => _todayPlans[i]['lot_no']?.toString() ?? '')
         .where((s) => s.isNotEmpty)
         .toList();
     final modelo = modelos.join(', ');
-    
-    // Si la comparación es NG, no deducir cantidad (solo registrar como malo)
-    final cantidadSalida = _comparacionResultado == 'NG' 
-      ? 0.0 
-      : double.tryParse(_scannedMaterial!['cantidad_actual']?.toString() ?? '0') ?? 0;
-    
+
+    final cantidadSalida = double.tryParse(
+          _scannedMaterial!['stock_actual']?.toString() ?? '0',
+        ) ??
+        0;
+
     // No enviar fecha_salida - el backend usa NOW() de MySQL
     final outgoingData = {
       'codigo_material_recibido': code,
       'numero_parte': _scannedMaterial!['numero_parte']?.toString() ?? '',
-      'numero_lote': _scannedMaterial!['numero_lote_material']?.toString() ?? '',
+      'numero_lote':
+          _scannedMaterial!['numero_lote_material']?.toString() ?? '',
       'modelo': modelo,
       'depto_salida': _outDepartment,
       'proceso_salida': _outProcess,
       'linea_proceso': _lineaProceso,
-      'comparacion_escaneada': _comparacionController.text.isNotEmpty ? _comparacionController.text : null,
+      'comparacion_escaneada': _comparacionController.text.isNotEmpty
+          ? _comparacionController.text
+          : null,
       'comparacion_resultado': _comparacionResultado,
       'cantidad_salida': cantidadSalida,
-      'especificacion_material': _scannedMaterial!['especificacion']?.toString() ?? '',
+      'especificacion_material':
+          _scannedMaterial!['especificacion']?.toString() ?? '',
       'material_code': _scannedMaterial!['codigo_material']?.toString() ?? '',
-      'material_property': _scannedMaterial!['propiedad_material']?.toString() ?? '',
+      'material_property':
+          _scannedMaterial!['propiedad_material']?.toString() ?? '',
       'msl_level': _scannedMaterial!['nivel_msl']?.toString() ?? '',
       'vendedor': _scannedMaterial!['vendedor']?.toString() ?? '',
-      'usuario_registro': AuthService.currentUser?.nombreCompleto ?? 'Desconocido',
+      'usuario_registro':
+          AuthService.currentUser?.nombreCompleto ?? 'Desconocido',
     };
-    
+
     final result = await ApiService.createOutgoingWithResponse(outgoingData);
-    
+
     if (result['success'] == true && mounted) {
+      final cantidadConfirmada = double.tryParse(
+            result['cantidad_salida']?.toString() ?? '',
+          ) ??
+          cantidadSalida;
+      outgoingData['cantidad_salida'] = cantidadConfirmada;
       widget.onOutgoingSaved?.call(outgoingData);
-      
+
       // Link to requirement if in requirements mode
       if (_isRequirementsMode && _loadedRequirement != null) {
-        final cantidad = int.tryParse(_scannedMaterial!['cantidad_actual']?.toString() ?? '0') ?? 0;
+        final cantidad = cantidadConfirmada.round();
         await ApiService.linkOutgoingToRequirement(
           numeroParte: _scannedMaterial!['numero_parte']?.toString() ?? '',
           areaDestino: _loadedRequirement!.areaDestino,
@@ -391,12 +428,12 @@ class OutgoingFormPanelState extends State<OutgoingFormPanel> {
           codigoSalida: code,
         );
       }
-      
+
       // Mostrar mensaje diferente según el resultado de comparación
       if (_comparacionResultado == 'NG') {
         _showLargeNotification(
           '✗ COMPARACIÓN NG',
-          '$code - Registrado pero NO enviado',
+          '$code - Salida registrada con stock actual',
           Colors.red,
         );
       } else {
@@ -422,11 +459,11 @@ class OutgoingFormPanelState extends State<OutgoingFormPanel> {
         );
       }
     }
-    
+
     // Limpiar campos del panel morado
     _clearFormFields();
   }
-  
+
   /// Limpiar solo los campos de material, preservar checkboxes de división y línea de proceso
   void _clearFormFields() {
     setState(() {
@@ -448,10 +485,10 @@ class OutgoingFormPanelState extends State<OutgoingFormPanel> {
   /// Mostrar notificación grande en la parte superior
   void _showLargeNotification(String title, String message, Color color) {
     if (!mounted) return;
-    
+
     // Quitar snackbar anterior si existe
     ScaffoldMessenger.of(context).hideCurrentSnackBar();
-    
+
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Container(
@@ -459,9 +496,11 @@ class OutgoingFormPanelState extends State<OutgoingFormPanel> {
           child: Row(
             children: [
               Icon(
-                color == Colors.green ? Icons.check_circle : 
-                color == Colors.orange ? Icons.warning :
-                Icons.error,
+                color == Colors.green
+                    ? Icons.check_circle
+                    : color == Colors.orange
+                        ? Icons.warning
+                        : Icons.error,
                 color: Colors.white,
                 size: 32,
               ),
@@ -493,7 +532,8 @@ class OutgoingFormPanelState extends State<OutgoingFormPanel> {
               // Mostrar indicador de cola si hay más items
               if (_scanQueue.isNotEmpty)
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                   decoration: BoxDecoration(
                     color: Colors.white.withOpacity(0.2),
                     borderRadius: BorderRadius.circular(12),
@@ -522,10 +562,10 @@ class OutgoingFormPanelState extends State<OutgoingFormPanel> {
   // Buscar material por código escaneado
   Future<void> _onLotNoScanned(String code) async {
     if (code.isEmpty) return;
-    
+
     // Normalizar a mayúsculas para búsqueda case-insensitive
     code = code.trim().toUpperCase();
-    
+
     final material = await ApiService.getWarehousingByCode(code);
     if (material != null && mounted) {
       // Obtener configuración de dividir_lote del catálogo de materiales
@@ -535,40 +575,51 @@ class OutgoingFormPanelState extends State<OutgoingFormPanel> {
       bool materialDividirLote = false;
       int? materialStandardPack;
       String? comparacionCatalogo; // Comparación registrada en catálogo
-      
+
       // Primero intentar buscar por numero_parte
       if (partNumber.isNotEmpty) {
-        final materialConfig = await ApiService.getMaterialByPartNumber(partNumber);
+        final materialConfig =
+            await ApiService.getMaterialByPartNumber(partNumber);
         if (materialConfig != null) {
-          materialDividirLote = materialConfig['dividir_lote'] == 1 || materialConfig['dividir_lote'] == true;
-          materialStandardPack = int.tryParse(materialConfig['standard_pack']?.toString() ?? '');
+          materialDividirLote = materialConfig['dividir_lote'] == 1 ||
+              materialConfig['dividir_lote'] == true;
+          materialStandardPack =
+              int.tryParse(materialConfig['standard_pack']?.toString() ?? '');
           comparacionCatalogo = materialConfig['comparacion']?.toString();
-          print('>>> Encontrado por numero_parte: $partNumber, dividir_lote=$materialDividirLote, standard_pack=$materialStandardPack, comparacion=$comparacionCatalogo');
+          print(
+              '>>> Encontrado por numero_parte: $partNumber, dividir_lote=$materialDividirLote, standard_pack=$materialStandardPack, comparacion=$comparacionCatalogo');
         }
       }
-      
+
       // Si no se encontró por numero_parte, buscar por codigo_material
       if (!materialDividirLote && materialCode.isNotEmpty) {
         final materialConfig = await ApiService.getMaterialByCode(materialCode);
         if (materialConfig != null) {
-          materialDividirLote = materialConfig['dividir_lote'] == 1 || materialConfig['dividir_lote'] == true;
-          materialStandardPack = int.tryParse(materialConfig['standard_pack']?.toString() ?? '');
+          materialDividirLote = materialConfig['dividir_lote'] == 1 ||
+              materialConfig['dividir_lote'] == true;
+          materialStandardPack =
+              int.tryParse(materialConfig['standard_pack']?.toString() ?? '');
           comparacionCatalogo ??= materialConfig['comparacion']?.toString();
-          print('>>> Encontrado por codigo_material: $materialCode, dividir_lote=$materialDividirLote, standard_pack=$materialStandardPack, comparacion=$comparacionCatalogo');
+          print(
+              '>>> Encontrado por codigo_material: $materialCode, dividir_lote=$materialDividirLote, standard_pack=$materialStandardPack, comparacion=$comparacionCatalogo');
         }
       }
-      
+
       // Preservar estado de checkboxes si ya estaban activados por el usuario
       final keepDividirLote = _dividirLote;
       final keepSalidaAutomatica = _salidaAutomatica;
-      
+
       setState(() {
         _scannedMaterial = material;
-        _materialCodeController.text = material['codigo_material']?.toString() ?? '';
-        _materialSpecController.text = material['especificacion']?.toString() ?? '';
+        _materialCodeController.text =
+            material['codigo_material']?.toString() ?? '';
+        _materialSpecController.text =
+            material['especificacion']?.toString() ?? '';
         _partNumberController.text = material['numero_parte']?.toString() ?? '';
-        _currentQtyController.text = material['cantidad_actual']?.toString() ?? '';
-        _materialLotNoController.text = material['numero_lote_material']?.toString() ?? '';
+        _currentQtyController.text =
+            material['stock_actual']?.toString() ?? '0';
+        _materialLotNoController.text =
+            material['numero_lote_material']?.toString() ?? '';
         // Preservar checkboxes si ya estaban activados, solo actualizar standard_pack
         _dividirLote = keepDividirLote;
         _salidaAutomatica = keepSalidaAutomatica;
@@ -577,10 +628,11 @@ class OutgoingFormPanelState extends State<OutgoingFormPanel> {
         _comparacionCatalogo = comparacionCatalogo;
         _comparacionResultado = null; // Reset validation result
         _comparacionController.clear(); // Clear previous scan
-        
-        print('>>> setState: _dividirLote=$_dividirLote, _salidaAutomatica=$_salidaAutomatica, _standardPack=$_standardPack, _comparacionCatalogo=$_comparacionCatalogo');
+
+        print(
+            '>>> setState: _dividirLote=$_dividirLote, _salidaAutomatica=$_salidaAutomatica, _standardPack=$_standardPack, _comparacionCatalogo=$_comparacionCatalogo');
       });
-      
+
       // Si hay comparación en catálogo, mover focus al campo de comparación
       if (comparacionCatalogo != null && comparacionCatalogo.isNotEmpty) {
         _comparacionFocusNode.requestFocus();
@@ -614,7 +666,7 @@ class OutgoingFormPanelState extends State<OutgoingFormPanel> {
   // Guardar registro de salida
   Future<void> _saveOutgoing() async {
     final tr = widget.languageProvider.tr;
-    
+
     // Validar que haya un material escaneado
     if (_scannedMaterial == null) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -641,18 +693,23 @@ class OutgoingFormPanelState extends State<OutgoingFormPanel> {
         return;
       }
     }
-    
+
     // Validación BOM: verificar que el material esté en el BOM cargado
     if (_bomValidation && widget.currentBomData.isNotEmpty) {
       final materialCode = _materialCodeController.text;
       final partNumber = _partNumberController.text;
-      
+
       final isInBom = widget.currentBomData.any((bomItem) {
-        final bomMaterialCode = (bomItem['codigo_material']?.toString() ?? bomItem['material_code']?.toString() ?? '').toUpperCase();
-        final bomPartNumber = (bomItem['numero_parte']?.toString() ?? '').toUpperCase();
-        return bomMaterialCode == materialCode.toUpperCase() || bomPartNumber == partNumber.toUpperCase();
+        final bomMaterialCode = (bomItem['codigo_material']?.toString() ??
+                bomItem['material_code']?.toString() ??
+                '')
+            .toUpperCase();
+        final bomPartNumber =
+            (bomItem['numero_parte']?.toString() ?? '').toUpperCase();
+        return bomMaterialCode == materialCode.toUpperCase() ||
+            bomPartNumber == partNumber.toUpperCase();
       });
-      
+
       if (!isInBom) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -669,16 +726,18 @@ class OutgoingFormPanelState extends State<OutgoingFormPanel> {
     if (_fifoValidation) {
       final materialCode = _materialCodeController.text;
       final currentDate = _scannedMaterial?['fecha_recibo']?.toString() ?? '';
-      
+
       // Buscar si hay materiales más antiguos con el mismo código
-      final olderMaterial = await ApiService.checkFifoValidation(materialCode, currentDate);
-      
+      final olderMaterial =
+          await ApiService.checkFifoValidation(materialCode, currentDate);
+
       if (olderMaterial != null && olderMaterial['has_older'] == true) {
         final olderCode = olderMaterial['older_code'] ?? '';
         final olderDate = olderMaterial['older_date'] ?? '';
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('${tr('fifo_validation_error')} ($olderCode - $olderDate)'),
+            content: Text(
+                '${tr('fifo_validation_error')} ($olderCode - $olderDate)'),
             backgroundColor: Colors.orange,
             duration: const Duration(seconds: 3),
           ),
@@ -699,12 +758,13 @@ class OutgoingFormPanelState extends State<OutgoingFormPanel> {
     // ========================================
     if (_dividirLote) {
       final currentQty = int.tryParse(_currentQtyController.text) ?? 0;
-      
-      print('>>> DIVIDIR LOTE ACTIVADO - currentQty: $currentQty, standardPack: $_standardPack, autoSplit: $_salidaAutomatica');
-      
+
+      print(
+          '>>> DIVIDIR LOTE ACTIVADO - currentQty: $currentQty, standardPack: $_standardPack, autoSplit: $_salidaAutomatica');
+
       List<int>? quantities; // Para Auto Split con residuos
       SplitLotResult? splitResult; // Para modal manual
-      
+
       // Si salida automática está activa
       if (_salidaAutomatica) {
         // Verificar que tenga standard_pack configurado
@@ -718,11 +778,11 @@ class OutgoingFormPanelState extends State<OutgoingFormPanel> {
           _lotNoFocusNode.requestFocus();
           return;
         }
-        
+
         // Calcular packs completos + residuo
         final fullPacks = currentQty ~/ _standardPack!;
         final remainder = currentQty % _standardPack!;
-        
+
         // Crear lista de cantidades
         quantities = [];
         for (int i = 0; i < fullPacks; i++) {
@@ -732,20 +792,22 @@ class OutgoingFormPanelState extends State<OutgoingFormPanel> {
         if (remainder > 0) {
           quantities.add(remainder);
         }
-        
+
         if (quantities.isEmpty) {
           // No hay suficiente cantidad para dividir
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('${tr('insufficient_qty_for_split')}: $currentQty < $_standardPack'),
+              content: Text(
+                  '${tr('insufficient_qty_for_split')}: $currentQty < $_standardPack'),
               backgroundColor: Colors.orange,
             ),
           );
           _lotNoFocusNode.requestFocus();
           return;
         }
-        
-        print('>>> Auto Split quantities: $quantities (total: ${quantities.reduce((a, b) => a + b)})');
+
+        print(
+            '>>> Auto Split quantities: $quantities (total: ${quantities.reduce((a, b) => a + b)})');
       } else {
         // Mostrar diálogo de división manual (para cajas parciales)
         splitResult = await showDialog<SplitLotResult>(
@@ -759,19 +821,20 @@ class OutgoingFormPanelState extends State<OutgoingFormPanel> {
             partNumber: _partNumberController.text,
           ),
         );
-        
+
         // Si el usuario canceló
         if (splitResult == null) {
           _lotNoFocusNode.requestFocus();
           return;
         }
-        
-        print('>>> Modal manual result: ${splitResult.packsCount} x ${splitResult.standardPack}');
+
+        print(
+            '>>> Modal manual result: ${splitResult.packsCount} x ${splitResult.standardPack}');
       }
 
       // Calcular información para el modal de carga
       final int totalPacks = quantities?.length ?? splitResult!.packsCount;
-      final String packInfo = quantities != null 
+      final String packInfo = quantities != null
           ? '${quantities.length} packs (${quantities.join(", ")})'
           : '${splitResult!.packsCount} × ${splitResult!.standardPack}';
 
@@ -816,7 +879,7 @@ class OutgoingFormPanelState extends State<OutgoingFormPanel> {
 
       // Ejecutar división de lote
       late Map<String, dynamic> splitResponse;
-      
+
       if (quantities != null) {
         // Auto Split: usar array de cantidades (incluye residuo)
         print('>>> Calling splitLotOutgoing with quantities: $quantities');
@@ -827,13 +890,17 @@ class OutgoingFormPanelState extends State<OutgoingFormPanel> {
           deptoSalida: _outDepartment,
           procesoSalida: _outProcess,
           lineaProceso: _lineaProceso,
-          comparacionEscaneada: _comparacionController.text.isNotEmpty ? _comparacionController.text : null,
+          comparacionEscaneada: _comparacionController.text.isNotEmpty
+              ? _comparacionController.text
+              : null,
           comparacionResultado: _comparacionResultado,
-          usuarioRegistro: AuthService.currentUser?.nombreCompleto ?? 'Desconocido',
+          usuarioRegistro:
+              AuthService.currentUser?.nombreCompleto ?? 'Desconocido',
         );
       } else {
         // Modal manual: usar standardPack y packsCount
-        print('>>> Calling splitLotOutgoing with standard_pack: ${splitResult!.standardPack}, packs_count: ${splitResult.packsCount}');
+        print(
+            '>>> Calling splitLotOutgoing with standard_pack: ${splitResult!.standardPack}, packs_count: ${splitResult.packsCount}');
         splitResponse = await ApiService.splitLotOutgoing(
           originalCode: _lotNoController.text,
           standardPack: splitResult.standardPack,
@@ -842,9 +909,12 @@ class OutgoingFormPanelState extends State<OutgoingFormPanel> {
           deptoSalida: _outDepartment,
           procesoSalida: _outProcess,
           lineaProceso: _lineaProceso,
-          comparacionEscaneada: _comparacionController.text.isNotEmpty ? _comparacionController.text : null,
+          comparacionEscaneada: _comparacionController.text.isNotEmpty
+              ? _comparacionController.text
+              : null,
           comparacionResultado: _comparacionResultado,
-          usuarioRegistro: AuthService.currentUser?.nombreCompleto ?? 'Desconocido',
+          usuarioRegistro:
+              AuthService.currentUser?.nombreCompleto ?? 'Desconocido',
         );
       }
 
@@ -856,15 +926,17 @@ class OutgoingFormPanelState extends State<OutgoingFormPanel> {
       if (splitResponse['success'] == true && mounted) {
         final newLabels = splitResponse['new_labels'] as List<dynamic>? ?? [];
         final totalExtracted = splitResponse['total_extracted'] ?? 0;
-        
+
         print('>>> newLabels count: ${newLabels.length}');
-        print('>>> hasPrinterConfigured: ${PrinterService.hasPrinterConfigured}');
+        print(
+            '>>> hasPrinterConfigured: ${PrinterService.hasPrinterConfigured}');
         print('>>> hasNetworkConfig: ${PrinterService.hasNetworkConfig}');
-        
+
         // Notificar al padre para actualizar tabla de sesión e historial
         final now = DateTime.now();
-        final fechaSalida = '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')} ${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')}';
-        
+        final fechaSalida =
+            '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')} ${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')}';
+
         for (final label in newLabels) {
           widget.onOutgoingSaved?.call({
             'codigo_material_recibido': label['code'],
@@ -875,12 +947,16 @@ class OutgoingFormPanelState extends State<OutgoingFormPanel> {
             'proceso_salida': _outProcess,
             'depto_salida': _outDepartment,
             'numero_lote': label['lot_no'] ?? _materialLotNoController.text,
-            'especificacion_material': label['spec'] ?? _scannedMaterial?['especificacion']?.toString() ?? '',
-            'material_code': _scannedMaterial?['codigo_material']?.toString() ?? '',
-            'usuario_registro': AuthService.currentUser?.nombreCompleto ?? 'Sistema',
+            'especificacion_material': label['spec'] ??
+                _scannedMaterial?['especificacion']?.toString() ??
+                '',
+            'material_code':
+                _scannedMaterial?['codigo_material']?.toString() ?? '',
+            'usuario_registro':
+                AuthService.currentUser?.nombreCompleto ?? 'Sistema',
           });
         }
-        
+
         // Mostrar mensaje de éxito
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -899,36 +975,42 @@ class OutgoingFormPanelState extends State<OutgoingFormPanel> {
             duration: const Duration(seconds: 4),
           ),
         );
-        
+
         // Imprimir etiquetas de los nuevos packs
-        final canPrint = PrinterService.hasPrinterConfigured || PrinterService.hasNetworkConfig;
-        print('>>> canPrint: $canPrint (hasPrinterConfigured: ${PrinterService.hasPrinterConfigured}, hasNetworkConfig: ${PrinterService.hasNetworkConfig})');
+        final canPrint = PrinterService.hasPrinterConfigured ||
+            PrinterService.hasNetworkConfig;
+        print(
+            '>>> canPrint: $canPrint (hasPrinterConfigured: ${PrinterService.hasPrinterConfigured}, hasNetworkConfig: ${PrinterService.hasNetworkConfig})');
         print('>>> newLabels.isNotEmpty: ${newLabels.isNotEmpty}');
-        
+
         if (newLabels.isNotEmpty && canPrint) {
           final now = DateTime.now();
-          final fecha = '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
-          
+          final fecha =
+              '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
+
           print('>>> Imprimiendo ${newLabels.length} etiquetas de sublotes...');
-          
+
           // Imprimir cada etiqueta con su cantidad específica
           for (final label in newLabels) {
             final labelCode = label['code']?.toString() ?? '';
             final labelQty = label['qty']?.toString() ?? '';
-            final labelSpec = label['spec']?.toString() ?? _scannedMaterial?['especificacion']?.toString() ?? '';
-            
-            print('>>> Imprimiendo sublote: $labelCode - Qty: $labelQty - Spec: $labelSpec');
-            
+            final labelSpec = label['spec']?.toString() ??
+                _scannedMaterial?['especificacion']?.toString() ??
+                '';
+
+            print(
+                '>>> Imprimiendo sublote: $labelCode - Qty: $labelQty - Spec: $labelSpec');
+
             final printResult = await PrinterService.printLabel(
               codigo: labelCode,
               fecha: fecha,
               especificacion: labelSpec,
               cantidadActual: labelQty,
             );
-            
+
             print('>>> Resultado impresión: $printResult');
           }
-          
+
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
@@ -938,26 +1020,33 @@ class OutgoingFormPanelState extends State<OutgoingFormPanel> {
               ),
             );
           }
-          
+
           // Imprimir etiqueta actualizada del lote original (con cantidad restante)
-          final originalCode = splitResponse['original']?['code']?.toString() ?? '';
+          final originalCode =
+              splitResponse['original']?['code']?.toString() ?? '';
           final remainingQty = splitResponse['original']?['qty_after'];
-          
-          if (remainingQty != null && remainingQty > 0 && originalCode.isNotEmpty) {
-            final fechaOriginal = _scannedMaterial?['fecha_recibo']?.toString() ?? 
-                                  _scannedMaterial?['fecha_recibido']?.toString() ?? fecha;
-            
+
+          if (remainingQty != null &&
+              remainingQty > 0 &&
+              originalCode.isNotEmpty) {
+            final fechaOriginal =
+                _scannedMaterial?['fecha_recibo']?.toString() ??
+                    _scannedMaterial?['fecha_recibido']?.toString() ??
+                    fecha;
+
             await PrinterService.printLabel(
               codigo: originalCode,
               fecha: fechaOriginal,
-              especificacion: _scannedMaterial?['especificacion']?.toString() ?? '',
+              especificacion:
+                  _scannedMaterial?['especificacion']?.toString() ?? '',
               cantidadActual: remainingQty.toString(),
             );
-            
+
             if (mounted) {
               ScaffoldMessenger.of(context).showSnackBar(
                 SnackBar(
-                  content: Text('${tr('updated_label_printed')}: $remainingQty'),
+                  content:
+                      Text('${tr('updated_label_printed')}: $remainingQty'),
                   backgroundColor: Colors.green.shade700,
                   duration: const Duration(seconds: 2),
                 ),
@@ -973,10 +1062,10 @@ class OutgoingFormPanelState extends State<OutgoingFormPanel> {
             ),
           );
         }
-        
+
         // Limpiar formulario
         _clearForm();
-        
+
         // Continuar procesando cola si hay más items
         if (_scanQueue.isNotEmpty) {
           _processNextInQueue();
@@ -984,12 +1073,13 @@ class OutgoingFormPanelState extends State<OutgoingFormPanel> {
       } else if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('${tr('split_error')}: ${splitResponse['error'] ?? 'Error desconocido'}'),
+            content: Text(
+                '${tr('split_error')}: ${splitResponse['error'] ?? 'Error desconocido'}'),
             backgroundColor: Colors.red,
           ),
         );
       }
-      
+
       _lotNoFocusNode.requestFocus();
       return;
     }
@@ -997,12 +1087,9 @@ class OutgoingFormPanelState extends State<OutgoingFormPanel> {
     // ========================================
     // FLUJO NORMAL (sin división)
     // ========================================
-    
-    // Si la comparación es NG, no deducir cantidad (solo registrar como malo)
-    final cantidadSalida = _comparacionResultado == 'NG'
-      ? 0.0
-      : double.tryParse(_currentQtyController.text) ?? 0;
-    
+
+    final cantidadSalida = double.tryParse(_currentQtyController.text) ?? 0;
+
     // No enviar fecha_salida - el backend usa NOW() de MySQL
     final outgoingData = {
       'codigo_material_recibido': _lotNoController.text,
@@ -1012,40 +1099,49 @@ class OutgoingFormPanelState extends State<OutgoingFormPanel> {
       'depto_salida': _outDepartment,
       'proceso_salida': _outProcess,
       'linea_proceso': _lineaProceso,
-      'comparacion_escaneada': _comparacionController.text.isNotEmpty ? _comparacionController.text : null,
+      'comparacion_escaneada': _comparacionController.text.isNotEmpty
+          ? _comparacionController.text
+          : null,
       'comparacion_resultado': _comparacionResultado,
       'cantidad_salida': cantidadSalida,
       'especificacion_material': _materialSpecController.text,
       'material_code': _materialCodeController.text,
-      'material_property': _scannedMaterial?['propiedad_material']?.toString() ?? '',
+      'material_property':
+          _scannedMaterial?['propiedad_material']?.toString() ?? '',
       'msl_level': _scannedMaterial?['nivel_msl']?.toString() ?? '',
       'vendedor': _scannedMaterial?['vendedor']?.toString() ?? '',
-      'usuario_registro': AuthService.currentUser?.nombreCompleto ?? 'Desconocido',
+      'usuario_registro':
+          AuthService.currentUser?.nombreCompleto ?? 'Desconocido',
     };
 
     final result = await ApiService.createOutgoingWithResponse(outgoingData);
 
     if (result['success'] == true && mounted) {
+      final cantidadConfirmada = double.tryParse(
+            result['cantidad_salida']?.toString() ?? '',
+          ) ??
+          cantidadSalida;
+      outgoingData['cantidad_salida'] = cantidadConfirmada;
       // Notificar al padre para mostrar en la tabla
       widget.onOutgoingSaved?.call(outgoingData);
-      
+
       // ========================================
       // LINK TO REQUIREMENT IF IN REQUIREMENTS MODE
       // ========================================
       if (_isRequirementsMode && _loadedRequirement != null) {
-        final cantidad = int.tryParse(_currentQtyController.text) ?? 0;
+        final cantidad = cantidadConfirmada.round();
         final linkResult = await ApiService.linkOutgoingToRequirement(
           numeroParte: _partNumberController.text,
           areaDestino: _loadedRequirement!.areaDestino,
           cantidad: cantidad,
           codigoSalida: _lotNoController.text,
         );
-        
+
         // Mostrar mensaje diferente según el resultado de comparación
         if (_comparacionResultado == 'NG') {
           _showLargeNotification(
             '✗ COMPARACIÓN NG',
-            '${_lotNoController.text} - Registrado pero NO enviado',
+            '${_lotNoController.text} - Salida registrada con stock actual',
             Colors.red,
           );
         } else if (linkResult['linked'] == true) {
@@ -1066,7 +1162,7 @@ class OutgoingFormPanelState extends State<OutgoingFormPanel> {
         if (_comparacionResultado == 'NG') {
           _showLargeNotification(
             '✗ COMPARACIÓN NG',
-            '${_lotNoController.text} - Registrado pero NO enviado',
+            '${_lotNoController.text} - Salida registrada con stock actual',
             Colors.red,
           );
         } else {
@@ -1079,7 +1175,7 @@ class OutgoingFormPanelState extends State<OutgoingFormPanel> {
       }
       // Limpiar formulario
       _clearForm();
-      
+
       // Continuar procesando cola si hay más items
       if (_scanQueue.isNotEmpty) {
         _processNextInQueue();
@@ -1106,9 +1202,7 @@ class OutgoingFormPanelState extends State<OutgoingFormPanel> {
   /// Normalizar texto para comparación inteligente
   /// Elimina caracteres especiales: - _ / \ . , y espacios
   String _normalizeForComparison(String text) {
-    return text
-        .replaceAll(RegExp(r'[-_/\\.,\s]'), '')
-        .toUpperCase();
+    return text.replaceAll(RegExp(r'[-_/\\.,\s]'), '').toUpperCase();
   }
 
   /// Validar comparación escaneada vs catálogo
@@ -1128,7 +1222,7 @@ class OutgoingFormPanelState extends State<OutgoingFormPanel> {
     final normalizedCatalog = _normalizeForComparison(_comparacionCatalogo!);
 
     final isMatch = normalizedScanned == normalizedCatalog;
-    
+
     setState(() {
       _comparacionResultado = isMatch ? 'OK' : 'NG';
     });
@@ -1152,7 +1246,7 @@ class OutgoingFormPanelState extends State<OutgoingFormPanel> {
   Future<void> _showRegisterComparisonDialog() async {
     final tr = widget.languageProvider.tr;
     final partNumber = _partNumberController.text;
-    
+
     if (partNumber.isEmpty) return;
 
     final result = await showDialog<bool>(
@@ -1161,9 +1255,11 @@ class OutgoingFormPanelState extends State<OutgoingFormPanel> {
         backgroundColor: AppColors.panelBackground,
         title: Row(
           children: [
-            const Icon(Icons.warning_amber_rounded, color: Colors.orange, size: 28),
+            const Icon(Icons.warning_amber_rounded,
+                color: Colors.orange, size: 28),
             const SizedBox(width: 12),
-            Text(tr('comparison_not_registered'), style: const TextStyle(color: Colors.white)),
+            Text(tr('comparison_not_registered'),
+                style: const TextStyle(color: Colors.white)),
           ],
         ),
         content: Column(
@@ -1182,18 +1278,21 @@ class OutgoingFormPanelState extends State<OutgoingFormPanel> {
             const SizedBox(height: 8),
             Text(
               '${tr('comparison_to_register')}: ${_comparacionController.text}',
-              style: const TextStyle(color: Colors.amber, fontWeight: FontWeight.bold),
+              style: const TextStyle(
+                  color: Colors.amber, fontWeight: FontWeight.bold),
             ),
           ],
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(false),
-            child: Text(tr('cancel'), style: const TextStyle(color: Colors.grey)),
+            child:
+                Text(tr('cancel'), style: const TextStyle(color: Colors.grey)),
           ),
           ElevatedButton(
             onPressed: () => Navigator.of(context).pop(true),
-            style: ElevatedButton.styleFrom(backgroundColor: AppColors.buttonSave),
+            style:
+                ElevatedButton.styleFrom(backgroundColor: AppColors.buttonSave),
             child: Text(tr('register')),
           ),
         ],
@@ -1207,7 +1306,7 @@ class OutgoingFormPanelState extends State<OutgoingFormPanel> {
           partNumber,
           _comparacionController.text,
         );
-        
+
         if (response['success'] == true) {
           setState(() {
             _comparacionCatalogo = _comparacionController.text;
@@ -1257,11 +1356,13 @@ class OutgoingFormPanelState extends State<OutgoingFormPanel> {
 
   // Convertir planes a formato de filas para MultiSelectTableDropdown
   List<List<String>> get _plansRows {
-    return _todayPlans.map((p) => [
-      p['lot_no']?.toString() ?? '',
-      p['part_no']?.toString() ?? '',
-      p['plan_count']?.toString() ?? '0',
-    ]).toList();
+    return _todayPlans
+        .map((p) => [
+              p['lot_no']?.toString() ?? '',
+              p['part_no']?.toString() ?? '',
+              p['plan_count']?.toString() ?? '0',
+            ])
+        .toList();
   }
 
   // Manejar multi-selección y unificar BOMs
@@ -1269,37 +1370,39 @@ class OutgoingFormPanelState extends State<OutgoingFormPanel> {
     setState(() {
       _selectedPlanIndices = selectedIndices;
     });
-    
+
     if (selectedIndices.isEmpty) {
       widget.onModelSelected?.call('', [], 0);
       return;
     }
-    
+
     // Unificar BOMs de todos los planes seleccionados
     Map<String, Map<String, dynamic>> unifiedBom = {};
     int totalPlanCount = 0;
     List<String> partNumbers = [];
-    
+
     for (final index in selectedIndices) {
       if (index < 0 || index >= _todayPlans.length) continue;
-      
+
       final plan = _todayPlans[index];
       final partNo = plan['part_no']?.toString() ?? '';
-      final planCount = int.tryParse(plan['plan_count']?.toString() ?? '0') ?? 0;
+      final planCount =
+          int.tryParse(plan['plan_count']?.toString() ?? '0') ?? 0;
       totalPlanCount += planCount;
       if (partNo.isNotEmpty) partNumbers.add(partNo);
-      
+
       // Cargar BOM de este plan
       final bomData = await ApiService.getPlanBom(partNo, planCount);
-      
+
       // Unificar: sumar cantidades por material_code
       for (final item in bomData) {
         final materialCode = item['material_code']?.toString() ?? '';
         if (materialCode.isEmpty) continue;
-        
+
         if (unifiedBom.containsKey(materialCode)) {
           // Sumar cantidad
-          final existingQty = unifiedBom[materialCode]!['required_qty'] as num? ?? 0;
+          final existingQty =
+              unifiedBom[materialCode]!['required_qty'] as num? ?? 0;
           final newQty = item['required_qty'] as num? ?? 0;
           unifiedBom[materialCode]!['required_qty'] = existingQty + newQty;
         } else {
@@ -1308,11 +1411,11 @@ class OutgoingFormPanelState extends State<OutgoingFormPanel> {
         }
       }
     }
-    
+
     // Convertir a lista
     final unifiedBomList = unifiedBom.values.toList();
     final modelDisplay = partNumbers.join(', ');
-    
+
     // Notificar al padre con el BOM unificado
     widget.onModelSelected?.call(modelDisplay, unifiedBomList, totalPlanCount);
   }
@@ -1338,7 +1441,9 @@ class OutgoingFormPanelState extends State<OutgoingFormPanel> {
                     // Código de Almacén
                     SizedBox(
                       width: 130,
-                      child: Text(tr('warehousing_code'), style: const TextStyle(fontSize: 14, color: Colors.white)),
+                      child: Text(tr('warehousing_code'),
+                          style: const TextStyle(
+                              fontSize: 14, color: Colors.white)),
                     ),
                     const SizedBox(width: 10),
                     Expanded(
@@ -1364,7 +1469,9 @@ class OutgoingFormPanelState extends State<OutgoingFormPanel> {
                     // Escanear Comparación
                     SizedBox(
                       width: 120,
-                      child: Text(tr('comparison_scan'), style: const TextStyle(fontSize: 14, color: Colors.white)),
+                      child: Text(tr('comparison_scan'),
+                          style: const TextStyle(
+                              fontSize: 14, color: Colors.white)),
                     ),
                     const SizedBox(width: 10),
                     Expanded(
@@ -1372,15 +1479,18 @@ class OutgoingFormPanelState extends State<OutgoingFormPanel> {
                       child: TextFormField(
                         controller: _comparacionController,
                         focusNode: _comparacionFocusNode,
-                        decoration: fieldDecoration(hintText: tr('scan_comparison')),
+                        decoration:
+                            fieldDecoration(hintText: tr('scan_comparison')),
                         style: const TextStyle(fontSize: 14),
                         onFieldSubmitted: (value) async {
                           if (value.trim().isEmpty) return;
                           // Validar comparación
                           _validateComparacion(value.trim());
                           // Guardar automáticamente si hay material escaneado (OK o NG)
-                          if (_scannedMaterial != null && _comparacionResultado != null) {
-                            await Future.delayed(const Duration(milliseconds: 500));
+                          if (_scannedMaterial != null &&
+                              _comparacionResultado != null) {
+                            await Future.delayed(
+                                const Duration(milliseconds: 500));
                             await _saveOutgoing();
                           }
                         },
@@ -1392,11 +1502,14 @@ class OutgoingFormPanelState extends State<OutgoingFormPanel> {
                       children: [
                         Checkbox(
                           value: _fifoValidation,
-                          onChanged: (v) => setState(() => _fifoValidation = v ?? false),
+                          onChanged: (v) =>
+                              setState(() => _fifoValidation = v ?? false),
                           side: const BorderSide(color: AppColors.border),
                           activeColor: AppColors.headerTab,
                         ),
-                        Text(tr('fifo_validation'), style: const TextStyle(fontSize: 14, color: Colors.white)),
+                        Text(tr('fifo_validation'),
+                            style: const TextStyle(
+                                fontSize: 14, color: Colors.white)),
                       ],
                     ),
                   ],
@@ -1408,7 +1521,9 @@ class OutgoingFormPanelState extends State<OutgoingFormPanel> {
                     // Línea de Proceso
                     SizedBox(
                       width: 100,
-                      child: Text(tr('production_line'), style: const TextStyle(fontSize: 14, color: Colors.white)),
+                      child: Text(tr('production_line'),
+                          style: const TextStyle(
+                              fontSize: 14, color: Colors.white)),
                     ),
                     const SizedBox(width: 10),
                     SizedBox(
@@ -1420,23 +1535,28 @@ class OutgoingFormPanelState extends State<OutgoingFormPanel> {
                         items: const [
                           DropdownMenuItem(
                             value: 'LINEA A',
-                            child: Text('LINEA A', style: TextStyle(fontSize: 14)),
+                            child:
+                                Text('LINEA A', style: TextStyle(fontSize: 14)),
                           ),
                           DropdownMenuItem(
                             value: 'LINEA B',
-                            child: Text('LINEA B', style: TextStyle(fontSize: 14)),
+                            child:
+                                Text('LINEA B', style: TextStyle(fontSize: 14)),
                           ),
                           DropdownMenuItem(
                             value: 'LINEA C',
-                            child: Text('LINEA C', style: TextStyle(fontSize: 14)),
+                            child:
+                                Text('LINEA C', style: TextStyle(fontSize: 14)),
                           ),
                           DropdownMenuItem(
                             value: 'LINEA D',
-                            child: Text('LINEA D', style: TextStyle(fontSize: 14)),
+                            child:
+                                Text('LINEA D', style: TextStyle(fontSize: 14)),
                           ),
                           DropdownMenuItem(
                             value: 'LINEA E',
-                            child: Text('LINEA E', style: TextStyle(fontSize: 14)),
+                            child:
+                                Text('LINEA E', style: TextStyle(fontSize: 14)),
                           ),
                         ],
                         onChanged: (value) {
@@ -1445,7 +1565,8 @@ class OutgoingFormPanelState extends State<OutgoingFormPanel> {
                           }
                         },
                         iconStyleData: const IconStyleData(
-                          icon: Icon(Icons.arrow_drop_down, color: Colors.white70, size: 20),
+                          icon: Icon(Icons.arrow_drop_down,
+                              color: Colors.white70, size: 20),
                         ),
                         dropdownStyleData: DropdownStyleData(
                           maxHeight: 200,
@@ -1471,7 +1592,8 @@ class OutgoingFormPanelState extends State<OutgoingFormPanel> {
                           padding: EdgeInsets.zero,
                           backgroundColor: AppColors.buttonGray,
                         ),
-                        child: Text(tr('clean'), style: const TextStyle(fontSize: 14)),
+                        child: Text(tr('clean'),
+                            style: const TextStyle(fontSize: 14)),
                       ),
                     ),
                     const SizedBox(width: 8),
@@ -1479,17 +1601,22 @@ class OutgoingFormPanelState extends State<OutgoingFormPanel> {
                       width: 100,
                       height: 36,
                       child: Tooltip(
-                        message: AuthService.canWriteOutgoing ? '' : 'No tienes permiso para crear salidas',
+                        message: AuthService.canWriteOutgoing
+                            ? ''
+                            : 'No tienes permiso para crear salidas',
                         child: ElevatedButton(
-                          onPressed: AuthService.canWriteOutgoing ? _saveOutgoing : null,
+                          onPressed: AuthService.canWriteOutgoing
+                              ? _saveOutgoing
+                              : null,
                           style: ElevatedButton.styleFrom(
                             padding: EdgeInsets.zero,
-                            backgroundColor: AuthService.canWriteOutgoing 
-                                ? AppColors.buttonSave 
+                            backgroundColor: AuthService.canWriteOutgoing
+                                ? AppColors.buttonSave
                                 : Colors.grey,
                             disabledBackgroundColor: Colors.grey.shade700,
                           ),
-                          child: Text(tr('save'), style: const TextStyle(fontSize: 14)),
+                          child: Text(tr('save'),
+                              style: const TextStyle(fontSize: 14)),
                         ),
                       ),
                     ),
@@ -1509,7 +1636,9 @@ class OutgoingFormPanelState extends State<OutgoingFormPanel> {
                   children: [
                     SizedBox(
                       width: 130,
-                      child: Text(tr('material_code'), style: const TextStyle(fontSize: 14, color: Colors.white)),
+                      child: Text(tr('material_code'),
+                          style: const TextStyle(
+                              fontSize: 14, color: Colors.white)),
                     ),
                     const SizedBox(width: 50),
                     SizedBox(
@@ -1517,20 +1646,24 @@ class OutgoingFormPanelState extends State<OutgoingFormPanel> {
                       child: TextFormField(
                         controller: _materialCodeController,
                         decoration: readOnlyFieldDecoration(),
-                        style: const TextStyle(fontSize: 14, color: Colors.white54),
+                        style: const TextStyle(
+                            fontSize: 14, color: Colors.white54),
                         readOnly: true,
                       ),
                     ),
                     const SizedBox(width: 20),
                     SizedBox(
                       width: 130,
-                      child: Text(tr('material_spec'), style: const TextStyle(fontSize: 14, color: Colors.white)),
+                      child: Text(tr('material_spec'),
+                          style: const TextStyle(
+                              fontSize: 14, color: Colors.white)),
                     ),
                     Expanded(
                       child: TextFormField(
                         controller: _materialSpecController,
                         decoration: readOnlyFieldDecoration(),
-                        style: const TextStyle(fontSize: 14, color: Colors.white54),
+                        style: const TextStyle(
+                            fontSize: 14, color: Colors.white54),
                         readOnly: true,
                       ),
                     ),
@@ -1542,7 +1675,9 @@ class OutgoingFormPanelState extends State<OutgoingFormPanel> {
                   children: [
                     SizedBox(
                       width: 130,
-                      child: Text(tr('part_number'), style: const TextStyle(fontSize: 14, color: Colors.white)),
+                      child: Text(tr('part_number'),
+                          style: const TextStyle(
+                              fontSize: 14, color: Colors.white)),
                     ),
                     const SizedBox(width: 50),
                     SizedBox(
@@ -1550,28 +1685,34 @@ class OutgoingFormPanelState extends State<OutgoingFormPanel> {
                       child: TextFormField(
                         controller: _partNumberController,
                         decoration: readOnlyFieldDecoration(),
-                        style: const TextStyle(fontSize: 14, color: Colors.white54),
+                        style: const TextStyle(
+                            fontSize: 14, color: Colors.white54),
                         readOnly: true,
                       ),
                     ),
                     const SizedBox(width: 20),
                     SizedBox(
                       width: 130,
-                      child: Text(tr('current_qty'), style: const TextStyle(fontSize: 14, color: Colors.white)),
+                      child: Text(tr('current_qty'),
+                          style: const TextStyle(
+                              fontSize: 14, color: Colors.white)),
                     ),
                     SizedBox(
                       width: 350,
                       child: TextFormField(
                         controller: _currentQtyController,
                         decoration: readOnlyFieldDecoration(),
-                        style: const TextStyle(fontSize: 14, color: Colors.white54),
+                        style: const TextStyle(
+                            fontSize: 14, color: Colors.white54),
                         readOnly: true,
                       ),
                     ),
                     const SizedBox(width: 20),
                     SizedBox(
                       width: 130,
-                      child: Text(tr('material_lot_no'), style: const TextStyle(fontSize: 14, color: Colors.white)),
+                      child: Text(tr('material_lot_no'),
+                          style: const TextStyle(
+                              fontSize: 14, color: Colors.white)),
                     ),
                     Expanded(
                       child: TextFormField(

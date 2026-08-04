@@ -1236,6 +1236,15 @@ async function ensureAuditLocationRecord(
   return inserted.affectedRows > 0;
 }
 
+// Status de la parte tras recontar sus etiquetas. ProcessedOut ya se resolvio
+// (faltante confirmado con salida creada), asi que no bloquea el cierre de la
+// ubicacion; solo cambia Verified por Discrepancy.
+function resolveAuditPartStatus(stats) {
+  if (Number(stats?.pending_items || 0) > 0) return 'Mismatch';
+  if (Number(stats?.processed_out_items || 0) > 0) return 'MissingConfirmed';
+  return 'VerifiedByScan';
+}
+
 async function registerPhysicalItem(req, res, next) {
   const connection = await pool.getConnection();
   const location = normalizeAuditLocation(req.body.location);
@@ -1698,7 +1707,11 @@ async function registerPhysicalItem(req, res, next) {
             ELSE 0
           END
         ), 0) AS scanned_qty,
-        SUM(CASE WHEN status <> 'Found' THEN 1 ELSE 0 END) AS pending_items
+        -- ProcessedOut ya fue resuelto (faltante confirmado con salida creada),
+        -- no es pendiente: si contara, la parte volvia a Mismatch y la
+        -- ubicacion nunca se cerraba en verde.
+        SUM(CASE WHEN status NOT IN ('Found', 'ProcessedOut') THEN 1 ELSE 0 END) AS pending_items,
+        SUM(CASE WHEN status = 'ProcessedOut' THEN 1 ELSE 0 END) AS processed_out_items
       FROM inventory_audit_item_smd
       WHERE audit_id = ? AND location = ? AND numero_parte_snapshot = ?
     `, [auditId, location, partNumber]);
@@ -1714,9 +1727,7 @@ async function registerPhysicalItem(req, res, next) {
     `, [
       Number(partScanStats?.scanned_items || 0),
       Number(partScanStats?.scanned_qty || 0),
-      Number(partScanStats?.pending_items || 0) === 0
-        ? 'VerifiedByScan'
-        : 'Mismatch',
+      resolveAuditPartStatus(partScanStats),
       usuario,
       auditId,
       location,
@@ -3624,6 +3635,31 @@ const scanPartItem = async (req, res, next) => {
       WHERE id = ?
     `, [mat.cantidad_actual, partRecord[0].id]);
 
+    // Si ya no queda ninguna etiqueta sin resolver, cerrar la parte sin esperar
+    // a "Terminar escaneo": no hay faltantes que confirmar. Sin esto la parte
+    // se quedaba en Mismatch y la ubicacion nunca pasaba a verde.
+    const [[partScanStats]] = await pool.query(`
+      SELECT
+        SUM(CASE WHEN iai.status NOT IN ('Found', 'ProcessedOut') THEN 1 ELSE 0 END) AS pending_items,
+        SUM(CASE WHEN iai.status = 'ProcessedOut' THEN 1 ELSE 0 END) AS processed_out_items
+      FROM inventory_audit_item_smd iai
+      LEFT JOIN control_material_almacen_smd cma ON cma.id = iai.warehousing_id
+      WHERE iai.audit_id = ? AND iai.location = ? AND ${AUDIT_ITEM_PART_EXPR} = ?
+    `, [auditId, normalizedLocation, normalizedPart]);
+
+    if (Number(partScanStats?.pending_items || 0) === 0) {
+      await pool.query(`
+        UPDATE inventory_audit_part_smd
+        SET status = ?, confirmed_by = ?, confirmed_at = NOW()
+        WHERE id = ?
+      `, [
+        resolveAuditPartStatus(partScanStats),
+        usuario || 'Mobile',
+        partRecord[0].id
+      ]);
+      await checkLocationCompletion(auditId, normalizedLocation);
+    }
+
     // Obtener progreso actualizado
     const [updatedPart] = await pool.query(`
       SELECT expected_items, scanned_items FROM inventory_audit_part_smd WHERE id = ?
@@ -4256,6 +4292,7 @@ module.exports = {
   broadcastAuditUpdate,
   relocateAuditMaterial,
   syncAuditLocationWithInventory,
+  resolveAuditPartStatus,
   getActiveAudit,
   startAudit,
   endAudit,

@@ -406,6 +406,27 @@ class AuthService {
     return hasPermission('view_smt_requests');
   }
 
+  /// Ver procesos e historial de pasta de soldadura.
+  static bool get canViewSolderPaste {
+    if (_currentUser == null) return false;
+    if (hasFullAccess) return true;
+    return hasPermission('view_solder_paste');
+  }
+
+  /// Iniciar y avanzar el ciclo de vida de pasta de soldadura.
+  static bool get canWriteSolderPaste {
+    if (_currentUser == null) return false;
+    if (hasFullAccess) return true;
+    return hasPermission('write_solder_paste');
+  }
+
+  /// Autorizar el retorno de una pasta marcada como scrap que nunca llegó a línea.
+  static bool get canAuthorizeSolderPasteScrapReturn {
+    if (_currentUser == null) return false;
+    if (hasFullAccess) return true;
+    return hasPermission('authorize_solder_paste_scrap_return');
+  }
+
   // ============================================
   // CARGA DE PERMISOS
   // ============================================
