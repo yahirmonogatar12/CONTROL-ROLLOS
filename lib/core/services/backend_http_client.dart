@@ -7,6 +7,8 @@ import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as inner;
 
+import 'update_service.dart';
+
 export 'package:http/http.dart'
     show
         BaseClient,
@@ -32,6 +34,18 @@ final inner.Client _client = inner.Client();
 final Random _random = Random();
 
 bool get isSlowLinkAndroid => !kIsWeb && Platform.isAndroid;
+
+@visibleForTesting
+Map<String, String> buildBackendRequestHeaders(
+  Map<String, String>? headers,
+) {
+  final requestHeaders = <String, String>{if (headers != null) ...headers};
+  requestHeaders.putIfAbsent(
+    'X-App-Version',
+    () => UpdateService.currentVersion,
+  );
+  return requestHeaders;
+}
 
 Future<inner.Response> get(
   Uri url, {
@@ -131,7 +145,7 @@ Future<inner.Response> _send(
   Encoding? encoding,
 }) async {
   final requestEncoding = encoding ?? utf8;
-  final requestHeaders = <String, String>{if (headers != null) ...headers};
+  final requestHeaders = buildBackendRequestHeaders(headers);
   final shouldUseSlowLink = isSlowLinkAndroid;
 
   if (shouldUseSlowLink) {
@@ -156,7 +170,8 @@ Future<inner.Response> _send(
     shouldUseSlowLink: shouldUseSlowLink,
   );
 
-  final allowRetry = _shouldRetry(method, url, requestHeaders, shouldUseSlowLink);
+  final allowRetry =
+      _shouldRetry(method, url, requestHeaders, shouldUseSlowLink);
   final maxAttempts = allowRetry ? 3 : 1;
   Object? lastError;
 
@@ -169,7 +184,8 @@ Future<inner.Response> _send(
         body: encodedBody,
       ).timeout(_defaultTimeout);
 
-      if (!_shouldRetryStatusCode(response.statusCode) || attempt == maxAttempts) {
+      if (!_shouldRetryStatusCode(response.statusCode) ||
+          attempt == maxAttempts) {
         return response;
       }
     } on TimeoutException catch (error) {

@@ -1,6 +1,40 @@
 const { pool } = require('../config/database');
 const { assertReturnAllowed } = require('../services/solderPasteLifecycleService');
 
+async function applyReturnedWarehouseQuantity(connection, {
+  inventoryLotId,
+  originalTotalEntrada,
+  expectedTotalSalida,
+  warehousingId,
+  newQty,
+}) {
+  // trg_almacen_au_smd convierte una reducción de cantidad_actual en una
+  // reducción temporal de total_entrada. En un retorno parcial de un rollo que
+  // salió completo eso produciría, por ejemplo, entrada=100 y salida=3900, y
+  // el guard de stock negativo abortaría antes de poder restaurar los totales.
+  // Neutralizar la salida dentro de esta misma transacción hace seguro el
+  // cambio físico; al final se reconstruyen los acumulados históricos reales.
+  await connection.query(`
+    UPDATE inventario_lotes_smd
+    SET total_salida = 0
+    WHERE id = ?
+  `, [inventoryLotId]);
+
+  await connection.query(`
+    UPDATE control_material_almacen_smd
+    SET cantidad_actual = ?, tiene_salida = 0
+    WHERE id = ?
+  `, [newQty, warehousingId]);
+
+  await connection.query(`
+    UPDATE inventario_lotes_smd
+    SET total_entrada = ?, total_salida = ?
+    WHERE id = ?
+  `, [originalTotalEntrada, expectedTotalSalida, inventoryLotId]);
+}
+
+exports.applyReturnedWarehouseQuantity = applyReturnedWarehouseQuantity;
+
 // GET /api/return - Obtener todas las devoluciones
 exports.getAll = async (req, res, next) => {
   try {
@@ -222,24 +256,13 @@ exports.create = async (req, res, next) => {
       ? parsedReturnQty
       : currentQty + parsedReturnQty;
 
-    await connection.query(`
-      UPDATE control_material_almacen_smd
-      SET cantidad_actual = ?, tiene_salida = 0
-      WHERE id = ?
-    `, [newQty, material.id]);
-
-    // trg_almacen_au_smd interpreta un cambio de cantidad_actual como ajuste
-    // de entrada. En una devolucion la entrada historica no cambia: restaurar
-    // ambos acumulados deja stock_actual exactamente en la cantidad retornada.
-    await connection.query(`
-      UPDATE inventario_lotes_smd
-      SET total_entrada = ?, total_salida = ?
-      WHERE id = ?
-    `, [
-      Number(lotRows[0].total_entrada || 0),
+    await applyReturnedWarehouseQuantity(connection, {
+      inventoryLotId: lotRows[0].id,
+      originalTotalEntrada: Number(lotRows[0].total_entrada || 0),
       expectedTotalSalida,
-      lotRows[0].id
-    ]);
+      warehousingId: material.id,
+      newQty,
+    });
 
     // Si la salida fue generada por una auditoria aun activa, el retorno debe
     // reabrir esa parte; de lo contrario la auditoria queda ProcessedOut

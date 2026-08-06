@@ -1,8 +1,14 @@
 /**
  * Middleware centralizado para manejo de errores
  */
+const {
+  buildRequestLogContext,
+  formatRequestLogContext,
+} = require('../utils/requestLogContext');
+
 const errorHandler = (err, req, res, next) => {
   console.error('❌ Error:', err.message);
+  console.error(`   ${formatRequestLogContext(buildRequestLogContext(req))}`);
   
   // Error de MySQL
   if (err.code) {

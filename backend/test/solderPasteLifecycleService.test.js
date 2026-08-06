@@ -11,7 +11,7 @@ test('cada estado de pasta devuelve el siguiente paso operativo acordado', () =>
     [service.STATUS.TEMPERING, 'Esperar el tiempo restante a temperatura ambiente'],
     [service.STATUS.READY_FOR_AGITATION, 'Agitar antes de 8 h o regresar al refrigerador'],
     [service.STATUS.AGITATING, 'Esperar a que termine el temporizador de 60 segundos'],
-    [service.STATUS.READY_FOR_LINE, 'Seleccionar SMT A, B, C o D'],
+    [service.STATUS.READY_FOR_LINE, 'Seleccionar SMT A, B, C, D o E'],
     [service.STATUS.IN_LINE, 'Utilizar antes del vencimiento, marcar Material consumido o retornar al almacén'],
     [service.STATUS.CONSUMED, 'Proceso terminado; no se requiere otra acción'],
     [service.STATUS.SCRAP, 'Depositar en scrap; si nunca llegó a línea, un usuario autorizado puede retornarlo'],
@@ -178,7 +178,7 @@ test('asignar línea reutiliza la salida creada en el primer escaneo', async (t)
         processReads += 1;
         return [[processReads === 1
           ? readyProcess
-          : { ...readyProcess, status: service.STATUS.IN_LINE, effective_status: service.STATUS.IN_LINE, line_code: 'SMT C' }]];
+          : { ...readyProcess, status: service.STATUS.IN_LINE, effective_status: service.STATUS.IN_LINE, line_code: 'SMT E' }]];
       }
       if (/FROM control_material_salida/i.test(sql)) {
         return [[{ id: 333, cantidad_salida: 3, cancelado: 0 }]];
@@ -192,16 +192,74 @@ test('asignar línea reutiliza la salida creada en el primer escaneo', async (t)
   pool.getConnection = async () => connection;
   t.after(() => { pool.getConnection = originalGetConnection; });
 
-  const result = await service.assignLine({ processId: 52, line: 'SMT C', usuario: 'tester' });
+  const result = await service.assignLine({ processId: 52, line: 'SMT E', usuario: 'tester' });
 
   assert.equal(result.status, service.STATUS.IN_LINE);
   const outgoingUpdate = queries.find((call) => /UPDATE control_material_salida/i.test(call.sql));
   assert.ok(outgoingUpdate);
   assert.match(outgoingUpdate.sql, /SET linea_proceso = \?/i);
   assert.doesNotMatch(outgoingUpdate.sql, /SET modelo = \?/i);
-  assert.deepEqual(outgoingUpdate.params, ['SMT C', 333]);
+  assert.deepEqual(outgoingUpdate.params, ['SMT E', 333]);
+  const processUpdate = queries.find(
+    (call) => /UPDATE solder_paste_process_smd/i.test(call.sql),
+  );
+  assert.ok(processUpdate);
+  assert.doesNotMatch(processUpdate.sql, /expires_at/i);
   assert.equal(queries.some((call) => /INSERT INTO control_material_salida/i.test(call.sql)), false);
   assert.equal(queries.some((call) => /FROM control_material_almacen/i.test(call.sql)), false);
+});
+
+test('las 12 horas comienzan al terminar la agitación y no al seleccionar línea', async (t) => {
+  const originalGetConnection = pool.getConnection;
+  const queries = [];
+  let processReads = 0;
+  const readyProcess = {
+    id: 53,
+    status: service.STATUS.READY_FOR_AGITATION,
+    effective_status: service.STATUS.READY_FOR_AGITATION,
+    ready_for_agitation_due: 0,
+  };
+  const connection = {
+    beginTransaction: async () => {},
+    commit: async () => {},
+    rollback: async () => {},
+    release: () => {},
+    query: async (sql, params) => {
+      queries.push({ sql, params });
+      if (/FROM solder_paste_process_smd sp/i.test(sql)) {
+        processReads += 1;
+        return [[processReads === 1
+          ? readyProcess
+          : {
+              ...readyProcess,
+              status: service.STATUS.AGITATING,
+              effective_status: service.STATUS.AGITATING,
+              agitation_remaining_seconds: 60,
+              line_remaining_seconds: 43260,
+            }]];
+      }
+      if (/UPDATE solder_paste_process_smd/i.test(sql)) return [{ affectedRows: 1 }];
+      if (/INSERT INTO solder_paste_event_smd/i.test(sql)) return [{ insertId: 3 }];
+      throw new Error(`Consulta no simulada: ${sql}`);
+    },
+  };
+  pool.getConnection = async () => connection;
+  t.after(() => { pool.getConnection = originalGetConnection; });
+
+  const result = await service.startAgitation({
+    processId: readyProcess.id,
+    usuario: 'tester',
+  });
+
+  assert.equal(result.status, service.STATUS.AGITATING);
+  const update = queries.find(
+    (call) => /UPDATE solder_paste_process_smd/i.test(call.sql),
+  );
+  assert.ok(update);
+  assert.match(
+    update.sql,
+    /expires_at\s*=\s*DATE_ADD\(\s*DATE_ADD\(NOW\(\), INTERVAL 60 SECOND\),\s*INTERVAL 12 HOUR\s*\)/i,
+  );
 });
 
 test('cancelar antes de línea conserva historial y libera la salida de almacén', async (t) => {
@@ -942,6 +1000,71 @@ test('al vencer 8 horas listo para agitación genera scrap automático', async (
   assert.ok(event.params.includes('READY_FOR_AGITATION_EXPIRED'));
 });
 
+test('al vencer 12 horas sin seleccionar línea genera scrap automático', async (t) => {
+  const originalQuery = pool.query;
+  const originalGetConnection = pool.getConnection;
+  const queries = [];
+  let processReads = 0;
+  pool.query = async (sql) => {
+    queries.push({ sql, params: [] });
+    return [[{ id: 73 }]];
+  };
+  const connection = {
+    beginTransaction: async () => {},
+    commit: async () => {},
+    rollback: async () => {},
+    release: () => {},
+    query: async (sql, params) => {
+      queries.push({ sql, params });
+      if (/FROM solder_paste_process_smd sp/i.test(sql)) {
+        processReads += 1;
+        return [[processReads === 1
+          ? {
+              id: 73,
+              codigo_material_recibido: 'PASTA-SIN-LINEA-12H',
+              numero_parte: 'NP-PASTA',
+              issued_quantity: 1,
+              unit: 'BOTE',
+              status: service.STATUS.READY_FOR_LINE,
+              effective_status: service.STATUS.SCRAP,
+              line_due: 1,
+              line_code: null,
+            }
+          : {
+              id: 73,
+              codigo_material_recibido: 'PASTA-SIN-LINEA-12H',
+              status: service.STATUS.SCRAP,
+              effective_status: service.STATUS.SCRAP,
+            }]];
+      }
+      if (/INSERT IGNORE INTO scrap_motivos/i.test(sql)) return [{ affectedRows: 0 }];
+      if (/SELECT id FROM scrap_motivos/i.test(sql)) return [[{ id: 19 }]];
+      if (/INSERT INTO scrap_records/i.test(sql)) return [{ insertId: 902 }];
+      if (/UPDATE solder_paste_process_smd/i.test(sql)) return [{ affectedRows: 1 }];
+      if (/INSERT INTO solder_paste_event_smd/i.test(sql)) return [{ insertId: 7 }];
+      throw new Error(`Consulta no simulada: ${sql}`);
+    },
+  };
+  pool.getConnection = async () => connection;
+  t.after(() => {
+    pool.query = originalQuery;
+    pool.getConnection = originalGetConnection;
+  });
+
+  const reconciled = await service.reconcileAll();
+
+  assert.equal(reconciled, 1);
+  const scrap = queries.find((call) => /INSERT INTO scrap_records/i.test(call.sql));
+  assert.ok(scrap);
+  assert.ok(scrap.params.includes(service.SCRAP_REASON));
+  assert.ok(scrap.params.some((param) => String(param).includes('Sin asignar')));
+  const event = queries.find((call) => /INSERT INTO solder_paste_event_smd/i.test(call.sql));
+  assert.ok(event.params.includes('LINE_LIFE_EXPIRED'));
+  assert.ok(event.params.some(
+    (param) => typeof param === 'string' && param.includes('"stage":"READY_FOR_LINE"'),
+  ));
+});
+
 test('la consulta distingue etiqueta inexistente', async (t) => {
   const originalQuery = pool.query;
   let queryCount = 0;
@@ -958,14 +1081,17 @@ test('la consulta distingue etiqueta inexistente', async (t) => {
   assert.equal(queryCount, 2);
 });
 
-test('solo acepta las cuatro líneas SMT permitidas', async () => {
+test('solo acepta las cinco líneas SMT permitidas', async () => {
   for (const line of ['SMT X', 'SMT', '', null]) {
     await assert.rejects(
       service.assignLine({ processId: 1, line, usuario: 'tester' }),
       (error) => error.code === 'INVALID_LINE' && error.statusCode === 400,
     );
   }
-  assert.deepEqual([...service.ALLOWED_LINES], ['SMT A', 'SMT B', 'SMT C', 'SMT D']);
+  assert.deepEqual(
+    [...service.ALLOWED_LINES],
+    ['SMT A', 'SMT B', 'SMT C', 'SMT D', 'SMT E'],
+  );
 });
 
 test('salida, ajuste y devolución detectan etiquetas controladas por pasta', async () => {

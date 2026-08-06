@@ -253,6 +253,7 @@ class SolderPasteProcessBoard extends StatelessWidget {
         return process.readyForAgitationProgress;
       case SolderPasteStatus.agitating:
         return process.agitationProgress;
+      case SolderPasteStatus.readyForLine:
       case SolderPasteStatus.inLine:
         return process.lineProgress;
       default:
@@ -268,6 +269,7 @@ class SolderPasteProcessBoard extends StatelessWidget {
         return _formatDuration(process.readyForAgitationRemainingSeconds);
       case SolderPasteStatus.agitating:
         return _formatDuration(process.agitationRemainingSeconds);
+      case SolderPasteStatus.readyForLine:
       case SolderPasteStatus.inLine:
         return _formatDuration(process.lineRemainingSeconds);
       default:

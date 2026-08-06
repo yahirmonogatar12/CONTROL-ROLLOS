@@ -113,6 +113,7 @@ class SolderPasteScreenState extends State<SolderPasteScreen>
             return process.readyForAgitationRemainingSeconds <= 0;
           case SolderPasteStatus.agitating:
             return process.agitationRemainingSeconds <= 0;
+          case SolderPasteStatus.readyForLine:
           case SolderPasteStatus.inLine:
             return process.lineRemainingSeconds <= 0;
           default:
@@ -152,8 +153,13 @@ class SolderPasteScreenState extends State<SolderPasteScreen>
 
   Future<void> _openLargeDisplay() async {
     try {
-      await DesktopWindowService.openSolderPasteDisplay();
-      _showMessage('Monitor abierto en una ventana independiente');
+      final openedOnSecondary =
+          await DesktopWindowService.openSolderPasteDisplay();
+      _showMessage(
+        openedOnSecondary
+            ? 'Monitor abierto en pantalla completa en la segunda pantalla'
+            : 'No se detectó una segunda pantalla; monitor abierto en la pantalla principal',
+      );
     } catch (error) {
       _showMessage(
         'No fue posible abrir el monitor: $error',
@@ -1181,6 +1187,7 @@ class _LineSelectionDialog extends StatelessWidget {
       ('SMT B', 'B', Color(0xFF26A69A)),
       ('SMT C', 'C', Color(0xFFFFB74D)),
       ('SMT D', 'D', Color(0xFFAB47BC)),
+      ('SMT E', 'E', Color(0xFFEF5350)),
     ];
 
     return Dialog(

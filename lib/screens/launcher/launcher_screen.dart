@@ -1,7 +1,8 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:material_warehousing_flutter/core/services/backend_service.dart';
+import 'package:material_warehousing_flutter/core/services/update_service.dart';
 import 'package:material_warehousing_flutter/core/theme/app_colors.dart';
 
 class LauncherScreen extends StatefulWidget {
@@ -18,7 +19,7 @@ class _LauncherScreenState extends State<LauncherScreen>
   String _statusMessage = 'Iniciando...';
   double _progress = 0.0;
   bool _hasError = false;
-  bool _isInitialized = false;
+  bool _startupUpdateCheckStarted = false;
   String _version = '';
   late AnimationController _animationController;
   late Animation<double> _pulseAnimation;
@@ -42,12 +43,29 @@ class _LauncherScreenState extends State<LauncherScreen>
     // Esperar a que el widget esté completamente construido
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
-        setState(() {
-          _isInitialized = true;
-        });
+        unawaited(_checkForStartupUpdate());
         _initializeBackend();
       }
     });
+  }
+
+  Future<void> _checkForStartupUpdate() async {
+    if (_startupUpdateCheckStarted) return;
+    _startupUpdateCheckStarted = true;
+
+    // El Navigator raíz permanece activo aunque el launcher termine mientras
+    // se consulta la carpeta de red, por lo que el aviso no se pierde.
+    final navigator = Navigator.of(context, rootNavigator: true);
+    final dialogContext = navigator.overlay?.context;
+    final updateInfo = await UpdateService.checkForUpdates();
+    if (!navigator.mounted || dialogContext == null) return;
+    if (updateInfo == null || !updateInfo.updateAvailable) return;
+
+    await UpdateService.showUpdateDialog(
+      dialogContext,
+      updateInfo,
+      enforceMandatory: false,
+    );
   }
 
   Future<void> _loadVersion() async {
@@ -189,7 +207,9 @@ class _LauncherScreenState extends State<LauncherScreen>
                           ? []
                           : [
                               BoxShadow(
-                                color: AppColors.headerTab.withOpacity(0.3),
+                                color: AppColors.headerTab.withValues(
+                                  alpha: 0.3,
+                                ),
                                 blurRadius: 30,
                                 spreadRadius: 5,
                               ),
@@ -238,7 +258,7 @@ class _LauncherScreenState extends State<LauncherScreen>
               'Control inventario SMD',
               style: TextStyle(
                 fontSize: 14,
-                color: Colors.white.withOpacity(0.5),
+                color: Colors.white.withValues(alpha: 0.5),
               ),
             ),
             const SizedBox(height: 50),
@@ -254,7 +274,7 @@ class _LauncherScreenState extends State<LauncherScreen>
                       child: LinearProgressIndicator(
                         value: _progress,
                         minHeight: 8,
-                        backgroundColor: Colors.white.withOpacity(0.1),
+                        backgroundColor: Colors.white.withValues(alpha: 0.1),
                         valueColor: AlwaysStoppedAnimation<Color>(
                           AppColors.headerTab,
                         ),
@@ -266,7 +286,7 @@ class _LauncherScreenState extends State<LauncherScreen>
                       textAlign: TextAlign.center,
                       style: TextStyle(
                         fontSize: 13,
-                        color: Colors.white.withOpacity(0.7),
+                        color: Colors.white.withValues(alpha: 0.7),
                       ),
                     ),
                   ],
@@ -280,9 +300,11 @@ class _LauncherScreenState extends State<LauncherScreen>
                 width: 350,
                 padding: const EdgeInsets.all(20),
                 decoration: BoxDecoration(
-                  color: Colors.red.withOpacity(0.1),
+                  color: Colors.red.withValues(alpha: 0.1),
                   borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: Colors.red.withOpacity(0.3)),
+                  border: Border.all(
+                    color: Colors.red.withValues(alpha: 0.3),
+                  ),
                 ),
                 child: Column(
                   children: [
@@ -336,7 +358,7 @@ class _LauncherScreenState extends State<LauncherScreen>
               'v$_version',
               style: TextStyle(
                 fontSize: 12,
-                color: Colors.white.withOpacity(0.3),
+                color: Colors.white.withValues(alpha: 0.3),
                 fontWeight: FontWeight.w500,
               ),
             ),

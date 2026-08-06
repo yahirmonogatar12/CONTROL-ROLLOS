@@ -18,7 +18,7 @@ const STATUS = Object.freeze({
   RETURNED_TO_COLD: 'RETURNED_TO_COLD',
 });
 
-const ALLOWED_LINES = new Set(['SMT A', 'SMT B', 'SMT C', 'SMT D']);
+const ALLOWED_LINES = new Set(['SMT A', 'SMT B', 'SMT C', 'SMT D', 'SMT E']);
 const PRE_LINE_STATUSES = new Set([
   STATUS.TEMPERING,
   STATUS.READY_FOR_AGITATION,
@@ -71,7 +71,7 @@ function nextActionForStatus(status) {
     case STATUS.AGITATING:
       return 'Esperar a que termine el temporizador de 60 segundos';
     case STATUS.READY_FOR_LINE:
-      return 'Seleccionar SMT A, B, C o D';
+      return 'Seleccionar SMT A, B, C, D o E';
     case STATUS.IN_LINE:
       return 'Utilizar antes del vencimiento, marcar Material consumido o retornar al almacén';
     case STATUS.CONSUMED:
@@ -106,7 +106,7 @@ const PROCESS_SELECT = `
              THEN 'READY_FOR_AGITATION'
            WHEN sp.status = 'AGITATING' AND NOW() >= sp.agitation_ready_at
              THEN 'READY_FOR_LINE'
-           WHEN sp.status = 'IN_LINE' AND NOW() >= sp.expires_at
+           WHEN sp.status IN ('READY_FOR_LINE', 'IN_LINE') AND NOW() >= sp.expires_at
              THEN 'SCRAP'
            ELSE sp.status
          END AS effective_status,
@@ -115,7 +115,7 @@ const PROCESS_SELECT = `
            AND sp.agitation_deadline_at IS NOT NULL
            AND NOW() >= sp.agitation_deadline_at) AS ready_for_agitation_due,
          (sp.status = 'AGITATING' AND NOW() >= sp.agitation_ready_at) AS agitation_due,
-         (sp.status = 'IN_LINE' AND NOW() >= sp.expires_at) AS line_due,
+         (sp.status IN ('READY_FOR_LINE', 'IN_LINE') AND NOW() >= sp.expires_at) AS line_due,
          GREATEST(0, TIMESTAMPDIFF(SECOND, NOW(), sp.ambient_ready_at)) AS ambient_remaining_seconds,
          GREATEST(0, TIMESTAMPDIFF(SECOND, NOW(), sp.agitation_deadline_at)) AS ready_for_agitation_remaining_seconds,
          GREATEST(0, TIMESTAMPDIFF(SECOND, NOW(), sp.agitation_ready_at)) AS agitation_remaining_seconds,
@@ -178,7 +178,7 @@ async function getScrapReasonId(connection, reason) {
 async function scrapLockedProcess(connection, process) {
   const readyExpired = process.status === STATUS.READY_FOR_AGITATION
     && Number(process.ready_for_agitation_due || 0) === 1;
-  const lineExpired = process.status === STATUS.IN_LINE
+  const lineExpired = [STATUS.READY_FOR_LINE, STATUS.IN_LINE].includes(process.status)
     && Number(process.line_due || 0) === 1;
   if (!readyExpired && !lineExpired) {
     return process;
@@ -204,7 +204,7 @@ async function scrapLockedProcess(connection, process) {
     reason,
     readyExpired
       ? `Sin agitar durante 8 h | Cantidad retirada: ${process.issued_quantity || 0} ${process.unit || ''}`.trim()
-      : `Línea: ${process.line_code || 'N/A'} | Cantidad retirada: ${process.issued_quantity || 0} ${process.unit || ''}`.trim(),
+      : `Línea: ${process.line_code || 'Sin asignar'} | Cantidad retirada: ${process.issued_quantity || 0} ${process.unit || ''}`.trim(),
   ]);
 
   await connection.query(`
@@ -221,7 +221,7 @@ async function scrapLockedProcess(connection, process) {
     'Sistema',
     {
       scrap_record_id: result.insertId,
-      stage: readyExpired ? STATUS.READY_FOR_AGITATION : STATUS.IN_LINE,
+      stage: readyExpired ? STATUS.READY_FOR_AGITATION : process.status,
       line: process.line_code || null,
     },
   );
@@ -259,6 +259,10 @@ async function reconcileLockedProcess(connection, process) {
       UPDATE solder_paste_process_smd
       SET status = ?,
           agitation_completed_at = COALESCE(agitation_completed_at, agitation_ready_at),
+          expires_at = COALESCE(
+            expires_at,
+            DATE_ADD(COALESCE(agitation_ready_at, NOW()), INTERVAL 12 HOUR)
+          ),
           updated_at = NOW(), updated_by = 'Sistema'
       WHERE id = ? AND status = ?
     `, [STATUS.READY_FOR_LINE, current.id, STATUS.AGITATING]);
@@ -273,7 +277,10 @@ async function reconcileLockedProcess(connection, process) {
     current = await getProcessById(connection, current.id, { lock: true });
   }
 
-  if (current.status === STATUS.IN_LINE && Number(current.line_due || 0) === 1) {
+  if (
+    [STATUS.READY_FOR_LINE, STATUS.IN_LINE].includes(current.status)
+    && Number(current.line_due || 0) === 1
+  ) {
     current = await scrapLockedProcess(connection, current);
   }
   return current;
@@ -481,6 +488,10 @@ async function startAgitation({ processId, usuario }) {
       UPDATE solder_paste_process_smd
       SET status = ?, agitation_started_at = NOW(),
           agitation_ready_at = DATE_ADD(NOW(), INTERVAL 60 SECOND),
+          expires_at = DATE_ADD(
+            DATE_ADD(NOW(), INTERVAL 60 SECOND),
+            INTERVAL 12 HOUR
+          ),
           updated_at = NOW(), updated_by = ?
       WHERE id = ?
     `, [STATUS.AGITATING, usuario || 'Sistema', process.id]);
@@ -499,7 +510,7 @@ async function startAgitation({ processId, usuario }) {
 async function assignLine({ processId, line, usuario }) {
   const normalizedLine = String(line || '').trim().toUpperCase();
   if (!ALLOWED_LINES.has(normalizedLine)) {
-    throw lifecycleError('La línea debe ser SMT A, SMT B, SMT C o SMT D', 'INVALID_LINE', 400);
+    throw lifecycleError('La línea debe ser SMT A, SMT B, SMT C, SMT D o SMT E', 'INVALID_LINE', 400);
   }
 
   return withTransaction(async (connection) => {
@@ -644,7 +655,6 @@ async function assignLine({ processId, line, usuario }) {
     await connection.query(`
       UPDATE solder_paste_process_smd
       SET status = ?, line_code = ?, line_started_at = NOW(),
-          expires_at = DATE_ADD(NOW(), INTERVAL 12 HOUR),
           issued_quantity = ?, unit = ?, inventory_outgoing_id = ?,
           updated_at = NOW(), updated_by = ?
       WHERE id = ? AND status = ?
@@ -1142,7 +1152,7 @@ async function reconcileAll() {
     WHERE (status = 'TEMPERING' AND ambient_ready_at <= NOW())
        OR (status = 'READY_FOR_AGITATION' AND agitation_deadline_at <= NOW())
        OR (status = 'AGITATING' AND agitation_ready_at <= NOW())
-       OR (status = 'IN_LINE' AND expires_at <= NOW())
+       OR (status IN ('READY_FOR_LINE', 'IN_LINE') AND expires_at <= NOW())
     ORDER BY id ASC
     LIMIT 500
   `);

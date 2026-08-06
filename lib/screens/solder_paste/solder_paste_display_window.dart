@@ -59,7 +59,10 @@ class _SolderPasteDisplayWindowState extends State<SolderPasteDisplayWindow>
       const Duration(seconds: 15),
       (_) => _loadProcesses(),
     );
-    WidgetsBinding.instance.addPostFrameCallback((_) => _loadProcesses());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(_loadProcesses());
+      unawaited(_syncFullScreenState());
+    });
   }
 
   @override
@@ -75,8 +78,23 @@ class _SolderPasteDisplayWindowState extends State<SolderPasteDisplayWindow>
     unawaited(_hideWindow());
   }
 
+  @override
+  void onWindowEnterFullScreen() {
+    if (mounted) setState(() => _fullScreen = true);
+  }
+
+  @override
+  void onWindowLeaveFullScreen() {
+    if (mounted) setState(() => _fullScreen = false);
+  }
+
   Future<void> _hideWindow() async {
     await windowManager.hide();
+  }
+
+  Future<void> _syncFullScreenState() async {
+    final fullScreen = await windowManager.isFullScreen();
+    if (mounted) setState(() => _fullScreen = fullScreen);
   }
 
   Future<void> _loadProcesses() async {
@@ -113,6 +131,7 @@ class _SolderPasteDisplayWindowState extends State<SolderPasteDisplayWindow>
             return process.ambientRemainingSeconds <= 0;
           case SolderPasteStatus.agitating:
             return process.agitationRemainingSeconds <= 0;
+          case SolderPasteStatus.readyForLine:
           case SolderPasteStatus.inLine:
             return process.lineRemainingSeconds <= 0;
           default:

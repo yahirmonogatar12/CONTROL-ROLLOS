@@ -79,6 +79,17 @@ void main() {
     expect(process.canReturnToCold, isTrue);
   });
 
+  test('mantiene la cuenta de 12 horas mientras espera selección de línea', () {
+    final process = SolderPasteProcess.fromJson({
+      'id': 9,
+      'status': 'READY_FOR_LINE',
+      'line_remaining_seconds': 21600,
+    });
+
+    expect(process.lineRemainingSeconds, inInclusiveRange(21599, 21600));
+    expect(process.lineProgress, closeTo(.5, .001));
+  });
+
   test('permite retorno desde línea solo para material del almacén general',
       () {
     final warehouseProcess = SolderPasteProcess.fromJson({

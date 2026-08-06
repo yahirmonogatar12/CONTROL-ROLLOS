@@ -985,8 +985,10 @@ class UpdateService {
     BuildContext context,
     UpdateInfo updateInfo, {
     bool canDismiss = true,
+    bool enforceMandatory = true,
   }) async {
-    final effectiveCanDismiss = canDismiss && !updateInfo.isMandatory;
+    final effectiveCanDismiss =
+        canDismiss && (!enforceMandatory || !updateInfo.isMandatory);
 
     return showDialog(
       context: context,
@@ -1171,7 +1173,7 @@ class _UpdateDialogState extends State<_UpdateDialog> {
               ],
 
               // Obligatorio
-              if (widget.updateInfo.isMandatory) ...[
+              if (!widget.canDismiss && widget.updateInfo.isMandatory) ...[
                 const SizedBox(height: 12),
                 Container(
                   padding:

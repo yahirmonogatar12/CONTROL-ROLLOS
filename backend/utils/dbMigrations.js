@@ -1441,6 +1441,28 @@ async function createSolderPasteLifecycleTables() {
     SET agitation_deadline_at = DATE_ADD(ambient_ready_at, INTERVAL 8 HOUR)
     WHERE agitation_deadline_at IS NULL
   `);
+  // Las 12 horas comienzan cuando termina la agitación, no cuando el operador
+  // selecciona la línea. Reconstruye el límite de procesos creados previamente.
+  await pool.query(`
+    UPDATE solder_paste_process_smd
+    SET expires_at = DATE_ADD(
+          COALESCE(
+            agitation_completed_at,
+            agitation_ready_at,
+            line_started_at,
+            updated_at
+          ),
+          INTERVAL 12 HOUR
+        ),
+        agitation_completed_at = COALESCE(
+          agitation_completed_at,
+          agitation_ready_at,
+          line_started_at,
+          updated_at
+        )
+    WHERE status IN ('READY_FOR_LINE', 'IN_LINE')
+      AND expires_at IS NULL
+  `);
 
   const [readyDeadlineIndex] = await pool.query(`
     SELECT INDEX_NAME

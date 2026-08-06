@@ -1,7 +1,48 @@
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_warehousing_flutter/core/services/update_service.dart';
 
 void main() {
+  testWidgets('el aviso automático de PC permite actualizar más tarde',
+      (tester) async {
+    late BuildContext context;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Builder(
+          builder: (value) {
+            context = value;
+            return const Scaffold();
+          },
+        ),
+      ),
+    );
+
+    final dialog = UpdateService.showUpdateDialog(
+      context,
+      UpdateInfo(
+        updateAvailable: true,
+        currentVersion: '2.2.0',
+        latestVersion: '2.2.1',
+        isMandatory: true,
+      ),
+      enforceMandatory: false,
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('¡Nueva Versión Disponible!'), findsOneWidget);
+    expect(find.text('Más tarde'), findsOneWidget);
+    expect(
+      find.text(
+        'Esta actualización es obligatoria para continuar usando la aplicación.',
+      ),
+      findsNothing,
+    );
+
+    await tester.tap(find.text('Más tarde'));
+    await tester.pumpAndSettle();
+    await dialog;
+  });
+
   group('UpdateInfo.fromGitHub', () {
     test('detecta una versión más reciente y usa el asset ejecutable', () {
       final info = UpdateInfo.fromGitHub(

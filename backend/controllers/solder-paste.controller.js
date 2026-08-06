@@ -5,6 +5,10 @@ const { pool } = require('../config/database');
 const {
   getLocalNotificationFeed,
 } = require('../services/solderPasteLocalNotificationService');
+const {
+  buildRequestLogContext,
+  formatRequestLogContext,
+} = require('../utils/requestLogContext');
 
 function actorFromBody(body = {}) {
   return {
@@ -16,6 +20,12 @@ function actorFromBody(body = {}) {
 exports.scan = async (req, res, next) => {
   try {
     const actor = actorFromBody(req.body);
+    console.log(
+      `🔎 Escaneo Control de pasta: ${formatRequestLogContext(
+        buildRequestLogContext(req),
+        { includePrefix: false },
+      )}`,
+    );
     const process = await service.scanMaterial({
       code: req.body?.code,
       usuario: actor.usuario,

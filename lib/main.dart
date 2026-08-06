@@ -27,11 +27,17 @@ void main(List<String> args) async {
       currentWindow.arguments,
     )) {
       await ServerConfig.init();
+      await UpdateService.loadCurrentVersion();
       await _initSolderPasteDisplayWindow();
       runApp(const SolderPasteDisplayApp());
       WidgetsBinding.instance.addPostFrameCallback((_) async {
-        await windowManager.show();
-        await windowManager.focus();
+        try {
+          await DesktopWindowService.openCurrentWindowFromArguments(
+            currentWindow.arguments,
+          );
+        } finally {
+          DesktopWindowService.markCurrentWindowReady();
+        }
       });
       return;
     }
