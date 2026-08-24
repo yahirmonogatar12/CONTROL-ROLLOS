@@ -846,15 +846,18 @@ async function createPcbInventoryScanTable() {
         etapa_deteccion ENUM('LQC','OQC','AIS') NULL,
         defect_source_area VARCHAR(50) NULL,
         defect_data_id VARCHAR(50) NULL,
+        source_entry_id BIGINT NULL,
+        defect_count INT NOT NULL DEFAULT 0,
         comentarios TEXT NULL,
         scanned_by VARCHAR(100) NULL,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE KEY uk_daily_original_tipo_area (inventory_date, scanned_original_norm, tipo_movimiento, area),
+        INDEX idx_pcb_history_movement (inventory_date, scanned_original_norm, tipo_movimiento, area),
         INDEX idx_daily_part (inventory_date, pcb_part_no),
         INDEX idx_daily_process (inventory_date, proceso),
         INDEX idx_daily_tipo (inventory_date, tipo_movimiento),
         INDEX idx_pcb_array_group (array_group_code),
-        INDEX idx_pcb_area (area)
+        INDEX idx_pcb_area (area),
+        INDEX idx_pcb_source_entry (source_entry_id)
       )
     `);
 
@@ -918,6 +921,16 @@ async function migratePcbInventorySchema() {
     'pcb_inventory_scan_smd',
     'defect_data_id',
     'VARCHAR(50) NULL AFTER defect_source_area'
+  );
+  await addColumnIfNotExists(
+    'pcb_inventory_scan_smd',
+    'source_entry_id',
+    'BIGINT NULL AFTER defect_data_id'
+  );
+  await addColumnIfNotExists(
+    'pcb_inventory_scan_smd',
+    'defect_count',
+    'INT NOT NULL DEFAULT 0 AFTER source_entry_id'
   );
 
   try {
@@ -1026,6 +1039,16 @@ async function migratePcbInventorySchema() {
   } catch (e) {
     // Puede que ya exista - eso esta bien
   }
+
+  try {
+    await pool.query(`
+      CREATE INDEX idx_pcb_source_entry
+      ON pcb_inventory_scan_smd (source_entry_id)
+    `);
+    console.log('✓ Creado indice idx_pcb_source_entry');
+  } catch (e) {
+    // Puede que ya exista - eso esta bien
+  }
 }
 
 // Agregar columna tipo_movimiento a pcb_inventory_scan_smd si no existe
@@ -1036,34 +1059,20 @@ async function addPcbInventoryTipoMovimiento() {
     "ENUM('ENTRADA','SALIDA','SCRAP') NOT NULL DEFAULT 'ENTRADA' AFTER proceso"
   );
 
-  // Crear/verificar el indice nuevo antes de quitar los indices antiguos.
-  let hasAreaUniqueIndex = false;
+  // El historial permite varios ciclos completos de la misma PCB el mismo dia.
+  // La proteccion contra dobles entradas se hace con bloqueo + balance activo.
+  await dropIndexIfExists('pcb_inventory_scan_smd', 'uk_daily_original');
+  await dropIndexIfExists('pcb_inventory_scan_smd', 'uk_daily_original_tipo');
+  await dropIndexIfExists('pcb_inventory_scan_smd', 'uk_daily_original_tipo_area');
+
   try {
     await pool.query(`
-      CREATE UNIQUE INDEX uk_daily_original_tipo_area
+      CREATE INDEX idx_pcb_history_movement
       ON pcb_inventory_scan_smd (inventory_date, scanned_original_norm, tipo_movimiento, area)
     `);
-    console.log('✓ Creado indice uk_daily_original_tipo_area');
-    hasAreaUniqueIndex = true;
+    console.log('✓ Creado indice idx_pcb_history_movement');
   } catch (e) {
     // Puede que ya exista - eso esta bien
-    try {
-      const [rows] = await pool.query(`
-        SELECT INDEX_NAME FROM INFORMATION_SCHEMA.STATISTICS
-        WHERE TABLE_SCHEMA = DATABASE()
-        AND TABLE_NAME = 'pcb_inventory_scan_smd'
-        AND INDEX_NAME = 'uk_daily_original_tipo_area'
-        LIMIT 1
-      `);
-      hasAreaUniqueIndex = rows.length > 0;
-    } catch (_) {
-      hasAreaUniqueIndex = false;
-    }
-  }
-
-  if (hasAreaUniqueIndex) {
-    await dropIndexIfExists('pcb_inventory_scan_smd', 'uk_daily_original');
-    await dropIndexIfExists('pcb_inventory_scan_smd', 'uk_daily_original_tipo');
   }
 
   try {
@@ -1075,6 +1084,37 @@ async function addPcbInventoryTipoMovimiento() {
   } catch (e) {
     // Puede que ya exista
   }
+}
+
+// Cada entrada de reparacion es un ciclo independiente. Sus defectos se
+// relacionan con el id de esa entrada y la salida que los reparo.
+async function createPcbScanDefectsTable() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS pcb_inventory_scan_defects_smd (
+      id BIGINT AUTO_INCREMENT PRIMARY KEY,
+      entry_scan_id BIGINT NOT NULL,
+      exit_scan_id BIGINT NULL,
+      sort_order INT NOT NULL DEFAULT 1,
+      defect_type VARCHAR(120) NOT NULL,
+      component_location VARCHAR(120) NULL,
+      etapa_deteccion ENUM('LQC','OQC','AIS') NULL,
+      defect_source_area VARCHAR(50) NULL,
+      defect_data_id VARCHAR(50) NULL,
+      repair_status ENUM('PENDING','REPAIRED','SCRAPPED') NOT NULL DEFAULT 'PENDING',
+      repaired_at DATETIME NULL,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_pcb_defects_entry (entry_scan_id, sort_order),
+      INDEX idx_pcb_defects_exit (exit_scan_id),
+      INDEX idx_pcb_defects_status (repair_status),
+      CONSTRAINT fk_pcb_defects_entry_scan
+        FOREIGN KEY (entry_scan_id) REFERENCES pcb_inventory_scan_smd(id)
+        ON DELETE CASCADE,
+      CONSTRAINT fk_pcb_defects_exit_scan
+        FOREIGN KEY (exit_scan_id) REFERENCES pcb_inventory_scan_smd(id)
+        ON DELETE SET NULL
+    )
+  `);
+  console.log('✓ Tabla de defectos por ciclo PCB verificada/creada');
 }
 
 // Catalogo de defectos PCB usados durante reparacion
@@ -1545,6 +1585,7 @@ async function runMigrations() {
   await createPcbInventoryScanTable();
   await migratePcbInventorySchema();
   await addPcbInventoryTipoMovimiento();
+  await createPcbScanDefectsTable();
   await createScrapMotivosTable();
   await createScrapRecordsTable();
   await createScrapRecordEditsTable();
@@ -1877,6 +1918,7 @@ module.exports = {
   enforceNonNegativeSmdInventory,
   createInventoryAdjustmentSmdTable,
   createPcbDefectCatalogTable,
+  createPcbScanDefectsTable,
   migratePcbInventorySchema,
   addPcbInventoryTipoMovimiento,
   addColumnIfNotExists

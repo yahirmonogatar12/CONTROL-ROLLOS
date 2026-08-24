@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:material_warehousing_flutter/core/constants/pcb_areas.dart';
 import 'package:material_warehousing_flutter/core/localization/app_translations.dart';
@@ -31,6 +33,7 @@ class PcbEntradaGridPanelState extends State<PcbEntradaGridPanel>
   int _selectedIndex = -1;
 
   bool _isLoading = false;
+  final ScrollController _horizontalScrollController = ScrollController();
 
   // Date filter
   DateTime? _searchStart;
@@ -76,6 +79,12 @@ class PcbEntradaGridPanelState extends State<PcbEntradaGridPanel>
   @override
   bool get wantKeepAlive => true;
 
+  @override
+  void dispose() {
+    _horizontalScrollController.dispose();
+    super.dispose();
+  }
+
   static const int _etapaColIdx = 3;
 
   Color _etapaColor(String? etapa) {
@@ -94,7 +103,7 @@ class PcbEntradaGridPanelState extends State<PcbEntradaGridPanel>
   @override
   void initState() {
     super.initState();
-    initColumnFlex(14, 'pcb_entrada_grid', defaultFlexValues: [
+    initColumnFlex(14, 'pcb_entrada_grid_v3', defaultFlexValues: [
       2.5,
       1.0,
       1.4,
@@ -108,7 +117,7 @@ class PcbEntradaGridPanelState extends State<PcbEntradaGridPanel>
       1.2,
       1.0,
       1.5,
-      1.2
+      2.2
     ]);
     _loadTodayData();
   }
@@ -246,8 +255,26 @@ class PcbEntradaGridPanelState extends State<PcbEntradaGridPanel>
   Widget build(BuildContext context) {
     super.build(context);
 
-    return Column(
-      children: [
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final preferredTableWidth = List.generate(
+          _fields.length,
+          (index) => getColumnFlex(index).toDouble(),
+        ).fold<double>(0, (sum, width) => sum + width);
+        final tableWidth = math.max(constraints.maxWidth, preferredTableWidth);
+
+        return Scrollbar(
+          controller: _horizontalScrollController,
+          thumbVisibility: tableWidth > constraints.maxWidth,
+          scrollbarOrientation: ScrollbarOrientation.bottom,
+          child: SingleChildScrollView(
+            controller: _horizontalScrollController,
+            scrollDirection: Axis.horizontal,
+            child: SizedBox(
+              width: tableWidth,
+              height: constraints.maxHeight,
+              child: Column(
+                children: [
         // Header
         buildResizableHeader(
           headers: _headers,
@@ -258,6 +285,7 @@ class PcbEntradaGridPanelState extends State<PcbEntradaGridPanel>
           sortAscending: _sortAscending,
           columnFilters: _columnFilters,
           showCheckbox: false,
+          leadingResizeColumns: {_fields.length - 1},
         ),
         // Rows
         Expanded(
@@ -389,7 +417,12 @@ class PcbEntradaGridPanelState extends State<PcbEntradaGridPanel>
             ],
           ),
         ),
-      ],
+                ],
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 }

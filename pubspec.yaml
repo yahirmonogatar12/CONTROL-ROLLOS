@@ -7,19 +7,19 @@ environment:
   sdk: ">=3.0.0 <4.0.0"
 
 dependencies:
-  audioplayers: ^5.2.1
+  audioplayers: ^6.7.1
   bluetooth_classic: ^0.0.4
-  connectivity_plus: ^5.0.2
+  connectivity_plus: ^7.3.1
   desktop_multi_window: ^0.3.0
-  dropdown_button2: ^2.3.9
+  dropdown_button2: 2.3.9
   excel: ^4.0.6
-  file_picker: ^8.0.0+1
+  file_picker: ^11.0.3
   flutter:
     sdk: flutter
-  flutter_blue_plus: ^1.32.0
+  flutter_blue_plus: ^2.3.12
   http: ^1.6.0
   intl: ^0.20.2
-  mobile_scanner: ^5.2.3
+  mobile_scanner: ^7.4.0
   path_provider: ^2.1.2
   printing: ^5.14.2
   qr_flutter: ^4.1.0
@@ -27,12 +27,12 @@ dependencies:
   shared_preferences: ^2.5.3
   smb_connect: ^0.0.9
   url_launcher: ^6.2.5
-  vibration: ^2.0.1
+  vibration: ^3.1.8
   web_socket_channel: ^3.0.2
-  window_manager: ^0.4.3
-  firebase_core: ^3.8.1
-  firebase_messaging: ^15.1.6
-  flutter_local_notifications: ^18.0.1
+  window_manager: ^0.5.2
+  firebase_core: ^4.14.0
+  firebase_messaging: ^16.6.0
+  flutter_local_notifications: ^20.1.0
 
 dev_dependencies:
   flutter_test:

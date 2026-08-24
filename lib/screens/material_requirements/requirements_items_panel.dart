@@ -622,7 +622,7 @@ class RequirementsItemsPanelState extends State<RequirementsItemsPanel> {
 
     try {
       // Show file picker to select save location
-      final result = await FilePicker.platform.saveFile(
+      final result = await FilePicker.saveFile(
         dialogTitle: tr('save_excel_file'),
         fileName:
             'Requirement_${widget.requirement!['codigo_requerimiento'] ?? widget.requirement!['id']}.xlsx',

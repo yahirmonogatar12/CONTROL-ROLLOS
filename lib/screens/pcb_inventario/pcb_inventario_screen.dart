@@ -973,7 +973,7 @@ class _InitialStockImportDialogState extends State<_InitialStockImportDialog> {
 
   Future<void> _selectFile() async {
     try {
-      final result = await FilePicker.platform.pickFiles(
+      final result = await FilePicker.pickFiles(
         type: FileType.custom,
         allowedExtensions: ['xlsx', 'xls', 'csv'],
         dialogTitle: tr('pcb_select_initial_stock_file'),

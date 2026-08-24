@@ -217,6 +217,151 @@ async function getInitialStockOption(connection, pcbPartNo, preferredArea, prefe
 }
 
 const VALID_ARRAY_ROLES = ['SINGLE', 'DEFECT', 'ARRAY_ITEM'];
+const VALID_ETAPAS = ['LQC', 'OQC', 'AIS'];
+
+function normalizeOptional(value, { upper = false } = {}) {
+  if (value === null || value === undefined) return null;
+  const text = value.toString().trim();
+  if (!text) return null;
+  return upper ? text.toUpperCase() : text;
+}
+
+function normalizeDefectsPayload({
+  defects,
+  defectType,
+  componentLocation,
+  etapaDeteccion,
+  defectSourceArea,
+  defectDataId,
+  repairArea,
+}) {
+  if (!repairArea) return [];
+
+  const candidates = Array.isArray(defects) && defects.length > 0
+    ? defects
+    : [{
+      defect_type: defectType,
+      component_location: componentLocation,
+      etapa_deteccion: etapaDeteccion,
+      defect_source_area: defectSourceArea,
+      defect_data_id: defectDataId,
+    }];
+
+  return candidates.map((item, index) => ({
+    sort_order: index + 1,
+    defect_type: normalizeOptional(item?.defect_type ?? item?.defect_name, { upper: true }),
+    component_location: normalizeOptional(item?.component_location, { upper: true }),
+    etapa_deteccion: normalizeOptional(item?.etapa_deteccion, { upper: true }),
+    defect_source_area: normalizeOptional(item?.defect_source_area),
+    defect_data_id: normalizeOptional(item?.defect_data_id),
+  }));
+}
+
+async function getEntryDefects(connection, entryScanId) {
+  if (!entryScanId) return [];
+  const [rows] = await connection.query(
+    `SELECT id, entry_scan_id, exit_scan_id, sort_order, defect_type,
+            component_location, etapa_deteccion, defect_source_area,
+            defect_data_id, repair_status, repaired_at
+     FROM pcb_inventory_scan_defects_smd
+     WHERE entry_scan_id = ?
+     ORDER BY sort_order, id`,
+    [entryScanId]
+  );
+  return rows;
+}
+
+async function insertEntryDefects(connection, entryScanId, defects) {
+  if (!entryScanId || defects.length === 0) return [];
+  const placeholders = defects.map(() => '(?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
+  const values = [];
+  for (const defect of defects) {
+    values.push(
+      entryScanId,
+      defect.sort_order,
+      defect.defect_type,
+      defect.component_location,
+      defect.etapa_deteccion,
+      defect.defect_source_area,
+      defect.defect_data_id,
+      'PENDING'
+    );
+  }
+  await connection.query(
+    `INSERT INTO pcb_inventory_scan_defects_smd
+      (entry_scan_id, sort_order, defect_type, component_location,
+       etapa_deteccion, defect_source_area, defect_data_id, repair_status)
+     VALUES ${placeholders}`,
+    values
+  );
+  await connection.query(
+    `UPDATE pcb_inventory_scan_smd
+     SET defect_count = ?, source_entry_id = NULL
+     WHERE id = ?`,
+    [defects.length, entryScanId]
+  );
+  return getEntryDefects(connection, entryScanId);
+}
+
+async function ensureLegacyEntryDefects(connection, entryRow) {
+  if (!entryRow?.id || !isRepairArea(entryRow.area)) return [];
+  const existing = await getEntryDefects(connection, entryRow.id);
+  if (existing.length > 0) return existing;
+  if (!entryRow.defect_type) return [];
+
+  return insertEntryDefects(connection, entryRow.id, [{
+    sort_order: 1,
+    defect_type: normalizeOptional(entryRow.defect_type, { upper: true }),
+    component_location: normalizeOptional(entryRow.component_location, { upper: true }),
+    etapa_deteccion: normalizeOptional(entryRow.etapa_deteccion, { upper: true }),
+    defect_source_area: normalizeOptional(entryRow.defect_source_area),
+    defect_data_id: normalizeOptional(entryRow.defect_data_id),
+  }]);
+}
+
+async function closeEntryDefects(connection, entryScanId, exitScanId, movementType, closedAt) {
+  if (!entryScanId) return [];
+  const repairStatus = movementType === 'SALIDA' ? 'REPAIRED' : 'SCRAPPED';
+  await connection.query(
+    `UPDATE pcb_inventory_scan_defects_smd
+     SET exit_scan_id = ?, repair_status = ?, repaired_at = ?
+     WHERE entry_scan_id = ? AND repair_status = 'PENDING'`,
+    [exitScanId, repairStatus, closedAt, entryScanId]
+  );
+  return getEntryDefects(connection, entryScanId);
+}
+
+function summarizeDefects(defects) {
+  return defects.map(defect => defect.defect_type).filter(Boolean).join(', ');
+}
+
+function buildPreviousRepairData(cycle, defects = []) {
+  if (!cycle) return null;
+
+  const repairedDefects = defects.length > 0
+    ? defects
+    : (cycle.defect_type
+      ? [{
+        sort_order: 1,
+        defect_type: cycle.defect_type,
+        component_location: cycle.component_location || null,
+        etapa_deteccion: cycle.etapa_deteccion || null,
+        defect_source_area: cycle.defect_source_area || null,
+        repaired_at: cycle.repaired_at || null,
+      }]
+      : []);
+
+  return {
+    entry_scan_id: cycle.entry_scan_id || null,
+    exit_scan_id: cycle.exit_scan_id,
+    scanned_original: cycle.scanned_original,
+    pcb_part_no: cycle.pcb_part_no,
+    modelo: cycle.modelo,
+    repair_area: cycle.repair_area || null,
+    repaired_at: cycle.repaired_at,
+    defects: repairedDefects,
+  };
+}
 
 // ============================================
 // POST /api/pcb-inventory/scan
@@ -245,6 +390,7 @@ exports.scan = async (req, res, next) => {
       etapa_deteccion,
       defect_source_area,
       defect_data_id,
+      defects,
       manual_qty_confirmed,
       initial_stock_area,
       initial_stock_proceso,
@@ -341,31 +487,24 @@ exports.scan = async (req, res, next) => {
     const arrayGroupCode = normalizeCode(array_group_code || scannedOriginal);
     const repairArea = isRepairArea(areaVal);
     const roleVal = array_role || (arrayCount > 1 ? (repairArea ? 'DEFECT' : 'ARRAY_ITEM') : 'SINGLE');
-    const defectTypeVal = repairArea && defect_type
-      ? defect_type.toString().trim().toUpperCase()
-      : null;
-    const componentLocationVal = repairArea && component_location
-      ? component_location.toString().trim().toUpperCase()
-      : null;
-    const VALID_ETAPAS = ['LQC', 'OQC', 'AIS'];
-    let etapaDeteccionVal = null;
-    if (repairArea && etapa_deteccion) {
-      const etapaUpper = etapa_deteccion.toString().trim().toUpperCase();
-      if (!VALID_ETAPAS.includes(etapaUpper)) {
+    const defectItems = normalizeDefectsPayload({
+      defects,
+      defectType: defect_type,
+      componentLocation: component_location,
+      etapaDeteccion: etapa_deteccion,
+      defectSourceArea: defect_source_area,
+      defectDataId: defect_data_id,
+      repairArea,
+    });
+    for (const defect of defectItems) {
+      if (defect.etapa_deteccion && !VALID_ETAPAS.includes(defect.etapa_deteccion)) {
         return res.status(400).json({
           success: false,
           message: `etapa_deteccion debe ser uno de: ${VALID_ETAPAS.join(', ')}`,
           code: 'INVALID_ETAPA_DETECCION'
         });
       }
-      etapaDeteccionVal = etapaUpper;
     }
-    const defectSourceAreaVal = repairArea && defect_source_area
-      ? defect_source_area.toString().trim()
-      : null;
-    const defectDataIdVal = repairArea && defect_data_id
-      ? defect_data_id.toString().trim()
-      : null;
     if (!VALID_ARRAY_ROLES.includes(roleVal)) {
       return res.status(400).json({
         success: false,
@@ -377,22 +516,22 @@ exports.scan = async (req, res, next) => {
     connection = await pool.getConnection();
     await connection.beginTransaction();
 
+    entryLockName = getEntryLockName(scannedOriginalNorm);
+    const [lockRows] = await connection.query(
+      'SELECT GET_LOCK(?, 5) AS acquired',
+      [entryLockName]
+    );
+
+    if (Number(lockRows[0]?.acquired) !== 1) {
+      await connection.rollback();
+      return res.status(409).json({
+        success: false,
+        message: 'Otra captura de esta PCB esta en proceso. Intente nuevamente.',
+        code: 'PCB_SCAN_BUSY',
+      });
+    }
+
     if (tipo === 'ENTRADA') {
-      entryLockName = getEntryLockName(scannedOriginalNorm);
-      const [lockRows] = await connection.query(
-        'SELECT GET_LOCK(?, 5) AS acquired',
-        [entryLockName]
-      );
-
-      if (Number(lockRows[0]?.acquired) !== 1) {
-        await connection.rollback();
-        return res.status(409).json({
-          success: false,
-          message: 'Otra captura de esta PCB esta en proceso. Intente nuevamente.',
-          code: 'PCB_ENTRY_BUSY',
-        });
-      }
-
       const equivalentCodes = getEquivalentNormalizedCodes(scannedOriginalNorm);
       const [balanceRows] = await connection.query(
         `SELECT area, proceso, SUM(
@@ -439,30 +578,36 @@ exports.scan = async (req, res, next) => {
     }
 
     if (tipo === 'ENTRADA' && repairArea) {
-      if (!defectTypeVal) {
+      if (defectItems.length === 0 || defectItems.some(defect => !defect.defect_type)) {
         await connection.rollback();
         return res.status(400).json({
           success: false,
-          message: 'defect_type es requerido para entradas de reparacion',
+          message: 'Todos los defectos son requeridos para entradas de reparacion',
           code: 'MISSING_DEFECT_TYPE'
         });
       }
 
-      if (!defectDataIdVal) {
+      const catalogNames = [...new Set(
+        defectItems
+          .filter(defect => !defect.defect_data_id)
+          .map(defect => defect.defect_type)
+      )];
+      if (catalogNames.length > 0) {
+        const placeholders = catalogNames.map(() => '?').join(', ');
         const [defectRows] = await connection.query(
-          `SELECT id
+          `SELECT UPPER(defect_name) AS defect_name
            FROM pcb_defect_catalog
-           WHERE defect_name = ?
-           AND is_active = 1
-           LIMIT 1`,
-          [defectTypeVal]
+           WHERE UPPER(defect_name) IN (${placeholders})
+           AND is_active = 1`,
+          catalogNames
         );
-
-        if (defectRows.length === 0) {
+        const activeNames = new Set(defectRows.map(row => row.defect_name));
+        const invalidName = catalogNames.find(name => !activeNames.has(name));
+        if (invalidName) {
           await connection.rollback();
           return res.status(400).json({
             success: false,
-            message: 'El defecto no existe en el catalogo activo',
+            message: `El defecto no existe en el catalogo activo: ${invalidName}`,
             code: 'INVALID_DEFECT_TYPE'
           });
         }
@@ -559,14 +704,23 @@ exports.scan = async (req, res, next) => {
         }
 
         const insertedIds = [];
+        const repairedDefects = [];
         const arrayComment = comentarios
           ? `${comentarios} | Salida de array por ${scannedOriginal}`
           : `Salida de array por ${scannedOriginal}`;
         for (const row of pendingRows) {
+          const rowDefects = await ensureLegacyEntryDefects(connection, row);
+          const firstDefect = rowDefects[0] || null;
+          const sourceEntryId = isRepairArea(row.area) ? row.id : null;
           const [result] = await connection.query(
             `INSERT INTO pcb_inventory_scan_smd
-              (inventory_date, scanned_original, scanned_original_norm, assy_type, pcb_part_no, modelo, proceso, area, tipo_movimiento, qty, array_count, array_group_code, array_role, defect_type, component_location, comentarios, scanned_by, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              (inventory_date, scanned_original, scanned_original_norm, assy_type,
+               pcb_part_no, modelo, proceso, area, tipo_movimiento, qty,
+               array_count, array_group_code, array_role, defect_type,
+               component_location, etapa_deteccion, defect_source_area,
+               defect_data_id, source_entry_id, defect_count, comentarios,
+               scanned_by, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
               invDate,
               row.scanned_original,
@@ -581,14 +735,29 @@ exports.scan = async (req, res, next) => {
               row.array_count,
               row.array_group_code,
               row.array_role,
-              row.defect_type,
-              row.component_location,
+              firstDefect?.defect_type || row.defect_type,
+              firstDefect?.component_location || row.component_location,
+              firstDefect?.etapa_deteccion || row.etapa_deteccion,
+              firstDefect?.defect_source_area || row.defect_source_area,
+              firstDefect?.defect_data_id || row.defect_data_id,
+              sourceEntryId,
+              rowDefects.length,
               arrayComment,
               scanned_by || null,
               createdAt,
             ]
           );
           insertedIds.push(result.insertId);
+          if (sourceEntryId) {
+            const closed = await closeEntryDefects(
+              connection,
+              sourceEntryId,
+              result.insertId,
+              tipo,
+              createdAt
+            );
+            repairedDefects.push(...closed);
+          }
         }
 
         const [inserted] = await connection.query(
@@ -611,6 +780,7 @@ exports.scan = async (req, res, next) => {
           array_count: closedArrayCount,
           expected_array_count: expectedQty,
           array_closed_incomplete: arrayWasIncomplete,
+          repaired_defects: tipo === 'SALIDA' ? repairedDefects : [],
         });
       }
 
@@ -692,28 +862,24 @@ exports.scan = async (req, res, next) => {
     const movementModelo = sourceForExit
       ? sourceForExit.modelo
       : (manualInitialStockOption ? manualInitialStockOption.modelo : await lookupModelo(parsedPartNo));
-
-    // Verificar duplicado por dia + codigo + tipo_movimiento + area
-    const [existing] = await connection.query(
-      `SELECT id, area FROM pcb_inventory_scan_smd
-       WHERE inventory_date = ? AND scanned_original_norm = ? AND tipo_movimiento = ? AND area = ?`,
-      [invDate, scannedOriginalNorm, tipo, movementArea]
-    );
-
-    if (existing.length > 0) {
-      await connection.rollback();
-      return res.status(409).json({
-        success: false,
-        message: `Este codigo ya fue registrado hoy como ${tipo} en area ${existing[0].area}`,
-        code: 'DUPLICATE_SCAN',
-        existing_id: existing[0].id
-      });
-    }
+    const sourceDefects = tipo !== 'ENTRADA' && sourceForExit
+      ? await ensureLegacyEntryDefects(connection, sourceForExit)
+      : [];
+    const movementDefects = tipo === 'ENTRADA' ? defectItems : sourceDefects;
+    const movementPrimaryDefect = movementDefects[0] || null;
+    const sourceEntryId = tipo !== 'ENTRADA' && sourceForExit
+      && isRepairArea(sourceForExit.area)
+      ? sourceForExit.id
+      : null;
 
     const [result] = await connection.query(
       `INSERT INTO pcb_inventory_scan_smd
-        (inventory_date, scanned_original, scanned_original_norm, assy_type, pcb_part_no, modelo, proceso, area, tipo_movimiento, qty, array_count, array_group_code, array_role, defect_type, component_location, etapa_deteccion, defect_source_area, defect_data_id, comentarios, scanned_by, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        (inventory_date, scanned_original, scanned_original_norm, assy_type,
+         pcb_part_no, modelo, proceso, area, tipo_movimiento, qty, array_count,
+         array_group_code, array_role, defect_type, component_location,
+         etapa_deteccion, defect_source_area, defect_data_id, source_entry_id,
+         defect_count, comentarios, scanned_by, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         invDate,
         scannedOriginal,
@@ -728,17 +894,31 @@ exports.scan = async (req, res, next) => {
         arrayCount,
         arrayGroupCode,
         roleVal,
-        defectTypeVal,
-        componentLocationVal,
-        etapaDeteccionVal,
-        defectSourceAreaVal,
-        defectDataIdVal,
+        movementPrimaryDefect?.defect_type || null,
+        movementPrimaryDefect?.component_location || null,
+        movementPrimaryDefect?.etapa_deteccion || null,
+        movementPrimaryDefect?.defect_source_area || null,
+        movementPrimaryDefect?.defect_data_id || null,
+        sourceEntryId,
+        movementDefects.length,
         comentarios || null,
         scanned_by || null,
         createdAt,
       ]
     );
     const insertedIds = [result.insertId];
+    let savedDefects = [];
+    if (tipo === 'ENTRADA' && repairArea) {
+      savedDefects = await insertEntryDefects(connection, result.insertId, defectItems);
+    } else if (sourceEntryId) {
+      savedDefects = await closeEntryDefects(
+        connection,
+        sourceEntryId,
+        result.insertId,
+        tipo,
+        createdAt
+      );
+    }
 
     const [inserted] = await connection.query(
       `SELECT *, DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s') as created_at_fmt
@@ -755,6 +935,8 @@ exports.scan = async (req, res, next) => {
       rows: inserted,
       inserted_ids: insertedIds,
       total_qty: qtyVal,
+      defects: tipo === 'ENTRADA' ? savedDefects : [],
+      repaired_defects: tipo === 'SALIDA' ? savedDefects : [],
     });
 
   } catch (err) {
@@ -1031,18 +1213,32 @@ exports.getScans = async (req, res, next) => {
         array_count,
         array_group_code,
         array_role,
-        defect_type,
-        component_location,
-        etapa_deteccion,
-        defect_source_area,
-        defect_data_id,
+        COALESCE(
+          (SELECT GROUP_CONCAT(d.defect_type ORDER BY d.sort_order SEPARATOR ', ')
+           FROM pcb_inventory_scan_defects_smd d
+           WHERE d.entry_scan_id = CASE
+             WHEN s.tipo_movimiento = 'ENTRADA' THEN s.id ELSE s.source_entry_id END),
+          s.defect_type
+        ) AS defect_type,
+        COALESCE(
+          (SELECT GROUP_CONCAT(COALESCE(d.component_location, '') ORDER BY d.sort_order SEPARATOR ', ')
+           FROM pcb_inventory_scan_defects_smd d
+           WHERE d.entry_scan_id = CASE
+             WHEN s.tipo_movimiento = 'ENTRADA' THEN s.id ELSE s.source_entry_id END),
+          s.component_location
+        ) AS component_location,
+        s.etapa_deteccion,
+        s.defect_source_area,
+        s.defect_data_id,
+        s.source_entry_id,
+        s.defect_count,
         comentarios,
         scanned_by,
         created_at,
         DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s') as created_at_fmt,
         DATE_FORMAT(created_at, '%H:%i:%s') as hora
-      FROM pcb_inventory_scan_smd
-      WHERE inventory_date BETWEEN ? AND ? AND tipo_movimiento = ?
+      FROM pcb_inventory_scan_smd s
+      WHERE s.inventory_date BETWEEN ? AND ? AND s.tipo_movimiento = ?
     `;
     const params = [inventory_date, inventory_date_end || inventory_date, tipo];
 
@@ -1190,17 +1386,31 @@ exports.getStockDetail = async (req, res, next) => {
         array_count,
         array_group_code,
         array_role,
-        defect_type,
-        component_location,
-        etapa_deteccion,
-        defect_source_area,
-        defect_data_id,
+        COALESCE(
+          (SELECT GROUP_CONCAT(d.defect_type ORDER BY d.sort_order SEPARATOR ', ')
+           FROM pcb_inventory_scan_defects_smd d
+           WHERE d.entry_scan_id = CASE
+             WHEN s.tipo_movimiento = 'ENTRADA' THEN s.id ELSE s.source_entry_id END),
+          s.defect_type
+        ) AS defect_type,
+        COALESCE(
+          (SELECT GROUP_CONCAT(COALESCE(d.component_location, '') ORDER BY d.sort_order SEPARATOR ', ')
+           FROM pcb_inventory_scan_defects_smd d
+           WHERE d.entry_scan_id = CASE
+             WHEN s.tipo_movimiento = 'ENTRADA' THEN s.id ELSE s.source_entry_id END),
+          s.component_location
+        ) AS component_location,
+        s.etapa_deteccion,
+        s.defect_source_area,
+        s.defect_data_id,
+        s.source_entry_id,
+        s.defect_count,
         comentarios,
         scanned_by,
         created_at,
         DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s') as created_at_fmt,
         DATE_FORMAT(created_at, '%H:%i:%s') as hora
-      FROM pcb_inventory_scan_smd
+      FROM pcb_inventory_scan_smd s
       WHERE 1=1 ${dateFilter} ${partFilter} ${areaFilter} ${procesoFilter}
       ORDER BY created_at DESC
       LIMIT ?
@@ -1219,23 +1429,138 @@ exports.getStockDetail = async (req, res, next) => {
 };
 
 // ============================================
+// GET /api/pcb-inventory/previous-repair?codigo=...
+// Ultimo ciclo de reparacion cerrado para una PCB
+// ============================================
+exports.getPreviousRepair = async (req, res, next) => {
+  try {
+    const scannedOriginalNorm = normalizeCode(req.query.codigo);
+    if (!scannedOriginalNorm) {
+      return res.status(400).json({
+        success: false,
+        message: 'El codigo de PCB es requerido',
+        code: 'MISSING_PCB_CODE',
+      });
+    }
+
+    const equivalentCodes = getEquivalentNormalizedCodes(scannedOriginalNorm);
+    const [cycles] = await pool.query(
+      `SELECT
+         salida.id AS exit_scan_id,
+         salida.source_entry_id AS entry_scan_id,
+         salida.scanned_original,
+         salida.pcb_part_no,
+         salida.modelo,
+         entrada.area AS repair_area,
+         COALESCE(salida.defect_type, entrada.defect_type) AS defect_type,
+         COALESCE(salida.component_location, entrada.component_location) AS component_location,
+         COALESCE(salida.etapa_deteccion, entrada.etapa_deteccion) AS etapa_deteccion,
+         COALESCE(salida.defect_source_area, entrada.defect_source_area) AS defect_source_area,
+         DATE_FORMAT(salida.created_at, '%Y-%m-%d %H:%i:%s') AS repaired_at
+       FROM pcb_inventory_scan_smd salida
+       LEFT JOIN pcb_inventory_scan_smd entrada
+         ON entrada.id = salida.source_entry_id
+       WHERE salida.tipo_movimiento = 'SALIDA'
+         AND salida.scanned_original_norm IN (?, ?)
+         AND (salida.source_entry_id IS NOT NULL OR salida.defect_type IS NOT NULL)
+       ORDER BY salida.created_at DESC, salida.id DESC
+       LIMIT 1`,
+      equivalentCodes
+    );
+
+    const cycle = cycles[0];
+    if (!cycle) {
+      return res.json({ success: true, data: null });
+    }
+
+    let defects = [];
+    if (cycle.entry_scan_id) {
+      const [rows] = await pool.query(
+        `SELECT sort_order, defect_type, component_location,
+                etapa_deteccion, defect_source_area,
+                DATE_FORMAT(repaired_at, '%Y-%m-%d %H:%i:%s') AS repaired_at
+         FROM pcb_inventory_scan_defects_smd
+         WHERE entry_scan_id = ?
+           AND exit_scan_id = ?
+           AND repair_status = 'REPAIRED'
+         ORDER BY sort_order, id`,
+        [cycle.entry_scan_id, cycle.exit_scan_id]
+      );
+      defects = rows;
+    }
+
+    return res.json({
+      success: true,
+      data: buildPreviousRepairData(cycle, defects),
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ============================================
 // DELETE /api/pcb-inventory/scan/:id
 // ============================================
 exports.deleteScan = async (req, res, next) => {
+  let connection;
   try {
     const { id } = req.params;
-
-    const [result] = await pool.query(
-      `DELETE FROM pcb_inventory_scan_smd WHERE id = ?`,
+    connection = await pool.getConnection();
+    await connection.beginTransaction();
+    const [rows] = await connection.query(
+      `SELECT id, tipo_movimiento, source_entry_id
+       FROM pcb_inventory_scan_smd
+       WHERE id = ?
+       FOR UPDATE`,
       [id]
     );
-
-    if (result.affectedRows === 0) {
+    const scan = rows[0];
+    if (!scan) {
+      await connection.rollback();
       return res.status(404).json({
         success: false,
         message: 'Escaneo no encontrado'
       });
     }
+
+    if (scan.tipo_movimiento === 'ENTRADA') {
+      const [linkedExits] = await connection.query(
+        `SELECT id FROM pcb_inventory_scan_smd
+         WHERE source_entry_id = ?
+         LIMIT 1`,
+        [id]
+      );
+      if (linkedExits.length > 0) {
+        await connection.rollback();
+        return res.status(409).json({
+          success: false,
+          message: 'No se puede eliminar una entrada cuyo ciclo ya tiene salida',
+          code: 'PCB_CYCLE_ALREADY_CLOSED'
+        });
+      }
+    } else if (scan.source_entry_id) {
+      await connection.query(
+        `UPDATE pcb_inventory_scan_defects_smd
+         SET exit_scan_id = NULL, repair_status = 'PENDING', repaired_at = NULL
+         WHERE entry_scan_id = ? AND exit_scan_id = ?`,
+        [scan.source_entry_id, id]
+      );
+    }
+
+    const [result] = await connection.query(
+      `DELETE FROM pcb_inventory_scan_smd WHERE id = ?`,
+      [id]
+    );
+
+    if (result.affectedRows === 0) {
+      await connection.rollback();
+      return res.status(404).json({
+        success: false,
+        message: 'Escaneo no encontrado'
+      });
+    }
+
+    await connection.commit();
 
     res.json({
       success: true,
@@ -1243,6 +1568,19 @@ exports.deleteScan = async (req, res, next) => {
     });
 
   } catch (err) {
+    if (connection) {
+      try {
+        await connection.rollback();
+      } catch (_) {}
+    }
     next(err);
+  } finally {
+    if (connection) connection.release();
   }
+};
+
+exports._test = {
+  normalizeDefectsPayload,
+  summarizeDefects,
+  buildPreviousRepairData,
 };

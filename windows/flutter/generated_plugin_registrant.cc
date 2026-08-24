@@ -10,6 +10,7 @@
 #include <connectivity_plus/connectivity_plus_windows_plugin.h>
 #include <desktop_multi_window/desktop_multi_window_plugin.h>
 #include <firebase_core/firebase_core_plugin_c_api.h>
+#include <flutter_blue_plus_winrt/flutter_blue_plus_plugin.h>
 #include <printing/printing_plugin.h>
 #include <screen_retriever_windows/screen_retriever_windows_plugin_c_api.h>
 #include <url_launcher_windows/url_launcher_windows.h>
@@ -24,6 +25,8 @@ void RegisterPlugins(flutter::PluginRegistry* registry) {
       registry->GetRegistrarForPlugin("DesktopMultiWindowPlugin"));
   FirebaseCorePluginCApiRegisterWithRegistrar(
       registry->GetRegistrarForPlugin("FirebaseCorePluginCApi"));
+  FlutterBluePlusPluginRegisterWithRegistrar(
+      registry->GetRegistrarForPlugin("FlutterBluePlusPlugin"));
   PrintingPluginRegisterWithRegistrar(
       registry->GetRegistrarForPlugin("PrintingPlugin"));
   ScreenRetrieverWindowsPluginCApiRegisterWithRegistrar(

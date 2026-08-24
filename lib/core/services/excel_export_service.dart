@@ -110,7 +110,7 @@ class ExcelExportService {
       final defaultFileName = '${fileName}_$timestamp.xlsx';
       
       // Mostrar diálogo para guardar
-      final outputPath = await FilePicker.platform.saveFile(
+      final outputPath = await FilePicker.saveFile(
         dialogTitle: 'Guardar archivo Excel',
         fileName: defaultFileName,
         type: FileType.custom,

@@ -34,6 +34,7 @@ class ScrapFormPanelState extends State<ScrapFormPanel> {
 
   String _selectedArea = 'SMD';
   String _selectedProceso = 'SMT';
+  DateTime _selectedRegistrationDate = DateTime.now();
   int? _selectedMotivoId;
   String? _selectedMotivoText;
   bool _isLoading = false;
@@ -71,12 +72,38 @@ class ScrapFormPanelState extends State<ScrapFormPanel> {
     'CALIDAD': 'Calidad',
     'ASSY': 'Assy',
     'IMD': 'IMD',
+    'SMD': 'SMD',
     'SMT': 'SMT',
     'MANTENIMIENTO': 'Mantenimiento',
     'COATING': 'Coating',
     'MICOM': 'Micom',
+    'COMPONENTE': 'Componente',
   };
   String tr(String key) => widget.languageProvider.tr(key);
+
+  String get _registrationDateApi {
+    final date = _selectedRegistrationDate;
+    return '${date.year.toString().padLeft(4, '0')}-'
+        '${date.month.toString().padLeft(2, '0')}-'
+        '${date.day.toString().padLeft(2, '0')}';
+  }
+
+  String get _registrationDateDisplay {
+    final date = _selectedRegistrationDate;
+    return '${date.day.toString().padLeft(2, '0')}/'
+        '${date.month.toString().padLeft(2, '0')}/${date.year}';
+  }
+
+  bool get _isPreviousRegistrationDate {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final selected = DateTime(
+      _selectedRegistrationDate.year,
+      _selectedRegistrationDate.month,
+      _selectedRegistrationDate.day,
+    );
+    return selected.isBefore(today);
+  }
 
   @override
   void initState() {
@@ -107,6 +134,32 @@ class ScrapFormPanelState extends State<ScrapFormPanel> {
 
   Future<void> reloadMotivos() => _loadMotivos();
 
+  Future<void> _selectRegistrationDate() async {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _selectedRegistrationDate.isAfter(today)
+          ? today
+          : _selectedRegistrationDate,
+      firstDate: DateTime(2000),
+      lastDate: today,
+      builder: (context, child) {
+        return Theme(
+          data: ThemeData.dark().copyWith(
+            colorScheme: const ColorScheme.dark(primary: Colors.cyan),
+          ),
+          child: child!,
+        );
+      },
+    );
+
+    if (picked != null && mounted) {
+      setState(() => _selectedRegistrationDate = picked);
+      requestScanFocus();
+    }
+  }
+
   // ---- Autocomplete del scan ----
   void _onScanTextChanged() {
     final text = _scanController.text.trim().toUpperCase();
@@ -135,7 +188,11 @@ class ScrapFormPanelState extends State<ScrapFormPanel> {
   }
 
   Future<void> _fetchSuggestions(String query) async {
-    final results = await ApiService.autocompleteScrap(query, _selectedArea);
+    final results = await ApiService.autocompleteScrap(
+      query,
+      _selectedArea,
+      _selectedProceso,
+    );
     if (!mounted) return;
     setState(() => _suggestions = results);
     if (_suggestions.isNotEmpty) {
@@ -387,6 +444,7 @@ class ScrapFormPanelState extends State<ScrapFormPanel> {
       scannedCode: code,
       area: _selectedArea,
       proceso: _selectedProceso,
+      fechaRegistro: _registrationDateApi,
       motivoScrapId: _selectedMotivoId!,
       comentarios:
           _commentController.text.isNotEmpty ? _commentController.text : null,
@@ -401,7 +459,7 @@ class ScrapFormPanelState extends State<ScrapFormPanel> {
         _lastInsertedId = data?['id'] ?? 0;
         setState(() {
           _statusMessage =
-              '${tr('scrap_scan_saved')}: ${data?['part_no'] ?? ''} - ${data?['modelo'] ?? 'N/A'} [${data?['area'] ?? ''}]';
+              '${tr('scrap_scan_saved')}: ${data?['part_no'] ?? ''} - ${data?['modelo'] ?? 'N/A'} [${data?['area'] ?? ''}] · ${data?['fecha'] ?? _registrationDateApi}';
           _statusIsError = false;
         });
         _scanController.clear();
@@ -421,6 +479,8 @@ class ScrapFormPanelState extends State<ScrapFormPanel> {
           msg = tr('scrap_invalid_proceso');
         } else if (errorCode == 'INVALID_MOTIVO') {
           msg = tr('scrap_invalid_motivo');
+        } else if (errorCode == 'INVALID_FECHA_REGISTRO') {
+          msg = tr('scrap_invalid_registration_date');
         }
         setState(() {
           _statusMessage = msg;
@@ -602,7 +662,7 @@ class ScrapFormPanelState extends State<ScrapFormPanel> {
             ],
           ),
           const SizedBox(height: 12),
-          // Fila 2: Comentarios
+          // Fila 2: Comentarios + Fecha de scrap + Cantidad
           Row(
             children: [
               SizedBox(
@@ -616,6 +676,42 @@ class ScrapFormPanelState extends State<ScrapFormPanel> {
                   decoration: fieldDecoration(),
                   style: const TextStyle(fontSize: 14),
                   onChanged: (_) => _saveLocalPrefs(),
+                ),
+              ),
+              const SizedBox(width: 24),
+              SizedBox(
+                width: 125,
+                child: Text(tr('scrap_registration_date'),
+                    style: const TextStyle(fontSize: 14, color: Colors.white)),
+              ),
+              SizedBox(
+                width: 145,
+                child: InkWell(
+                  onTap: _selectRegistrationDate,
+                  borderRadius: BorderRadius.circular(4),
+                  child: InputDecorator(
+                    decoration: fieldDecoration().copyWith(
+                      prefixIcon: Icon(
+                        Icons.calendar_month,
+                        color: _isPreviousRegistrationDate
+                            ? Colors.amber
+                            : Colors.cyan,
+                        size: 18,
+                      ),
+                      prefixIconConstraints:
+                          const BoxConstraints(minWidth: 32, minHeight: 20),
+                    ),
+                    child: Text(
+                      _registrationDateDisplay,
+                      style: TextStyle(
+                        fontSize: 14,
+                        color: _isPreviousRegistrationDate
+                            ? Colors.amber
+                            : Colors.white,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
                 ),
               ),
               const SizedBox(width: 24),

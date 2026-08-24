@@ -11,6 +11,39 @@ import 'package:material_warehousing_flutter/core/services/auth_service.dart';
 import 'package:material_warehousing_flutter/core/constants/pcb_areas.dart';
 import 'package:material_warehousing_flutter/screens/pcb_common/pcb_user_selection_mixin.dart';
 
+class _PcbDefectDraft {
+  String? defectType;
+  String componentLocation;
+  String? etapaDeteccion;
+  String? defectSourceArea;
+  String? defectDataId;
+
+  _PcbDefectDraft({
+    this.defectType,
+    this.componentLocation = '',
+    this.etapaDeteccion,
+    this.defectSourceArea,
+    this.defectDataId,
+  });
+
+  _PcbDefectDraft copy() => _PcbDefectDraft(
+        defectType: defectType,
+        componentLocation: componentLocation,
+        etapaDeteccion: etapaDeteccion,
+        defectSourceArea: defectSourceArea,
+        defectDataId: defectDataId,
+      );
+
+  Map<String, dynamic> toJson() => {
+        'defect_type': defectType,
+        'component_location':
+            componentLocation.trim().isEmpty ? null : componentLocation.trim(),
+        'etapa_deteccion': etapaDeteccion,
+        'defect_source_area': defectSourceArea,
+        'defect_data_id': defectDataId,
+      };
+}
+
 class PcbEntradaFormPanel extends StatefulWidget {
   final LanguageProvider languageProvider;
   final VoidCallback onDataSaved;
@@ -34,6 +67,8 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel>
       TextEditingController(text: '1');
   final TextEditingController _repairCountController =
       TextEditingController(text: '1');
+  final TextEditingController _defectCountController =
+      TextEditingController(text: '1');
   final TextEditingController _componentLocationController =
       TextEditingController();
   final FocusNode _scanFocusNode = FocusNode();
@@ -45,6 +80,9 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel>
   String? _detectedSourceArea;
   String? _detectedDefectDataId;
   List<Map<String, dynamic>> _defects = [];
+  int _defectCount = 1;
+  List<_PcbDefectDraft> _configuredDefects = [];
+  bool _isDefectDialogOpen = false;
   DateTime _inventoryDate = DateTime.now();
   bool _isLoading = false;
   String? _statusMessage;
@@ -86,6 +124,7 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel>
     _dateController.dispose();
     _arrayCountController.dispose();
     _repairCountController.dispose();
+    _defectCountController.dispose();
     _componentLocationController.dispose();
     _scanFocusNode.dispose();
     super.dispose();
@@ -174,9 +213,8 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel>
   }
 
   void _updatePendingArrayTargetArea() {
-    _pendingArrayTargetArea = _pendingRepairRemaining > 0
-        ? _pendingRepairArea
-        : PcbAreas.inventory;
+    _pendingArrayTargetArea =
+        _pendingRepairRemaining > 0 ? _pendingRepairArea : PcbAreas.inventory;
   }
 
   String _normalizePcbCode(String code) =>
@@ -189,6 +227,270 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel>
         defect['description']?.toString() ?? '',
       ];
     }).toList();
+  }
+
+  _PcbDefectDraft _primaryDefectDraft() => _PcbDefectDraft(
+        defectType: _selectedDefectType,
+        componentLocation: _componentLocationController.text,
+        etapaDeteccion: _detectedEtapa ?? 'AIS',
+        defectSourceArea: _detectedSourceArea,
+        defectDataId: _detectedDefectDataId,
+      );
+
+  void _resetDefectConfiguration({bool keepPrimary = true}) {
+    _defectCount = 1;
+    _defectCountController.text = '1';
+    _configuredDefects = keepPrimary ? [_primaryDefectDraft()] : [];
+  }
+
+  bool _configuredDefectsMatchPrimary() {
+    if (_configuredDefects.length != _defectCount ||
+        _configuredDefects.isEmpty) {
+      return false;
+    }
+    final first = _configuredDefects.first;
+    final primary = _primaryDefectDraft();
+    return first.defectType == primary.defectType &&
+        first.componentLocation.trim() == primary.componentLocation.trim() &&
+        first.defectDataId == primary.defectDataId;
+  }
+
+  List<Map<String, dynamic>> _defectsPayload() {
+    if (_defectCount <= 1) return [_primaryDefectDraft().toJson()];
+    if (_configuredDefects.length != _defectCount) return const [];
+    final drafts = _configuredDefects.map((draft) => draft.copy()).toList();
+    drafts[0] = _primaryDefectDraft();
+    return drafts.map((draft) => draft.toJson()).toList();
+  }
+
+  void _syncPrimaryDefectIntoConfiguration() {
+    if (_configuredDefects.isEmpty) {
+      _configuredDefects = [_primaryDefectDraft()];
+    } else {
+      _configuredDefects[0] = _primaryDefectDraft();
+    }
+  }
+
+  void _onDefectCountChanged(String value) {
+    final count = int.tryParse(value.trim());
+    if (count == null || count < 1) return;
+    final previousCount = _defectCount;
+    setState(() {
+      _defectCount = count;
+      if (count == 1) {
+        _configuredDefects = [_primaryDefectDraft()];
+      }
+    });
+    if (count < 2) return;
+
+    Future<void>.delayed(const Duration(milliseconds: 350), () async {
+      if (!mounted ||
+          _isDefectDialogOpen ||
+          _defectCountController.text.trim() != value.trim() ||
+          _defectCount != count) {
+        return;
+      }
+      await _configureDefects(count, cancelCount: previousCount);
+    });
+  }
+
+  Future<bool> _configureDefects(int count, {int? cancelCount}) async {
+    if (_isDefectDialogOpen || count < 2) return count < 2;
+    _isDefectDialogOpen = true;
+
+    final drafts = <_PcbDefectDraft>[];
+    for (var i = 0; i < count; i++) {
+      if (i == 0) {
+        drafts.add(_primaryDefectDraft());
+      } else if (i < _configuredDefects.length) {
+        drafts.add(_configuredDefects[i].copy());
+      } else {
+        drafts.add(_PcbDefectDraft(etapaDeteccion: 'AIS'));
+      }
+    }
+    final locationControllers = drafts
+        .map((draft) => TextEditingController(text: draft.componentLocation))
+        .toList();
+    String? validationMessage;
+
+    final result = await showDialog<List<_PcbDefectDraft>>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) {
+          return AlertDialog(
+            backgroundColor: AppColors.panelBackground,
+            title: Text(
+              '${tr('pcb_configure_defects')} ($count)',
+              style: const TextStyle(color: Colors.white, fontSize: 16),
+            ),
+            content: SizedBox(
+              width: 760,
+              height: (count * 70.0 + 65).clamp(210.0, 520.0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    tr('pcb_first_defect_hint'),
+                    style: const TextStyle(color: Colors.white60, fontSize: 12),
+                  ),
+                  const SizedBox(height: 10),
+                  if (validationMessage != null) ...[
+                    Text(validationMessage!,
+                        style: const TextStyle(
+                            color: Colors.redAccent, fontSize: 12)),
+                    const SizedBox(height: 6),
+                  ],
+                  Expanded(
+                    child: ListView.separated(
+                      itemCount: drafts.length,
+                      separatorBuilder: (_, __) => const SizedBox(height: 10),
+                      itemBuilder: (_, index) {
+                        final draft = drafts[index];
+                        final defectNames = _defects
+                            .map(
+                                (item) => item['defect_name']?.toString() ?? '')
+                            .where((name) => name.isNotEmpty)
+                            .toSet()
+                            .toList();
+                        if (draft.defectType != null &&
+                            draft.defectType!.isNotEmpty &&
+                            !defectNames.contains(draft.defectType)) {
+                          defectNames.insert(0, draft.defectType!);
+                        }
+                        return Row(
+                          children: [
+                            SizedBox(
+                              width: 78,
+                              child: Text(
+                                '${tr('pcb_defect_type')} ${index + 1}',
+                                style: TextStyle(
+                                  color:
+                                      index == 0 ? Colors.cyan : Colors.white70,
+                                  fontSize: 12,
+                                  fontWeight: index == 0
+                                      ? FontWeight.w600
+                                      : FontWeight.normal,
+                                ),
+                              ),
+                            ),
+                            Expanded(
+                              flex: 3,
+                              child: DropdownButtonFormField2<String>(
+                                decoration: fieldDecoration(),
+                                value: draft.defectType,
+                                isExpanded: true,
+                                items: defectNames
+                                    .map((name) => DropdownMenuItem<String>(
+                                          value: name,
+                                          child: Text(name,
+                                              style: const TextStyle(
+                                                  fontSize: 12)),
+                                        ))
+                                    .toList(),
+                                onChanged: (selected) {
+                                  if (selected == null) return;
+                                  setDialogState(() {
+                                    if (draft.defectType != selected) {
+                                      draft.defectType = selected;
+                                      draft.etapaDeteccion = 'AIS';
+                                      draft.defectSourceArea = null;
+                                      draft.defectDataId = null;
+                                    }
+                                  });
+                                },
+                                dropdownStyleData: DropdownStyleData(
+                                  maxHeight: 260,
+                                  decoration: BoxDecoration(
+                                    color: AppColors.fieldBackground,
+                                    borderRadius: BorderRadius.circular(4),
+                                  ),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              flex: 2,
+                              child: TextFormField(
+                                controller: locationControllers[index],
+                                decoration: fieldDecoration().copyWith(
+                                  labelText: tr('pcb_component_location'),
+                                  labelStyle: const TextStyle(
+                                      color: Colors.white60, fontSize: 11),
+                                ),
+                                style: const TextStyle(fontSize: 12),
+                                textCapitalization:
+                                    TextCapitalization.characters,
+                                onChanged: (text) =>
+                                    draft.componentLocation = text,
+                              ),
+                            ),
+                          ],
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: Text(tr('cancel'),
+                    style: const TextStyle(color: Colors.white70)),
+              ),
+              ElevatedButton(
+                onPressed: () {
+                  for (var i = 0; i < drafts.length; i++) {
+                    drafts[i].componentLocation =
+                        locationControllers[i].text.trim();
+                  }
+                  if (drafts.any((draft) =>
+                      draft.defectType == null ||
+                      draft.defectType!.trim().isEmpty)) {
+                    setDialogState(() =>
+                        validationMessage = tr('pcb_complete_all_defects'));
+                    return;
+                  }
+                  Navigator.pop(ctx, drafts);
+                },
+                child: Text(tr('apply')),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+
+    for (final controller in locationControllers) {
+      controller.dispose();
+    }
+    _isDefectDialogOpen = false;
+    if (!mounted) return false;
+
+    if (result == null) {
+      if (cancelCount != null) {
+        setState(() {
+          _defectCount = cancelCount;
+          _defectCountController.text = cancelCount.toString();
+        });
+      }
+      return false;
+    }
+
+    final first = result.first;
+    setState(() {
+      _defectCount = count;
+      _defectCountController.text = count.toString();
+      _configuredDefects = result;
+      _selectedDefectType = first.defectType;
+      _componentLocationController.text = first.componentLocation;
+      _detectedEtapa = first.etapaDeteccion;
+      _detectedSourceArea = first.defectSourceArea;
+      _detectedDefectDataId = first.defectDataId;
+    });
+    _saveLocalPrefs();
+    return true;
   }
 
   String? _buildComments({required bool isArrayItem}) {
@@ -226,6 +528,16 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel>
     final code = _scanController.text.trim();
     if (code.isEmpty) return;
     final isArrayItem = _hasPendingArrayScans;
+
+    final previousRepair = await ApiService.getPcbPreviousRepair(code);
+    if (!mounted) return;
+    if (previousRepair != null) {
+      final repairedDefects = previousRepair['defects'];
+      if (repairedDefects is List && repairedDefects.isNotEmpty) {
+        await _showPreviousRepairDialog(previousRepair);
+        if (!mounted) return;
+      }
+    }
 
     // Detectar defectos LQC/OQC solo en el primer PCB del array.
     if (!isArrayItem) {
@@ -270,6 +582,28 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel>
     final repairCount = isArrayItem ? 0 : _getRepairCount();
     final effectiveArea = isArrayItem ? _pendingArrayTargetArea : _selectedArea;
     final isRepairEntry = PcbAreas.isRepair(effectiveArea);
+    final requestedDefectCount =
+        int.tryParse(_defectCountController.text.trim()) ?? 1;
+    if (isRepairEntry && requestedDefectCount < 1) {
+      setState(() {
+        _statusMessage = tr('pcb_invalid_defect_count');
+        _statusIsError = true;
+      });
+      requestScanFocus();
+      return;
+    }
+    _defectCount = requestedDefectCount;
+    if (isRepairEntry &&
+        _defectCount >= 2 &&
+        !_configuredDefectsMatchPrimary()) {
+      final configured = await _configureDefects(_defectCount);
+      if (!configured || !mounted) {
+        requestScanFocus();
+        return;
+      }
+    }
+    final List<Map<String, dynamic>> selectedDefects =
+        isRepairEntry ? _defectsPayload() : <Map<String, dynamic>>[];
     final arrayGroupCode =
         isArrayItem ? _pendingArrayGroupCode : _normalizePcbCode(code);
     final arrayRole =
@@ -296,7 +630,10 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel>
     }
 
     if (isRepairEntry &&
-        (_selectedDefectType == null || _selectedDefectType!.isEmpty)) {
+        (selectedDefects.length != _defectCount ||
+            selectedDefects.any((defect) =>
+                defect['defect_type'] == null ||
+                defect['defect_type'].toString().trim().isEmpty))) {
       setState(() {
         _statusMessage = tr('pcb_defect_required');
         _statusIsError = true;
@@ -338,6 +675,7 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel>
       etapaDeteccion: isRepairEntry ? _detectedEtapa : null,
       defectSourceArea: isRepairEntry ? _detectedSourceArea : null,
       defectDataId: isRepairEntry ? _detectedDefectDataId : null,
+      defects: isRepairEntry ? selectedDefects : null,
       comentarios: _buildComments(isArrayItem: isArrayItem),
       scannedBy: selectedPcbScannedBy,
     );
@@ -354,8 +692,7 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel>
             : (fallbackId > 0 ? [fallbackId] : []);
         String nextMessage;
         if (isArrayItem) {
-          if (PcbAreas.isRepair(effectiveArea) &&
-              _pendingRepairRemaining > 0) {
+          if (PcbAreas.isRepair(effectiveArea) && _pendingRepairRemaining > 0) {
             _pendingRepairRemaining -= 1;
           } else if (_pendingInventoryRemaining > 0) {
             _pendingInventoryRemaining -= 1;
@@ -365,6 +702,7 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel>
           if (_pendingArrayRemaining <= 0) {
             _clearPendingArray();
             _clearDetectedDefect();
+            _resetDefectConfiguration();
             nextMessage =
                 '${tr('pcb_array_complete')}: ${data?['pcb_part_no'] ?? ''} - ${data?['modelo'] ?? 'N/A'}';
           } else {
@@ -391,6 +729,7 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel>
               '${tr('pcb_scan_saved')}: ${data?['pcb_part_no'] ?? ''} | ${tr('pcb_array_remaining')}: $_pendingArrayRemaining (${PcbAreas.label(_pendingArrayTargetArea)})';
         } else {
           _clearDetectedDefect();
+          _resetDefectConfiguration();
           nextMessage =
               '${tr('pcb_scan_saved')}: ${data?['pcb_part_no'] ?? ''} - ${data?['modelo'] ?? 'N/A'} (${data?['proceso'] ?? ''})';
         }
@@ -476,6 +815,149 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel>
       default:
         return Colors.white38;
     }
+  }
+
+  Future<void> _showPreviousRepairDialog(
+      Map<String, dynamic> previousRepair) async {
+    final defects = (previousRepair['defects'] as List? ?? const [])
+        .whereType<Map>()
+        .map((item) => Map<String, dynamic>.from(item))
+        .toList();
+    final repairedAt = previousRepair['repaired_at']?.toString() ?? '';
+
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.panelBackground,
+        title: Row(
+          children: [
+            const Icon(Icons.history_rounded, color: Colors.amber, size: 24),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                tr('pcb_previous_repair_title'),
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+          ],
+        ),
+        content: SizedBox(
+          width: 560,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                tr('pcb_previous_repair_hint'),
+                style: const TextStyle(color: Colors.white70, fontSize: 13),
+              ),
+              if (repairedAt.isNotEmpty) ...[
+                const SizedBox(height: 6),
+                Text(
+                  '${tr('pcb_repaired_on')}: $repairedAt',
+                  style: const TextStyle(color: Colors.white54, fontSize: 11),
+                ),
+              ],
+              const SizedBox(height: 14),
+              Flexible(
+                child: ListView.separated(
+                  shrinkWrap: true,
+                  itemCount: defects.length,
+                  separatorBuilder: (_, __) => const SizedBox(height: 8),
+                  itemBuilder: (_, index) {
+                    final defect = defects[index];
+                    final defectType = defect['defect_type']?.toString() ?? '';
+                    final location =
+                        defect['component_location']?.toString() ?? '';
+                    final etapa = defect['etapa_deteccion']?.toString() ?? '';
+                    final sourceArea =
+                        defect['defect_source_area']?.toString() ?? '';
+                    final details = <String>[
+                      if (location.isNotEmpty)
+                        '${tr('pcb_component_location')}: $location',
+                      if (etapa.isNotEmpty)
+                        '${tr('pcb_etapa_deteccion')}: $etapa',
+                      if (sourceArea.isNotEmpty)
+                        '${tr('pcb_source_area')}: $sourceArea',
+                    ];
+
+                    return Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 10),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withValues(alpha: 0.05),
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(color: Colors.greenAccent.shade700),
+                      ),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Container(
+                            width: 24,
+                            height: 24,
+                            alignment: Alignment.center,
+                            decoration: const BoxDecoration(
+                              color: Colors.green,
+                              shape: BoxShape.circle,
+                            ),
+                            child: Text(
+                              '${index + 1}',
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 11,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  defectType,
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                                if (details.isNotEmpty) ...[
+                                  const SizedBox(height: 3),
+                                  Text(
+                                    details.join('  |  '),
+                                    style: const TextStyle(
+                                        color: Colors.white60, fontSize: 11),
+                                  ),
+                                ],
+                              ],
+                            ),
+                          ),
+                          const Icon(Icons.check_circle,
+                              color: Colors.greenAccent, size: 18),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          ElevatedButton.icon(
+            onPressed: () => Navigator.pop(ctx),
+            icon: const Icon(Icons.arrow_forward, size: 16),
+            label: Text(tr('continue')),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<Map<String, dynamic>?> _showDefectVerificationDialog(
@@ -658,7 +1140,7 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel>
                   isExpanded: true,
                   style: const TextStyle(fontSize: 14, color: Colors.white),
                   items: _areas
-                      .map((a) => DropdownMenuItem(
+                      .map((a) => DropdownMenuItem<String>(
                             value: a,
                             child: Text(PcbAreas.label(a),
                                 style: const TextStyle(fontSize: 14)),
@@ -668,7 +1150,12 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel>
                       ? null
                       : (val) {
                           if (val != null) {
-                            setState(() => _selectedArea = val);
+                            setState(() {
+                              _selectedArea = val;
+                              if (!PcbAreas.isRepair(val)) {
+                                _resetDefectConfiguration();
+                              }
+                            });
                             _saveLocalPrefs();
                           }
                         },
@@ -704,7 +1191,7 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel>
                   isExpanded: true,
                   style: const TextStyle(fontSize: 14, color: Colors.white),
                   items: _procesos
-                      .map((p) => DropdownMenuItem(
+                      .map((p) => DropdownMenuItem<String>(
                             value: p,
                             child:
                                 Text(p, style: const TextStyle(fontSize: 14)),
@@ -766,9 +1253,8 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel>
                   controller: _repairCountController,
                   decoration: fieldDecoration(),
                   style: const TextStyle(fontSize: 14),
-                  enabled:
-                      !_hasPendingArrayScans &&
-                          PcbAreas.isRepair(_selectedArea),
+                  enabled: !_hasPendingArrayScans &&
+                      PcbAreas.isRepair(_selectedArea),
                   keyboardType: TextInputType.number,
                   inputFormatters: [FilteringTextInputFormatter.digitsOnly],
                   onChanged: (_) => _saveLocalPrefs(),
@@ -846,7 +1332,43 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel>
           Row(
             children: [
               SizedBox(
-                width: 100,
+                width: 110,
+                child: Text(tr('pcb_defect_count'),
+                    style: const TextStyle(fontSize: 14, color: Colors.white)),
+              ),
+              SizedBox(
+                width: 60,
+                child: TextFormField(
+                  controller: _defectCountController,
+                  decoration: fieldDecoration(),
+                  style: const TextStyle(fontSize: 14),
+                  enabled: isRepairContext && !_hasPendingArrayScans,
+                  keyboardType: TextInputType.number,
+                  inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                  onChanged: _onDefectCountChanged,
+                  onFieldSubmitted: (_) async {
+                    if (_defectCount >= 2 && !_isDefectDialogOpen) {
+                      await _configureDefects(_defectCount);
+                    }
+                  },
+                ),
+              ),
+              SizedBox(
+                height: 36,
+                width: 36,
+                child: IconButton(
+                  onPressed: isRepairContext && _defectCount >= 2
+                      ? () => _configureDefects(_defectCount)
+                      : null,
+                  icon: const Icon(Icons.edit_note,
+                      color: Colors.white70, size: 18),
+                  tooltip: tr('pcb_configure_defects'),
+                  padding: EdgeInsets.zero,
+                ),
+              ),
+              const SizedBox(width: 12),
+              SizedBox(
+                width: 90,
                 child: Text(tr('pcb_defect_type'),
                     style: const TextStyle(fontSize: 14, color: Colors.white)),
               ),
@@ -868,7 +1390,10 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel>
                             ? defectRows[index][0]
                             : '';
                         if (defectName.isEmpty) return;
-                        setState(() => _selectedDefectType = defectName);
+                        setState(() {
+                          _selectedDefectType = defectName;
+                          _syncPrimaryDefectIntoConfiguration();
+                        });
                         _saveLocalPrefs();
                       },
                     ),
@@ -942,7 +1467,10 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel>
                   style: const TextStyle(fontSize: 14),
                   enabled: isRepairContext,
                   textCapitalization: TextCapitalization.characters,
-                  onChanged: (_) => _saveLocalPrefs(),
+                  onChanged: (_) {
+                    _syncPrimaryDefectIntoConfiguration();
+                    _saveLocalPrefs();
+                  },
                 ),
               ),
             ],

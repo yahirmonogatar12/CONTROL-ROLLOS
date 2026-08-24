@@ -23,6 +23,9 @@ router.get('/stock-summary', ctrl.getStockSummary);
 // GET /api/pcb-inventory/stock-detail - Detalle de todos los movimientos
 router.get('/stock-detail', ctrl.getStockDetail);
 
+// GET /api/pcb-inventory/previous-repair - Ultimo ciclo reparado de una PCB
+router.get('/previous-repair', ctrl.getPreviousRepair);
+
 // DELETE /api/pcb-inventory/scan/:id - Eliminar un escaneo
 router.delete('/scan/:id', ctrl.deleteScan);
 

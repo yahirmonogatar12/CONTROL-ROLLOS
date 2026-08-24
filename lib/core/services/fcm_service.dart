@@ -322,7 +322,7 @@ class FCMService {
     const androidInit = AndroidInitializationSettings('@mipmap/ic_launcher');
     const initSettings = InitializationSettings(android: androidInit);
     await _localNotifications.initialize(
-      initSettings,
+      settings: initSettings,
       onDidReceiveNotificationResponse: _onNotificationTapped,
     );
 
@@ -361,10 +361,10 @@ class FCMService {
           : (notification?.body ?? 'Nueva solicitud de material');
 
       _localNotifications.show(
-        message.hashCode,
-        title,
-        body,
-        const NotificationDetails(
+        id: message.hashCode,
+        title: title,
+        body: body,
+        notificationDetails: const NotificationDetails(
           android: AndroidNotificationDetails(
             'smt_material_requests',
             'SMT Material Requests',

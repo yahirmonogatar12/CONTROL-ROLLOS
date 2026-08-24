@@ -122,7 +122,7 @@ class _ScrapSearchBarPanelState extends State<ScrapSearchBarPanel> {
             width: 150,
             height: 32,
             child: DropdownButtonFormField<String>(
-              value: _selectedArea,
+              initialValue: _selectedArea,
               isDense: true,
               isExpanded: true,
               decoration: InputDecoration(

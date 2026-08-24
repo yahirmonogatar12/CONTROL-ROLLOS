@@ -62,10 +62,12 @@ class _ScrapEditPanelState extends State<ScrapEditPanel> {
     'CALIDAD': 'Calidad',
     'ASSY': 'Assy',
     'IMD': 'IMD',
+    'SMD': 'SMD',
     'SMT': 'SMT',
     'MANTENIMIENTO': 'Mantenimiento',
     'COATING': 'Coating',
     'MICOM': 'Micom',
+    'COMPONENTE': 'Componente',
   };
 
   bool get _canEdit => AuthService.canEditScrapHistory;

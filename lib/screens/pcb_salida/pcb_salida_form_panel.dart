@@ -178,10 +178,19 @@ class PcbSalidaFormPanelState extends State<PcbSalidaFormPanel>
             : (fallbackId > 0 ? [fallbackId] : []);
         final isArrayExit = result['array_exit'] == true;
         final totalQty = result['total_qty'] ?? _lastInsertedIds.length;
+        final repairedDefects = (result['repaired_defects'] as List? ?? [])
+            .whereType<Map<String, dynamic>>()
+            .map((defect) => defect['defect_type']?.toString() ?? '')
+            .where((name) => name.isNotEmpty)
+            .toList();
+        final repairedSuffix = _tipoMovimiento == 'SALIDA' &&
+                repairedDefects.isNotEmpty
+            ? ' | ${tr('pcb_defects_repaired')}: ${repairedDefects.join(', ')}'
+            : '';
         setState(() {
           _statusMessage = isArrayExit
-              ? '$_tipoMovimiento ${tr('pcb_array_complete')}: $totalQty PCBs'
-              : '$_tipoMovimiento: ${data?['pcb_part_no'] ?? ''} - ${data?['modelo'] ?? 'N/A'} (${data?['proceso'] ?? ''})';
+              ? '$_tipoMovimiento ${tr('pcb_array_complete')}: $totalQty PCBs$repairedSuffix'
+              : '$_tipoMovimiento: ${data?['pcb_part_no'] ?? ''} - ${data?['modelo'] ?? 'N/A'} (${data?['proceso'] ?? ''})$repairedSuffix';
           _statusIsError = false;
         });
         _scanController.clear();

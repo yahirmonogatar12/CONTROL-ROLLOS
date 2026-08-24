@@ -344,7 +344,7 @@ class MaterialControlGridPanelState extends State<MaterialControlGridPanel> with
   // Importar comparaciones desde archivo Excel/CSV
   Future<void> _importComparisons() async {
     try {
-      final result = await FilePicker.platform.pickFiles(
+      final result = await FilePicker.pickFiles(
         type: FileType.custom,
         allowedExtensions: ['xlsx', 'xls', 'csv'],
         dialogTitle: tr('select_file'),
@@ -503,7 +503,7 @@ class MaterialControlGridPanelState extends State<MaterialControlGridPanel> with
   // Importar ubicación rollos desde archivo Excel/CSV
   Future<void> _importRollos() async {
     try {
-      final result = await FilePicker.platform.pickFiles(
+      final result = await FilePicker.pickFiles(
         type: FileType.custom,
         allowedExtensions: ['xlsx', 'xls', 'csv'],
         dialogTitle: tr('select_file'),

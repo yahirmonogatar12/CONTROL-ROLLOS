@@ -4468,6 +4468,22 @@ class ApiService {
     }
   }
 
+  // GET - Ultimo ciclo reparado de una PCB, si existe
+  static Future<Map<String, dynamic>?> getPcbPreviousRepair(
+      String scannedCode) async {
+    try {
+      final response = await http.get(Uri.parse(
+          '$baseUrl/pcb-inventory/previous-repair?codigo=${Uri.encodeQueryComponent(scannedCode)}'));
+      if (response.statusCode != 200) return null;
+      final body = json.decode(response.body);
+      final data = body['data'];
+      if (body['success'] != true || data is! Map) return null;
+      return Map<String, dynamic>.from(data);
+    } catch (_) {
+      return null;
+    }
+  }
+
   // POST - Registrar escaneo de PCB (ENTRADA, SALIDA o SCRAP)
   // area: INVENTARIO | INVENTARIO_REPARACION | REPARACION
   // proceso: SMD | IMD | ASSY
@@ -4486,6 +4502,7 @@ class ApiService {
     String? etapaDeteccion,
     String? defectSourceArea,
     String? defectDataId,
+    List<Map<String, dynamic>>? defects,
     bool manualQtyConfirmed = false,
     String? initialStockArea,
     String? initialStockProceso,
@@ -4512,6 +4529,7 @@ class ApiService {
           'etapa_deteccion': etapaDeteccion,
           'defect_source_area': defectSourceArea,
           'defect_data_id': defectDataId,
+          'defects': defects,
           'manual_qty_confirmed': manualQtyConfirmed,
           'initial_stock_area': initialStockArea,
           'initial_stock_proceso': initialStockProceso,
@@ -4939,6 +4957,7 @@ class ApiService {
     required String scannedCode,
     required String area,
     required String proceso,
+    required String fechaRegistro,
     required int motivoScrapId,
     String? comentarios,
     String? usuario,
@@ -4953,6 +4972,7 @@ class ApiService {
           'scanned_code': scannedCode,
           'area': area,
           'proceso': proceso,
+          'fecha_registro': fechaRegistro,
           'motivo_scrap_id': motivoScrapId,
           'comentarios': comentarios,
           'usuario': usuario,
@@ -5066,12 +5086,12 @@ class ApiService {
 
   // GET - Autocompletado de PCBs desde tabla raw
   static Future<List<Map<String, dynamic>>> autocompleteScrap(
-      String query, String area) async {
+      String query, String area, String proceso) async {
     try {
       if (query.length < 3) return [];
       final response = await http.get(
         Uri.parse(
-            '$baseUrl/scrap/autocomplete?q=${Uri.encodeQueryComponent(query)}&area=${Uri.encodeQueryComponent(area)}'),
+            '$baseUrl/scrap/autocomplete?q=${Uri.encodeQueryComponent(query)}&area=${Uri.encodeQueryComponent(area)}&proceso=${Uri.encodeQueryComponent(proceso)}'),
       );
       if (response.statusCode == 200) {
         final body = json.decode(response.body);

@@ -74,9 +74,11 @@ mixin ResizableColumnsMixin<T extends StatefulWidget> on State<T> {
   }
 
   /// Actualiza el redimensionamiento
-  void onResizeUpdate(int index, DragUpdateDetails details) {
+  void onResizeUpdate(int index, DragUpdateDetails details,
+      {bool reverse = false}) {
     if (_resizingColumn == index && _columnFlexFactors.isNotEmpty) {
-      final delta = details.globalPosition.dx - _resizeStartX;
+      final rawDelta = details.globalPosition.dx - _resizeStartX;
+      final delta = reverse ? -rawDelta : rawDelta;
       final newFlex = (_resizeStartFlex + delta / 100).clamp(0.1, 20.0);
       setState(() {
         _columnFlexFactors[index] = newFlex;
@@ -93,12 +95,13 @@ mixin ResizableColumnsMixin<T extends StatefulWidget> on State<T> {
   }
   
   /// Helper para construir el handle de resize
-  Widget buildResizeHandle(int index) {
+  Widget buildResizeHandle(int index, {bool reverse = false}) {
     return MouseRegion(
       cursor: SystemMouseCursors.resizeColumn,
       child: GestureDetector(
         onHorizontalDragStart: (details) => onResizeStart(index, details),
-        onHorizontalDragUpdate: (details) => onResizeUpdate(index, details),
+        onHorizontalDragUpdate: (details) =>
+            onResizeUpdate(index, details, reverse: reverse),
         onHorizontalDragEnd: (details) => onResizeEnd(index, details),
         child: Container(
           width: 8,
@@ -150,6 +153,7 @@ mixin ResizableColumnsMixin<T extends StatefulWidget> on State<T> {
     bool showCheckbox = true,
     bool? selectAllValue,
     Function(bool?)? onSelectAll,
+    Set<int> leadingResizeColumns = const <int>{},
   }) {
     return Container(
       height: 32,
@@ -186,6 +190,8 @@ mixin ResizableColumnsMixin<T extends StatefulWidget> on State<T> {
               flex: (flex * 100).round(),
               child: Row(
                 children: [
+                  if (leadingResizeColumns.contains(i))
+                    buildResizeHandle(i, reverse: true),
                   // Header content
                   Expanded(
                     child: GestureDetector(

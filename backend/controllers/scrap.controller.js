@@ -15,6 +15,37 @@ function normalizeCode(code) {
   return (code || '').trim().toUpperCase().replace(/\s+/g, '');
 }
 
+function resolveScrapRegistrationDate(value) {
+  const now = getMexicoDateTime();
+  const today = getMexicoDate();
+  const requestedDate = (value || '').toString().trim();
+
+  // Los clientes anteriores no enviaban fecha; conservar ese flujo usando hoy.
+  if (!requestedDate) {
+    return { date: today, dateTime: now };
+  }
+
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(requestedDate);
+  if (!match) return null;
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+  const isRealDate =
+    parsed.getUTCFullYear() === year &&
+    parsed.getUTCMonth() === month - 1 &&
+    parsed.getUTCDate() === day;
+
+  if (!isRealDate || requestedDate > today) return null;
+
+  const currentTime = now.split(' ')[1] || '12:00:00';
+  return {
+    date: requestedDate,
+    dateTime: `${requestedDate} ${currentTime}`,
+  };
+}
+
 function parseScannedCode(code) {
   const parts = code.split(';').map(s => s.trim()).filter(Boolean);
   // Si no tiene separadores (entrada manual sin QR), tratar todo como part_no
@@ -109,8 +140,14 @@ async function getScrapEditUser(userId, db = pool) {
 }
 
 const VALID_AREAS = ['M1', 'M2', 'M3', 'M4', 'D1', 'D2', 'D3', 'CALIDAD', 'MANTENIMIENTO', 'SMD', 'IMD', 'IPM', 'COATING', 'PROVEEDOR', 'COMPONENTE'];
-const VALID_PROCESOS = ['CALIDAD', 'ASSY', 'IMD', 'SMT', 'MANTENIMIENTO', 'COATING', 'MICOM'];
+const VALID_PROCESOS = ['CALIDAD', 'ASSY', 'IMD', 'SMD', 'SMT', 'MANTENIMIENTO', 'COATING', 'MICOM', 'COMPONENTE'];
 const COMPONENT_CAPTURE_AREAS = new Set(['COMPONENTE', 'IPM']);
+const COMPONENT_CAPTURE_PROCESSES = new Set(['COMPONENTE']);
+
+function isComponentCapture(area, proceso) {
+  return COMPONENT_CAPTURE_AREAS.has((area || '').toString().toUpperCase()) ||
+    COMPONENT_CAPTURE_PROCESSES.has((proceso || '').toString().toUpperCase());
+}
 
 // ============================================
 // Lookup de raw_barcode por QR escaneado.
@@ -205,9 +242,20 @@ exports.lookupRawBarcode = async (req, res, next) => {
 // ============================================
 exports.scan = async (req, res, next) => {
   try {
-    const { scanned_code, area, proceso, motivo_scrap_id, comentarios, usuario, cantidad, raw_barcode } = req.body;
+    const {
+      scanned_code,
+      area,
+      proceso,
+      motivo_scrap_id,
+      comentarios,
+      usuario,
+      cantidad,
+      raw_barcode,
+      fecha_registro,
+    } = req.body;
     const qtyVal = Math.max(1, parseInt(cantidad) || 1);
     const procesoVal = (proceso || '').toString().trim().toUpperCase();
+    const registrationDate = resolveScrapRegistrationDate(fecha_registro);
 
     if (!scanned_code || !scanned_code.trim()) {
       return res.status(400).json({
@@ -241,6 +289,14 @@ exports.scan = async (req, res, next) => {
       });
     }
 
+    if (!registrationDate) {
+      return res.status(400).json({
+        success: false,
+        message: 'fecha_registro debe ser una fecha valida y no puede ser futura',
+        code: 'INVALID_FECHA_REGISTRO',
+      });
+    }
+
     // Resolver raw_barcode como dato opcional. Si el cliente no lo envia,
     // intentamos lookup interno; si tampoco se encuentra, se guarda null.
     let rawBarcodeVal = (raw_barcode || '').toString().trim() || null;
@@ -253,22 +309,25 @@ exports.scan = async (req, res, next) => {
 
     // Parsear QR
     const codeFields = await buildScrapCodeFields(scanned_code);
-    const fechaHoy = getMexicoDate();
+    const fechaRegistro = registrationDate.date;
 
-    // Verificar duplicado (mismo codigo + misma fecha)
-    const [existing] = await pool.query(
-      `SELECT id FROM scrap_records 
-       WHERE scanned_original_norm = ? AND DATE(fecha_registro) = ?`,
-      [codeFields.scannedOriginalNorm, fechaHoy]
-    );
+    // Los componentes son capturas de lote y pueden repetirse el mismo día.
+    // Para PCB se conserva la protección contra doble escaneo.
+    if (!isComponentCapture(area, procesoVal)) {
+      const [existing] = await pool.query(
+        `SELECT id FROM scrap_records
+         WHERE scanned_original_norm = ? AND DATE(fecha_registro) = ?`,
+        [codeFields.scannedOriginalNorm, fechaRegistro]
+      );
 
-    if (existing.length > 0) {
-      return res.status(409).json({
-        success: false,
-        message: 'Este codigo ya fue registrado como scrap hoy',
-        code: 'DUPLICATE_SCAN',
-        existing_id: existing[0].id,
-      });
+      if (existing.length > 0) {
+        return res.status(409).json({
+          success: false,
+          message: 'Este codigo ya fue registrado como scrap en la fecha seleccionada',
+          code: 'DUPLICATE_SCAN',
+          existing_id: existing[0].id,
+        });
+      }
     }
 
     // Obtener texto del motivo
@@ -287,7 +346,7 @@ exports.scan = async (req, res, next) => {
       });
     }
 
-    const ahora = getMexicoDateTime();
+    const ahora = registrationDate.dateTime;
 
     const [result] = await pool.query(
       `INSERT INTO scrap_records
@@ -489,24 +548,26 @@ exports.updateRecord = async (req, res, next) => {
     const current = currentRows[0];
     const codeFields = await buildScrapCodeFields(scanned_code, connection);
 
-    const [duplicateRows] = await connection.query(
-      `SELECT id
-       FROM scrap_records
-       WHERE scanned_original_norm = ?
-         AND DATE(fecha_registro) = DATE(?)
-         AND id <> ?
-       LIMIT 1`,
-      [codeFields.scannedOriginalNorm, current.fecha_registro, recordId]
-    );
+    if (!isComponentCapture(area, procesoVal)) {
+      const [duplicateRows] = await connection.query(
+        `SELECT id
+         FROM scrap_records
+         WHERE scanned_original_norm = ?
+           AND DATE(fecha_registro) = DATE(?)
+           AND id <> ?
+         LIMIT 1`,
+        [codeFields.scannedOriginalNorm, current.fecha_registro, recordId]
+      );
 
-    if (duplicateRows.length > 0) {
-      await connection.rollback();
-      return res.status(409).json({
-        success: false,
-        message: 'Este codigo ya fue registrado como scrap en la fecha del registro',
-        code: 'DUPLICATE_SCAN',
-        existing_id: duplicateRows[0].id,
-      });
+      if (duplicateRows.length > 0) {
+        await connection.rollback();
+        return res.status(409).json({
+          success: false,
+          message: 'Este codigo ya fue registrado como scrap en la fecha del registro',
+          code: 'DUPLICATE_SCAN',
+          existing_id: duplicateRows[0].id,
+        });
+      }
     }
 
     const [motivoRows] = await connection.query(
@@ -670,12 +731,12 @@ exports.deleteRecord = async (req, res, next) => {
 };
 
 // ============================================
-// GET /api/scrap/autocomplete?q=xxx&area=yyy
+// GET /api/scrap/autocomplete?q=xxx&area=yyy&proceso=zzz
 // Busca PCBs en tabla raw y componentes en tabla materiales para cualquier area.
 // ============================================
 exports.autocomplete = async (req, res, next) => {
   try {
-    const { q, area } = req.query;
+    const { q, area, proceso } = req.query;
 
     if (!q || q.trim().length < 3) {
       return res.json({ success: true, data: [] });
@@ -716,7 +777,7 @@ exports.autocomplete = async (req, res, next) => {
       [searchTerm, searchTerm, searchTerm]
     );
 
-    const rows = COMPONENT_CAPTURE_AREAS.has(area)
+    const rows = isComponentCapture(area, proceso)
       ? [...componentRows, ...pcbRows]
       : [...pcbRows, ...componentRows];
 
@@ -726,3 +787,8 @@ exports.autocomplete = async (req, res, next) => {
   }
 };
 
+// Reglas puras expuestas únicamente para pruebas automatizadas.
+exports._test = {
+  resolveScrapRegistrationDate,
+  isComponentCapture,
+};

@@ -306,7 +306,7 @@ class CancellationRequestsPanelState extends State<CancellationRequestsPanel> {
       // Save file
       final fileName = 'Cancellation_History_${DateFormat('yyyyMMdd_HHmmss').format(DateTime.now())}.xlsx';
       
-      final result = await FilePicker.platform.saveFile(
+      final result = await FilePicker.saveFile(
         dialogTitle: tr('save_excel_file'),
         fileName: fileName,
         type: FileType.custom,

@@ -641,7 +641,7 @@ class _QualitySpecsScreenState extends State<QualitySpecsScreen> {
   // ============ BULK UPLOAD ============
   Future<void> _handleBulkUpload() async {
     try {
-      final result = await FilePicker.platform.pickFiles(
+      final result = await FilePicker.pickFiles(
         type: FileType.custom,
         allowedExtensions: ['xlsx', 'xls'],
       );

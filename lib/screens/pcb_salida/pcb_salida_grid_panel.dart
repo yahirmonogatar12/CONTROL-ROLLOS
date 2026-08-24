@@ -31,11 +31,12 @@ class PcbSalidaGridPanelState extends State<PcbSalidaGridPanel>
   String? _searchPartNumber;
   String? _searchTipoFilter;
 
-  // 10 columns: tipo_movimiento + the scan fields
+  // Movement history, including the defects closed by each repair exit.
   static const _fields = [
     'tipo_movimiento',
     'scanned_original',
     'area',
+    'defect_type',
     'pcb_part_no',
     'modelo',
     'proceso',
@@ -51,6 +52,7 @@ class PcbSalidaGridPanelState extends State<PcbSalidaGridPanel>
         tr('pcb_tipo_movimiento'),
         tr('pcb_scanned_code'),
         tr('pcb_area'),
+        tr('pcb_defects_repaired'),
         tr('pcb_part_no'),
         tr('pcb_modelo'),
         tr('pcb_proceso'),
@@ -66,8 +68,19 @@ class PcbSalidaGridPanelState extends State<PcbSalidaGridPanel>
   @override
   void initState() {
     super.initState();
-    initColumnFlex(10, 'pcb_salida_grid',
-        defaultFlexValues: [1.2, 2.5, 1.0, 1.5, 1.5, 1.2, 1.2, 1.0, 1.5, 1.2]);
+    initColumnFlex(11, 'pcb_salida_grid', defaultFlexValues: [
+      1.2,
+      2.5,
+      1.0,
+      2.2,
+      1.5,
+      1.5,
+      1.2,
+      1.2,
+      1.0,
+      1.5,
+      1.2,
+    ]);
     _loadTodayData();
   }
 
