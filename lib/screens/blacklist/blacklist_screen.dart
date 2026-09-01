@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../core/widgets/column_filter.dart';
 import 'package:flutter/services.dart';
 import 'package:material_warehousing_flutter/core/localization/app_translations.dart';
 import 'package:material_warehousing_flutter/core/theme/app_colors.dart';
@@ -186,59 +187,24 @@ class _BlacklistScreenState extends State<BlacklistScreen> {
     });
   }
   
-  void _showFilterMenu(String field, GlobalKey key) {
-    final RenderBox? renderBox = key.currentContext?.findRenderObject() as RenderBox?;
-    if (renderBox == null) return;
-    
-    final position = renderBox.localToGlobal(Offset.zero);
-    final size = renderBox.size;
-    
-    // Obtener valores únicos para el filtro
-    final uniqueValues = _data
-        .map((row) => row[field]?.toString() ?? '')
-        .where((v) => v.isNotEmpty)
-        .toSet()
-        .toList()
-      ..sort();
-    
-    showMenu<String>(
+  Future<void> _showFilterMenu(String field, GlobalKey key) async {
+    // Valores de la columna; el componente ordena y busca.
+    final values = _data.map((row) => row[field]?.toString() ?? '');
+
+    final result = await ColumnFilter.show(
       context: context,
-      position: RelativeRect.fromLTRB(
-        position.dx,
-        position.dy + size.height,
-        position.dx + size.width,
-        position.dy + size.height + 200,
-      ),
-      items: [
-        PopupMenuItem<String>(
-          value: '',
-          child: Row(
-            children: [
-              const Icon(Icons.clear, size: 16, color: Colors.grey),
-              const SizedBox(width: 8),
-              Text(tr('clear_filter'), style: const TextStyle(color: Colors.grey)),
-            ],
-          ),
-        ),
-        ...uniqueValues.take(20).map((value) => PopupMenuItem<String>(
-          value: value,
-          child: Text(
-            value.length > 30 ? '${value.substring(0, 30)}...' : value,
-            style: const TextStyle(fontSize: 12),
-          ),
-        )),
-      ],
-    ).then((value) {
-      if (value != null) {
-        setState(() {
-          if (value.isEmpty) {
-            _columnFilters.remove(field);
-          } else {
-            _columnFilters[field] = value;
-          }
-          _applyFilters();
-        });
+      anchorKey: key,
+      values: values,
+      currentFilter: _columnFilters[field],
+    );
+    if (!result.changed) return;
+    setState(() {
+      if (result.filter == null) {
+        _columnFilters.remove(field);
+      } else {
+        _columnFilters[field] = result.filter;
       }
+      _applyFilters();
     });
   }
 

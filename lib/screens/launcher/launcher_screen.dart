@@ -245,7 +245,7 @@ class _LauncherScreenState extends State<LauncherScreen>
 
             // Título
             const Text(
-              'Control de Rollos',
+              'Control SMD',
               style: TextStyle(
                 fontSize: 28,
                 fontWeight: FontWeight.bold,

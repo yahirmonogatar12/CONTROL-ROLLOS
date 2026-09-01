@@ -525,165 +525,175 @@ async function assignLine({ processId, line, usuario }) {
       throw lifecycleError('La agitación todavía no ha terminado', 'NOT_READY_FOR_LINE');
     }
 
-    const legacySource = (process.inventory_source || INVENTORY_SOURCE.SMD_LEGACY) === INVENTORY_SOURCE.SMD_LEGACY;
-    let stock = Number(process.issued_quantity || 0);
-    let unit = process.unit || 'EA';
-    let outgoingId = Number(process.inventory_outgoing_id || 0);
-    if (legacySource) {
-      const [warehouseRows] = await connection.query(`
-        SELECT id, codigo_material_recibido, numero_parte, numero_lote_material,
-               cantidad_actual, especificacion, vendedor, unidad_medida,
-               cancelado, estado_desecho, tiene_salida,
-               COALESCE(en_cuarentena, 0) AS en_cuarentena
-        FROM control_material_almacen_smd
-        WHERE id = ? AND codigo_material_recibido = ?
-        LIMIT 1 FOR UPDATE
-      `, [process.warehousing_id, process.codigo_material_recibido]);
-      if (warehouseRows.length === 0) {
-        throw lifecycleError('La etiqueta de almacén ya no existe', 'WAREHOUSE_ENTRY_NOT_FOUND', 404);
-      }
-      const material = warehouseRows[0];
-      if (Number(material.cancelado || 0) === 1 || Number(material.estado_desecho || 0) === 1 || Number(material.en_cuarentena || 0) === 1) {
-        throw lifecycleError('El material fue bloqueado y no puede enviarse a línea', 'MATERIAL_BLOCKED');
-      }
-      if (Number(material.tiene_salida || 0) === 1) {
-        throw lifecycleError('El material ya tiene una salida registrada', 'ALREADY_HAS_OUTGOING');
-      }
-      const [lotRows] = await connection.query(`
-        SELECT id, stock_actual FROM inventario_lotes_smd
-        WHERE codigo_material_recibido = ? LIMIT 1 FOR UPDATE
-      `, [material.codigo_material_recibido]);
-      stock = Number(lotRows[0]?.stock_actual || 0);
-      if (lotRows.length === 0 || stock <= 0) {
-        throw lifecycleError('El lote no tiene stock disponible', 'NO_AVAILABLE_STOCK');
-      }
-      unit = material.unidad_medida || 'EA';
-      const [outgoing] = await connection.query(`
-        INSERT INTO control_material_salida_smd
-          (codigo_material_recibido, numero_parte, numero_lote, modelo,
-           depto_salida, proceso_salida, linea_proceso, cantidad_salida,
-           fecha_salida, fecha_registro, especificacion_material,
-           usuario_registro, vendedor)
-        VALUES (?, ?, ?, NULL, 'SMT', 'PASTA_SOLDADURA', ?, ?, NOW(), NOW(), ?, ?, ?)
-      `, [
-        material.codigo_material_recibido,
-        material.numero_parte,
-        material.numero_lote_material,
-        normalizedLine,
-        stock,
-        material.especificacion || null,
-        usuario || 'Sistema',
-        material.vendedor || '',
-      ]);
-      outgoingId = outgoing.insertId;
-      await connection.query(`
-        UPDATE control_material_almacen_smd SET tiene_salida = 1
-        WHERE id = ?
-      `, [material.id]);
-    } else if (outgoingId > 0) {
-      const [outgoingRows] = await connection.query(`
-        SELECT id, cantidad_salida, cancelado
-        FROM control_material_salida
-        WHERE id = ? AND codigo_material_recibido = ?
-        LIMIT 1 FOR UPDATE
-      `, [outgoingId, process.codigo_material_recibido]);
-      if (outgoingRows.length === 0) {
-        throw lifecycleError('No se encontró la salida de Almacén creada en el primer escaneo', 'WAREHOUSE_OUTGOING_NOT_FOUND', 404);
-      }
-      if (Number(outgoingRows[0].cancelado || 0) === 1) {
-        throw lifecycleError('La salida de Almacén está cancelada', 'WAREHOUSE_OUTGOING_CANCELLED');
-      }
-      stock = Number(process.issued_quantity || outgoingRows[0].cantidad_salida || 0);
-      if (stock <= 0) {
-        throw lifecycleError('La salida de Almacén no tiene cantidad válida', 'NO_AVAILABLE_STOCK');
-      }
-      await connection.query(`
-        UPDATE control_material_salida
-        SET linea_proceso = ?
-        WHERE id = ?
-      `, [normalizedLine, outgoingId]);
-    } else {
-      // Compatibilidad con procesos WAREHOUSE iniciados antes de que la salida
-      // se moviera al primer escaneo.
-      const [warehouseRows] = await connection.query(`
-        SELECT id, codigo_material_recibido, numero_parte, numero_lote_material,
-               cantidad_actual, especificacion, vendedor, unidad_medida,
-               cancelado, estado_desecho, tiene_salida,
-               COALESCE(en_cuarentena, 0) AS en_cuarentena
-        FROM control_material_almacen
-        WHERE id = ? AND codigo_material_recibido = ?
-        LIMIT 1 FOR UPDATE
-      `, [process.warehousing_id, process.codigo_material_recibido]);
-      if (warehouseRows.length === 0) {
-        throw lifecycleError('La etiqueta de almacén ya no existe', 'WAREHOUSE_ENTRY_NOT_FOUND', 404);
-      }
-      const material = warehouseRows[0];
-      if (Number(material.cancelado || 0) === 1 || Number(material.estado_desecho || 0) === 1 || Number(material.en_cuarentena || 0) === 1) {
-        throw lifecycleError('El material fue bloqueado y no puede enviarse a línea', 'MATERIAL_BLOCKED');
-      }
-      if (Number(material.tiene_salida || 0) === 1) {
-        throw lifecycleError('El material ya tiene una salida registrada', 'ALREADY_HAS_OUTGOING');
-      }
-      stock = Number(material.cantidad_actual || 0);
-      unit = material.unidad_medida || 'EA';
-      if (stock <= 0) {
-        throw lifecycleError('El material no tiene cantidad disponible en almacén', 'NO_AVAILABLE_STOCK');
-      }
-      const [outgoing] = await connection.query(`
-        INSERT INTO control_material_salida
-          (codigo_material_recibido, numero_parte, numero_lote, modelo, linea_proceso,
-           depto_salida, proceso_salida, cantidad_salida,
-           fecha_salida, fecha_registro, especificacion_material,
-           usuario_registro, vendedor)
-        VALUES (?, ?, ?, NULL, ?, 'SMT', 'PASTA_SOLDADURA', ?, NOW(), NOW(), ?, ?, ?)
-      `, [
-        material.codigo_material_recibido,
-        material.numero_parte,
-        material.numero_lote_material,
-        normalizedLine,
-        stock,
-        material.especificacion || null,
-        usuario || 'Sistema',
-        material.vendedor || '',
-      ]);
-      outgoingId = outgoing.insertId;
-      await connection.query(`
-        UPDATE control_material_almacen SET tiene_salida = 1
-        WHERE id = ?
-      `, [material.id]);
+    return assignLineLocked(connection, process, normalizedLine, usuario);
+  });
+}
+
+/**
+ * Nucleo de la asignacion a linea, ya dentro de una transaccion con el
+ * proceso bloqueado y validado en READY_FOR_LINE. Lo comparten assignLine
+ * (pantalla) y consumeByCode (escaneo en linea) para no duplicar el
+ * movimiento de inventario: salida de almacen y descuento de stock.
+ */
+async function assignLineLocked(connection, process, normalizedLine, usuario) {
+  const legacySource = (process.inventory_source || INVENTORY_SOURCE.SMD_LEGACY) === INVENTORY_SOURCE.SMD_LEGACY;
+  let stock = Number(process.issued_quantity || 0);
+  let unit = process.unit || 'EA';
+  let outgoingId = Number(process.inventory_outgoing_id || 0);
+  if (legacySource) {
+    const [warehouseRows] = await connection.query(`
+      SELECT id, codigo_material_recibido, numero_parte, numero_lote_material,
+             cantidad_actual, especificacion, vendedor, unidad_medida,
+             cancelado, estado_desecho, tiene_salida,
+             COALESCE(en_cuarentena, 0) AS en_cuarentena
+      FROM control_material_almacen_smd
+      WHERE id = ? AND codigo_material_recibido = ?
+      LIMIT 1 FOR UPDATE
+    `, [process.warehousing_id, process.codigo_material_recibido]);
+    if (warehouseRows.length === 0) {
+      throw lifecycleError('La etiqueta de almacén ya no existe', 'WAREHOUSE_ENTRY_NOT_FOUND', 404);
     }
-    await connection.query(`
-      UPDATE solder_paste_process_smd
-      SET status = ?, line_code = ?, line_started_at = NOW(),
-          issued_quantity = ?, unit = ?, inventory_outgoing_id = ?,
-          updated_at = NOW(), updated_by = ?
-      WHERE id = ? AND status = ?
+    const material = warehouseRows[0];
+    if (Number(material.cancelado || 0) === 1 || Number(material.estado_desecho || 0) === 1 || Number(material.en_cuarentena || 0) === 1) {
+      throw lifecycleError('El material fue bloqueado y no puede enviarse a línea', 'MATERIAL_BLOCKED');
+    }
+    if (Number(material.tiene_salida || 0) === 1) {
+      throw lifecycleError('El material ya tiene una salida registrada', 'ALREADY_HAS_OUTGOING');
+    }
+    const [lotRows] = await connection.query(`
+      SELECT id, stock_actual FROM inventario_lotes_smd
+      WHERE codigo_material_recibido = ? LIMIT 1 FOR UPDATE
+    `, [material.codigo_material_recibido]);
+    stock = Number(lotRows[0]?.stock_actual || 0);
+    if (lotRows.length === 0 || stock <= 0) {
+      throw lifecycleError('El lote no tiene stock disponible', 'NO_AVAILABLE_STOCK');
+    }
+    unit = material.unidad_medida || 'EA';
+    const [outgoing] = await connection.query(`
+      INSERT INTO control_material_salida_smd
+        (codigo_material_recibido, numero_parte, numero_lote, modelo,
+         depto_salida, proceso_salida, linea_proceso, cantidad_salida,
+         fecha_salida, fecha_registro, especificacion_material,
+         usuario_registro, vendedor)
+      VALUES (?, ?, ?, NULL, 'SMT', 'PASTA_SOLDADURA', ?, ?, NOW(), NOW(), ?, ?, ?)
     `, [
-      STATUS.IN_LINE,
+      material.codigo_material_recibido,
+      material.numero_parte,
+      material.numero_lote_material,
       normalizedLine,
       stock,
-      unit,
-      outgoingId,
+      material.especificacion || null,
       usuario || 'Sistema',
-      process.id,
-      STATUS.READY_FOR_LINE,
+      material.vendedor || '',
     ]);
-    await addEvent(
-      connection,
-      process.id,
-      'ASSIGNED_TO_LINE',
-      STATUS.READY_FOR_LINE,
-      STATUS.IN_LINE,
-      usuario,
-      {
-        line: normalizedLine,
-        quantity: stock,
-        outgoing_id: outgoingId,
-        inventory_source: legacySource ? INVENTORY_SOURCE.SMD_LEGACY : INVENTORY_SOURCE.WAREHOUSE,
-      },
-    );
-    return decorateProcess(await getProcessById(connection, process.id));
-  });
+    outgoingId = outgoing.insertId;
+    await connection.query(`
+      UPDATE control_material_almacen_smd SET tiene_salida = 1
+      WHERE id = ?
+    `, [material.id]);
+  } else if (outgoingId > 0) {
+    const [outgoingRows] = await connection.query(`
+      SELECT id, cantidad_salida, cancelado
+      FROM control_material_salida
+      WHERE id = ? AND codigo_material_recibido = ?
+      LIMIT 1 FOR UPDATE
+    `, [outgoingId, process.codigo_material_recibido]);
+    if (outgoingRows.length === 0) {
+      throw lifecycleError('No se encontró la salida de Almacén creada en el primer escaneo', 'WAREHOUSE_OUTGOING_NOT_FOUND', 404);
+    }
+    if (Number(outgoingRows[0].cancelado || 0) === 1) {
+      throw lifecycleError('La salida de Almacén está cancelada', 'WAREHOUSE_OUTGOING_CANCELLED');
+    }
+    stock = Number(process.issued_quantity || outgoingRows[0].cantidad_salida || 0);
+    if (stock <= 0) {
+      throw lifecycleError('La salida de Almacén no tiene cantidad válida', 'NO_AVAILABLE_STOCK');
+    }
+    await connection.query(`
+      UPDATE control_material_salida
+      SET linea_proceso = ?
+      WHERE id = ?
+    `, [normalizedLine, outgoingId]);
+  } else {
+    // Compatibilidad con procesos WAREHOUSE iniciados antes de que la salida
+    // se moviera al primer escaneo.
+    const [warehouseRows] = await connection.query(`
+      SELECT id, codigo_material_recibido, numero_parte, numero_lote_material,
+             cantidad_actual, especificacion, vendedor, unidad_medida,
+             cancelado, estado_desecho, tiene_salida,
+             COALESCE(en_cuarentena, 0) AS en_cuarentena
+      FROM control_material_almacen
+      WHERE id = ? AND codigo_material_recibido = ?
+      LIMIT 1 FOR UPDATE
+    `, [process.warehousing_id, process.codigo_material_recibido]);
+    if (warehouseRows.length === 0) {
+      throw lifecycleError('La etiqueta de almacén ya no existe', 'WAREHOUSE_ENTRY_NOT_FOUND', 404);
+    }
+    const material = warehouseRows[0];
+    if (Number(material.cancelado || 0) === 1 || Number(material.estado_desecho || 0) === 1 || Number(material.en_cuarentena || 0) === 1) {
+      throw lifecycleError('El material fue bloqueado y no puede enviarse a línea', 'MATERIAL_BLOCKED');
+    }
+    if (Number(material.tiene_salida || 0) === 1) {
+      throw lifecycleError('El material ya tiene una salida registrada', 'ALREADY_HAS_OUTGOING');
+    }
+    stock = Number(material.cantidad_actual || 0);
+    unit = material.unidad_medida || 'EA';
+    if (stock <= 0) {
+      throw lifecycleError('El material no tiene cantidad disponible en almacén', 'NO_AVAILABLE_STOCK');
+    }
+    const [outgoing] = await connection.query(`
+      INSERT INTO control_material_salida
+        (codigo_material_recibido, numero_parte, numero_lote, modelo, linea_proceso,
+         depto_salida, proceso_salida, cantidad_salida,
+         fecha_salida, fecha_registro, especificacion_material,
+         usuario_registro, vendedor)
+      VALUES (?, ?, ?, NULL, ?, 'SMT', 'PASTA_SOLDADURA', ?, NOW(), NOW(), ?, ?, ?)
+    `, [
+      material.codigo_material_recibido,
+      material.numero_parte,
+      material.numero_lote_material,
+      normalizedLine,
+      stock,
+      material.especificacion || null,
+      usuario || 'Sistema',
+      material.vendedor || '',
+    ]);
+    outgoingId = outgoing.insertId;
+    await connection.query(`
+      UPDATE control_material_almacen SET tiene_salida = 1
+      WHERE id = ?
+    `, [material.id]);
+  }
+  await connection.query(`
+    UPDATE solder_paste_process_smd
+    SET status = ?, line_code = ?, line_started_at = NOW(),
+        issued_quantity = ?, unit = ?, inventory_outgoing_id = ?,
+        updated_at = NOW(), updated_by = ?
+    WHERE id = ? AND status = ?
+  `, [
+    STATUS.IN_LINE,
+    normalizedLine,
+    stock,
+    unit,
+    outgoingId,
+    usuario || 'Sistema',
+    process.id,
+    STATUS.READY_FOR_LINE,
+  ]);
+  await addEvent(
+    connection,
+    process.id,
+    'ASSIGNED_TO_LINE',
+    STATUS.READY_FOR_LINE,
+    STATUS.IN_LINE,
+    usuario,
+    {
+      line: normalizedLine,
+      quantity: stock,
+      outgoing_id: outgoingId,
+      inventory_source: legacySource ? INVENTORY_SOURCE.SMD_LEGACY : INVENTORY_SOURCE.WAREHOUSE,
+    },
+  );
+  return decorateProcess(await getProcessById(connection, process.id));
 }
 
 async function consume({ processId, usuario }) {
@@ -703,6 +713,108 @@ async function consume({ processId, usuario }) {
     `, [STATUS.CONSUMED, usuario || 'Sistema', process.id]);
     await addEvent(connection, process.id, 'CONSUMED', STATUS.IN_LINE, STATUS.CONSUMED, usuario);
     return decorateProcess(await getProcessById(connection, process.id));
+  });
+}
+
+/**
+ * El escaneo manda la linea con el codigo corto del piso (SA..SE) y control de
+ * pasta las guarda como 'SMT A'..'SMT E'. Devuelve null si no se puede resolver,
+ * para rechazar en vez de adivinar a que linea se asigna el bote.
+ */
+function resolvePasteLine(lineCode) {
+  const raw = String(lineCode || '').trim().toUpperCase();
+  if (!raw) return null;
+  if (ALLOWED_LINES.has(raw)) return raw;
+  const match = raw.match(/^(?:S|SMT[\s-]?)([A-E])$/);
+  if (!match) return null;
+  const candidate = `SMT ${match[1]}`;
+  return ALLOWED_LINES.has(candidate) ? candidate : null;
+}
+
+// El operador escanea a pie de linea: el motivo del rechazo tiene que decirle
+// que hacer con el bote, no solo el nombre interno del estado.
+const CONSUME_REJECTIONS = Object.freeze({
+  [STATUS.SCRAP]: 'PASTA EN SCRAP: no debe usarse, retirela de la linea',
+  [STATUS.CANCELLED]: 'Pasta cancelada: no debe usarse',
+  [STATUS.RETURNED_TO_COLD]: 'Pasta retornada al refrigerador: no esta en linea',
+  [STATUS.TEMPERING]: 'Pasta aun no lista: sigue a temperatura ambiente',
+  [STATUS.READY_FOR_AGITATION]: 'Pasta aun no lista: falta agitarla',
+  [STATUS.AGITATING]: 'Pasta aun no lista: sigue en agitacion',
+});
+
+/**
+ * Consume la pasta a partir del codigo escaneado en linea, sin pasar por la
+ * pantalla. Idempotente: reescanear un bote ya consumido no vuelve a marcarlo
+ * ni falla, para que el operador pueda repetir el escaneo sin consecuencias.
+ */
+async function consumeByCode({ code, usuario, lineCode, scannedBy }) {
+  const normalizedCode = normalizeCode(code);
+  if (!normalizedCode) throw lifecycleError('Código requerido', 'MISSING_CODE', 400);
+
+  return withTransaction(async (connection) => {
+    const [rows] = await connection.query(`
+      SELECT id FROM solder_paste_process_smd
+      WHERE codigo_material_recibido = ?
+      ORDER BY cycle_no DESC, id DESC
+      LIMIT 1
+      FOR UPDATE
+    `, [normalizedCode]);
+    if (!rows.length) {
+      throw lifecycleError('Código no registrado en control de pasta', 'PROCESS_NOT_FOUND', 404);
+    }
+
+    let process = await getProcessById(connection, rows[0].id, { lock: true });
+    process = await reconcileLockedProcess(connection, process);
+
+    if (process.status === STATUS.CONSUMED) {
+      return { alreadyConsumed: true, process: decorateProcess(process) };
+    }
+    // Un bote listo se asigna a la linea que lo escanea y se consume en el
+    // mismo acto: el paso manual de "asignar a linea" deja de ser necesario.
+    let assignedNow = false;
+    if (process.status === STATUS.READY_FOR_LINE) {
+      const resolvedLine = resolvePasteLine(lineCode);
+      if (!resolvedLine) {
+        throw lifecycleError(
+          `La pasta esta lista pero no se pudo resolver la linea SMT a partir de "${lineCode || ''}"`,
+          'INVALID_LINE',
+          400,
+        );
+      }
+      await assignLineLocked(connection, process, resolvedLine, usuario || 'Escaneo linea');
+      process = await getProcessById(connection, process.id, { lock: true });
+      assignedNow = true;
+    }
+
+    if (process.status !== STATUS.IN_LINE) {
+      throw lifecycleError(
+        CONSUME_REJECTIONS[process.status]
+          || `La pasta está en estado ${process.status}, no vigente en línea`,
+        'NOT_IN_LINE',
+        409,
+      );
+    }
+
+    await connection.query(`
+      UPDATE solder_paste_process_smd
+      SET status = ?, consumed_at = NOW(), updated_at = NOW(), updated_by = ?
+      WHERE id = ?
+    `, [STATUS.CONSUMED, usuario || 'Escaneo linea', process.id]);
+    await addEvent(
+      connection,
+      process.id,
+      'CONSUMED',
+      STATUS.IN_LINE,
+      STATUS.CONSUMED,
+      usuario || 'Escaneo linea',
+      { source: 'SCAN', line_scanned: lineCode || null, scanned_by: scannedBy || null },
+    );
+    return {
+      alreadyConsumed: false,
+      assignedNow,
+      lineCode: process.line_code,
+      process: decorateProcess(await getProcessById(connection, process.id)),
+    };
   });
 }
 
@@ -1219,11 +1331,13 @@ module.exports = {
   SCRAP_RETURN_PERMISSION,
   INVENTORY_SOURCE,
   normalizeCode,
+  resolvePasteLine,
   nextActionForStatus,
   scanMaterial,
   startAgitation,
   assignLine,
   consume,
+  consumeByCode,
   returnToCold,
   cancel,
   getStatusByCode,

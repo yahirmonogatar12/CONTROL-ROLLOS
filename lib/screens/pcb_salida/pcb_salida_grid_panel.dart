@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
+import '../../core/widgets/column_filter.dart';
 import 'package:material_warehousing_flutter/core/constants/pcb_areas.dart';
 import 'package:material_warehousing_flutter/core/localization/app_translations.dart';
 import 'package:material_warehousing_flutter/core/theme/app_colors.dart';
 import 'package:material_warehousing_flutter/core/services/api_service.dart';
 import 'package:material_warehousing_flutter/core/widgets/resizable_grid_header.dart';
-import 'package:material_warehousing_flutter/core/widgets/searchable_column_filter_dialog.dart';
 
 class PcbSalidaGridPanel extends StatefulWidget {
   final LanguageProvider languageProvider;
@@ -162,7 +162,7 @@ class PcbSalidaGridPanelState extends State<PcbSalidaGridPanel>
     for (final entry in _columnFilters.entries) {
       if (entry.value != null && entry.value!.isNotEmpty) {
         data = data.where((r) {
-          return matchesColumnFilterValue(r[entry.key], entry.value!);
+          return ColumnFilter.matches((r[entry.key] ?? '').toString().trim(), entry.value);
         }).toList();
       }
     }
@@ -191,36 +191,23 @@ class PcbSalidaGridPanelState extends State<PcbSalidaGridPanel>
     return index >= 0 && index < _headers.length ? _headers[index] : field;
   }
 
-  void _onFilter(String field) {
-    final values = _allData
-        .map((r) => (r[field] ?? '').toString())
-        .where((v) => v.isNotEmpty)
-        .toSet()
-        .toList()
-      ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+  Future<void> _onFilter(String field, Offset position) async {
+    final values = _allData.map((r) => (r[field] ?? '').toString());
 
-    final currentFilter = _columnFilters[field];
-
-    showSearchableColumnFilterDialog(
+    final result = await ColumnFilter.show(
       context: context,
-      title: '${tr('pcb_filter')}: ${_headerForField(field)}',
+      anchorOffset: position,
       values: values,
-      allLabel: tr('pcb_all'),
-      searchLabel: tr('search'),
-      applyLabel: tr('apply'),
-      clearFilterLabel: tr('clear_filter'),
-      currentFilter: currentFilter,
-    ).then((result) {
-      if (!mounted || result == null) return;
-      setState(() {
-        final filterValue = result.filterValue;
-        if (filterValue == null || filterValue.isEmpty) {
-          _columnFilters.remove(field);
-        } else {
-          _columnFilters[field] = filterValue;
-        }
-        _applyFiltersAndSort();
-      });
+      currentFilter: _columnFilters[field],
+    );
+    if (!mounted || !result.changed) return;
+    setState(() {
+      if (result.filter == null) {
+        _columnFilters.remove(field);
+      } else {
+        _columnFilters[field] = result.filter;
+      }
+      _applyFiltersAndSort();
     });
   }
 

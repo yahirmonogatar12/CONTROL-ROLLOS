@@ -95,6 +95,7 @@ const defectDataRoutes = require('./routes/defect-data.routes');
 const scrapRoutes = require('./routes/scrap.routes');
 const scrapMotivosRoutes = require('./routes/scrap-motivos.routes');
 const solderPasteRoutes = require('./routes/solder-paste.routes');
+const toolingRoutes = require('./routes/tooling.routes');
 const { reconcileAll: reconcileSolderPasteLifecycle } = require('./services/solderPasteLifecycleService');
 const {
   attachSolderPasteNotificationHub,
@@ -196,6 +197,7 @@ app.use('/api/defect-data', defectDataRoutes);
 app.use('/api/scrap', scrapRoutes);
 app.use('/api/scrap-motivos', scrapMotivosRoutes);
 app.use('/api/solder-paste', solderPasteRoutes);
+app.use('/api/tooling', toolingRoutes);
 
 // ============================================
 // RUTA DE PRUEBA (Health Check)

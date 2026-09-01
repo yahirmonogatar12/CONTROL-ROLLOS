@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../core/widgets/column_filter.dart';
 import 'package:flutter/services.dart';
 import 'package:material_warehousing_flutter/core/localization/app_translations.dart';
 import 'package:material_warehousing_flutter/core/theme/app_colors.dart';
@@ -545,15 +546,7 @@ class OutgoingHistoryViewState extends State<OutgoingHistoryView> with Resizable
     });
   }
 
-  void _showFilterDropdown(BuildContext context, String field) {
-    final RenderBox? renderBox = _filterKeys[field]?.currentContext?.findRenderObject() as RenderBox?;
-    if (renderBox == null) return;
-    final position = renderBox.localToGlobal(Offset.zero);
-    final size = renderBox.size;
-    
-    final header = _headers[_fields.indexOf(field)];
-    
-    // Obtener valores únicos
+  Future<void> _showFilterDropdown(BuildContext context, String field) async {
     final Set<String> uniqueValues = {};
     bool hasBlanks = false;
     
@@ -565,142 +558,16 @@ class OutgoingHistoryViewState extends State<OutgoingHistoryView> with Resizable
         uniqueValues.add(value);
       }
     }
-    
-    final sortedValues = uniqueValues.toList()..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
-    final currentFilter = _columnFilters[field];
-    
-    showDialog(
+
+    final result = await ColumnFilter.show(
       context: context,
-      barrierColor: Colors.transparent,
-      builder: (ctx) {
-        String searchText = '';
-        return StatefulBuilder(
-          builder: (ctx, setDialogState) {
-            final filteredValues = sortedValues
-                .where((v) => v.toLowerCase().contains(searchText.toLowerCase()))
-                .toList();
-            
-            return Stack(
-              children: [
-                Positioned.fill(child: GestureDetector(onTap: () => Navigator.pop(ctx), child: Container(color: Colors.transparent))),
-                Positioned(
-                  left: position.dx + (size.width / 2) - 100,
-                  top: position.dy + size.height,
-                  child: Material(
-                    elevation: 8,
-                    color: const Color(0xFF252526),
-                    borderRadius: BorderRadius.circular(4),
-                    child: Container(
-                      width: 200,
-                      constraints: const BoxConstraints(maxHeight: 300),
-                      decoration: BoxDecoration(
-                        border: Border.all(color: const Color(0xFF3C3C3C)),
-                        borderRadius: BorderRadius.circular(4),
-                      ),
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Padding(
-                            padding: const EdgeInsets.all(8),
-                            child: Text('Filter: $header', style: const TextStyle(color: Colors.white, fontSize: 12)),
-                          ),
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 8),
-                            child: TextField(
-                              autofocus: true,
-                              style: const TextStyle(color: Colors.white, fontSize: 12),
-                              decoration: InputDecoration(
-                                isDense: true,
-                                contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-                                hintText: 'Search...',
-                                hintStyle: const TextStyle(color: Colors.white38, fontSize: 11),
-                                prefixIcon: const Icon(Icons.search, size: 16, color: Colors.white38),
-                                prefixIconConstraints: const BoxConstraints(minWidth: 30),
-                                filled: true,
-                                fillColor: const Color(0xFF3C3C3C),
-                                border: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(4),
-                                  borderSide: BorderSide.none,
-                                ),
-                              ),
-                              onChanged: (value) => setDialogState(() => searchText = value),
-                            ),
-                          ),
-                          const Divider(height: 8, color: Color(0xFF3C3C3C)),
-                          Flexible(
-                            child: SingleChildScrollView(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  if (currentFilter != null)
-                                    _buildFilterOption(ctx, '(Clear Filter)', false, Icons.clear, Colors.orange, () {
-                                      Navigator.pop(ctx);
-                                      _applyFilter(field, null);
-                                    }),
-                                  if (hasBlanks)
-                                    _buildFilterOption(ctx, '(Blanks)', currentFilter == '__BLANKS__', null, null, () {
-                                      Navigator.pop(ctx);
-                                      _applyFilter(field, '__BLANKS__');
-                                    }),
-                                  _buildFilterOption(ctx, '(Non blanks)', currentFilter == '__NON_BLANKS__', null, null, () {
-                                    Navigator.pop(ctx);
-                                    _applyFilter(field, '__NON_BLANKS__');
-                                  }),
-                                  const Divider(height: 1, color: Color(0xFF3C3C3C)),
-                                  ...filteredValues.map((value) => _buildFilterOption(
-                                    ctx, value, currentFilter == value, null, null, () {
-                                      Navigator.pop(ctx);
-                                      _applyFilter(field, value);
-                                    },
-                                  )),
-                                ],
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-            );
-          },
-        );
-      },
+      anchorKey: _filterKeys[field],
+      values: [...uniqueValues, if (hasBlanks) ''],
+      currentFilter: _columnFilters[field],
     );
+    if (result.changed) _applyFilter(field, result.filter);
   }
 
-  Widget _buildFilterOption(BuildContext context, String text, bool isSelected, IconData? icon, Color? iconColor, VoidCallback onTap) {
-    return InkWell(
-      onTap: onTap,
-      child: Container(
-        width: double.infinity,
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        color: isSelected ? Colors.blue.withOpacity(0.3) : null,
-        child: Row(
-          children: [
-            if (icon != null) ...[
-              Icon(icon, size: 14, color: iconColor),
-              const SizedBox(width: 8),
-            ],
-            Expanded(
-              child: Text(
-                text,
-                style: TextStyle(
-                  fontSize: 11,
-                  color: isSelected ? Colors.blue : Colors.white,
-                  fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-                ),
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-            if (isSelected)
-              const Icon(Icons.check, size: 14, color: Colors.blue),
-          ],
-        ),
-      ),
-    );
-  }
 
   Widget _highlightText(String text, String searchText) {
     if (searchText.isEmpty) {

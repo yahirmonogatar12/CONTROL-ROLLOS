@@ -1,11 +1,11 @@
 import 'package:flutter/material.dart';
+import '../../core/widgets/column_filter.dart';
 import 'package:flutter/services.dart';
 import 'package:material_warehousing_flutter/core/localization/app_translations.dart';
 import 'package:material_warehousing_flutter/core/theme/app_colors.dart';
 import 'package:material_warehousing_flutter/core/services/api_service.dart';
 import 'package:material_warehousing_flutter/core/services/auth_service.dart';
 import 'package:material_warehousing_flutter/core/services/excel_export_service.dart';
-import 'package:material_warehousing_flutter/core/widgets/excel_column_filter_dialog.dart';
 import 'package:material_warehousing_flutter/core/widgets/grid_footer.dart';
 import 'package:material_warehousing_flutter/core/widgets/resizable_grid_header.dart';
 
@@ -683,60 +683,39 @@ class LongTermInventoryScreenState extends State<LongTermInventoryScreen> with S
     String field,
     String header,
     bool isSummary,
+    Offset position,
   ) async {
     final filters = isSummary ? _summaryFilters : _detailFilters;
     final rows = _rowsMatchingOtherFilters(field, isSummary);
-    final values = rows
-        .map((row) => _columnFilterValue(row[field]))
-        .toSet()
-        .toList()
-      ..sort(_compareValues);
-    final availableValueSet = values.toSet();
-    final selectedValues = filters.containsKey(field)
-        ? filters[field]!.intersection(availableValueSet)
-        : availableValueSet;
-    final sortColumn =
-        isSummary ? _summarySortColumn : _detailSortColumn;
-    final sortAscending =
-        isSummary ? _summarySortAscending : _detailSortAscending;
+    final values = rows.map((row) => _columnFilterValue(row[field])).toList();
 
-    final result = await showDialog<ExcelColumnFilterResult>(
+    // Los filtros de esta pantalla se guardan como conjunto; el desplegable
+    // devuelve un valor. (Blanks)/(Non blanks) se expanden al conjunto que les
+    // corresponde para no tocar la logica de _applyFilters.
+    final current = filters[field];
+    final result = await ColumnFilter.show(
       context: context,
-      builder: (dialogContext) => ExcelColumnFilterDialog(
-        columnLabel: header,
-        values: values,
-        selectedValues: selectedValues,
-        hasActiveFilter: filters.containsKey(field),
-        currentSortAscending:
-            sortColumn == field ? sortAscending : null,
-        sortAscendingLabel: tr('sort_a_to_z'),
-        sortDescendingLabel: tr('sort_z_to_a'),
-        clearFilterLabel: tr('clear_filter'),
-        searchLabel: tr('search'),
-        selectAllLabel: tr('select_all'),
-        emptyValueLabel: tr('filter_empty_value'),
-        applyLabel: tr('apply'),
-        cancelLabel: tr('cancel'),
-        noValuesLabel: tr('no_data'),
-      ),
+      anchorOffset: position,
+      values: values,
+      currentFilter:
+          current != null && current.length == 1 ? current.first : null,
     );
+    if (!mounted || !result.changed) return;
 
-    if (!mounted || result == null) return;
-    switch (result.action) {
-      case ExcelColumnFilterAction.sortAscending:
-        _sortData(field, true, isSummary);
-      case ExcelColumnFilterAction.sortDescending:
-        _sortData(field, false, isSummary);
-      case ExcelColumnFilterAction.clearFilter:
-        _clearColumnFilter(field, isSummary);
-      case ExcelColumnFilterAction.apply:
-        _applyColumnFilter(
-          field,
-          result.selectedValues,
-          values,
-          isSummary,
-        );
+    if (result.filter == null) {
+      _clearColumnFilter(field, isSummary);
+      return;
     }
+    final disponibles = values.toSet();
+    final Set<String> elegidos;
+    if (result.filter == ColumnFilter.blanks) {
+      elegidos = disponibles.where((v) => v.isEmpty).toSet();
+    } else if (result.filter == ColumnFilter.nonBlanks) {
+      elegidos = disponibles.where((v) => v.isNotEmpty).toSet();
+    } else {
+      elegidos = {result.filter!};
+    }
+    _applyColumnFilter(field, elegidos, disponibles.toList(), isSummary);
   }
 
   void _applyColumnFilter(
@@ -1556,7 +1535,8 @@ class LongTermInventoryScreenState extends State<LongTermInventoryScreen> with S
                   isSummary,
                 ),
                 onSecondaryTapDown: (details) {
-                  _showExcelColumnFilter(context, field, label, isSummary);
+                  _showExcelColumnFilter(
+                      context, field, label, isSummary, details.globalPosition);
                 },
                 child: Text(
                   label,
@@ -1578,8 +1558,8 @@ class LongTermInventoryScreenState extends State<LongTermInventoryScreen> with S
               ),
             // Ícono de filtro (clicable) - mismo estilo que warehousing grid
             GestureDetector(
-              onTap: () =>
-                  _showExcelColumnFilter(context, field, label, isSummary),
+              onTapDown: (details) => _showExcelColumnFilter(
+                  context, field, label, isSummary, details.globalPosition),
               child: Padding(
                 padding: const EdgeInsets.only(left: 2),
                 child: Icon(

@@ -10,6 +10,7 @@ router.get('/events', controller.getEvents);
 router.get('/local-notifications', controller.getLocalNotifications);
 router.get('/status/:code', controller.getStatus);
 router.post('/scan', controller.scan);
+router.post('/consume-by-code', controller.consumeByCode);
 router.post('/:id/agitation/start', controller.startAgitation);
 router.post('/:id/line', controller.assignLine);
 router.post('/:id/consume', controller.consume);

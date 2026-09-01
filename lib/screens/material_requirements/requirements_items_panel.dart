@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:material_warehousing_flutter/core/widgets/column_filter.dart';
 import 'package:flutter/services.dart';
 import 'package:excel/excel.dart' as xl;
 import 'package:file_picker/file_picker.dart';
@@ -41,7 +42,62 @@ class RequirementsItemsPanel extends StatefulWidget {
 }
 
 class RequirementsItemsPanelState extends State<RequirementsItemsPanel> {
+  List<Map<String, dynamic>> _allItems = [];
+  final Map<String, String?> _columnFilters = {};
   List<Map<String, dynamic>> _items = [];
+
+  /// Texto de la fila para una columna filtrable. Lo comparten el desplegable y
+  /// el filtrado para que la lista ofrecida sea exactamente lo que se ve.
+  static String _itemValue(Map<String, dynamic> item, String field) {
+    switch (field) {
+      case 'descripcion':
+        return (item['descripcion'] ??
+                item['especificacion_material'] ??
+                '')
+            .toString();
+      case 'status':
+        return (item['status'] ?? 'Pendiente').toString();
+      case 'ubicaciones_disponibles':
+        return (item['ubicaciones_disponibles'] ?? '').toString();
+      default:
+        return (item[field] ?? '').toString();
+    }
+  }
+
+  void _applyItemFilters() {
+    if (_columnFilters.isEmpty) {
+      _items = List<Map<String, dynamic>>.from(_allItems);
+      return;
+    }
+    _items = _allItems.where((item) {
+      for (final entry in _columnFilters.entries) {
+        if (!ColumnFilter.matches(
+            _itemValue(item, entry.key).trim(), entry.value)) {
+          return false;
+        }
+      }
+      return true;
+    }).toList();
+  }
+
+  Future<void> _onFilterColumn(String field, Offset position) async {
+    final result = await ColumnFilter.show(
+      context: context,
+      anchorOffset: position,
+      values: _allItems.map((item) => _itemValue(item, field)),
+      currentFilter: _columnFilters[field],
+    );
+    if (!mounted || !result.changed) return;
+    setState(() {
+      if (result.filter == null) {
+        _columnFilters.remove(field);
+      } else {
+        _columnFilters[field] = result.filter;
+      }
+      _selectedItems.clear();
+      _applyItemFilters();
+    });
+  }
   bool _isLoading = false;
   int _selectedIndex = -1;
   Set<int> _selectedItems = {}; // Items seleccionados para eliminar
@@ -68,7 +124,8 @@ class RequirementsItemsPanelState extends State<RequirementsItemsPanel> {
         loadItems(widget.requirement!['id']);
       } else {
         setState(() {
-          _items = [];
+          _allItems = [];
+          _applyItemFilters();
           _selectedIndex = -1;
         });
       }
@@ -78,7 +135,8 @@ class RequirementsItemsPanelState extends State<RequirementsItemsPanel> {
   Future<void> loadItems(int? requirementId) async {
     if (requirementId == null) {
       setState(() {
-        _items = [];
+        _allItems = [];
+        _applyItemFilters();
         _selectedIndex = -1;
       });
       return;
@@ -90,7 +148,8 @@ class RequirementsItemsPanelState extends State<RequirementsItemsPanel> {
       final items = await ApiService.getRequirementItems(requirementId);
       if (mounted) {
         setState(() {
-          _items = items;
+          _allItems = items;
+          _applyItemFilters();
           _selectedIndex = -1;
           _selectedItems.clear(); // Limpiar selección al recargar
           _isLoading = false;
@@ -917,20 +976,21 @@ class RequirementsItemsPanelState extends State<RequirementsItemsPanel> {
               visualDensity: VisualDensity.compact,
             ),
           ),
-          _buildHeaderCell(tr('part_number'), flex: 2),
-          _buildHeaderCell(tr('description'), flex: 3),
-          _buildHeaderCell(tr('qty_required'), flex: 1),
-          _buildHeaderCell(tr('qty_prepared'), flex: 1),
-          _buildHeaderCell(tr('qty_delivered'), flex: 1),
-          _buildHeaderCell(tr('status'), flex: 2),
-          _buildHeaderCell(tr('location'), flex: 2),
-          _buildHeaderCell('Ubicación entrega', flex: 2),
+          _buildHeaderCell(tr('part_number'), 'numero_parte', flex: 2),
+          _buildHeaderCell(tr('description'), 'descripcion', flex: 3),
+          _buildHeaderCell(tr('qty_required'), 'cantidad_requerida', flex: 1),
+          _buildHeaderCell(tr('qty_prepared'), 'cantidad_preparada', flex: 1),
+          _buildHeaderCell(tr('qty_delivered'), 'cantidad_entregada', flex: 1),
+          _buildHeaderCell(tr('status'), 'status', flex: 2),
+          _buildHeaderCell(tr('location'), 'ubicaciones_disponibles', flex: 2),
+          _buildHeaderCell('Ubicación entrega', 'ubicacion_entrega', flex: 2),
         ],
       ),
     );
   }
 
-  Widget _buildHeaderCell(String text, {int flex = 1}) {
+  Widget _buildHeaderCell(String text, String field, {int flex = 1}) {
+    final hasFilter = _columnFilters[field] != null;
     return Expanded(
       flex: flex,
       child: Container(
@@ -939,11 +999,28 @@ class RequirementsItemsPanelState extends State<RequirementsItemsPanel> {
           border:
               Border(right: BorderSide(color: AppColors.border, width: 0.5)),
         ),
-        child: Text(
-          text,
-          style: const TextStyle(
-              fontSize: 9, fontWeight: FontWeight.w600, color: Colors.white),
-          overflow: TextOverflow.ellipsis,
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(
+                text,
+                style: const TextStyle(
+                    fontSize: 9,
+                    fontWeight: FontWeight.w600,
+                    color: Colors.white),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            GestureDetector(
+              onTapDown: (details) =>
+                  _onFilterColumn(field, details.globalPosition),
+              child: Icon(
+                hasFilter ? Icons.filter_alt : Icons.filter_alt_outlined,
+                size: 11,
+                color: hasFilter ? Colors.blue : Colors.white38,
+              ),
+            ),
+          ],
         ),
       ),
     );

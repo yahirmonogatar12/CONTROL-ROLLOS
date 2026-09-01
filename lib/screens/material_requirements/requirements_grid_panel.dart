@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:material_warehousing_flutter/core/widgets/column_filter.dart';
 import 'package:excel/excel.dart' as xl;
 import 'package:intl/intl.dart';
 import 'package:material_warehousing_flutter/core/localization/app_translations.dart';
@@ -33,6 +34,7 @@ class RequirementsGridPanel extends StatefulWidget {
 class RequirementsGridPanelState extends State<RequirementsGridPanel> {
   List<Map<String, dynamic>> _data = [];
   List<Map<String, dynamic>> _filteredData = [];
+  final Map<String, String?> _columnFilters = {};
   bool _isLoading = true;
   int _selectedIndex = -1;
 
@@ -123,6 +125,17 @@ class RequirementsGridPanelState extends State<RequirementsGridPanel> {
                 .toLowerCase()
                 .contains(_searchText.toLowerCase()) ??
             false);
+      }).toList();
+    }
+
+    // Filtros de columna, con la misma semantica que el resto de los grids.
+    if (_columnFilters.isNotEmpty) {
+      result = result.where((row) {
+        for (final entry in _columnFilters.entries) {
+          final value = (row[entry.key] ?? '').toString().trim();
+          if (!ColumnFilter.matches(value, entry.value)) return false;
+        }
+        return true;
       }).toList();
     }
 
@@ -594,19 +607,20 @@ class RequirementsGridPanelState extends State<RequirementsGridPanel> {
       ),
       child: Row(
         children: [
-          _buildHeaderCell(tr('code'), flex: 3),
-          _buildHeaderCell(tr('target_area'), flex: 2),
-          _buildHeaderCell(tr('required_date'), flex: 2),
-          _buildHeaderCell(tr('status'), flex: 2),
-          _buildHeaderCell(tr('priority'), flex: 2),
-          _buildHeaderCell(tr('items'), flex: 1),
-          _buildHeaderCell(tr('created_by'), flex: 2),
+          _buildHeaderCell(tr('code'), 'codigo_requerimiento', flex: 3),
+          _buildHeaderCell(tr('target_area'), 'area_destino', flex: 2),
+          _buildHeaderCell(tr('required_date'), 'fecha_requerida', flex: 2),
+          _buildHeaderCell(tr('status'), 'status', flex: 2),
+          _buildHeaderCell(tr('priority'), 'prioridad', flex: 2),
+          _buildHeaderCell(tr('items'), 'total_items', flex: 1),
+          _buildHeaderCell(tr('created_by'), 'creado_por', flex: 2),
         ],
       ),
     );
   }
 
-  Widget _buildHeaderCell(String text, {int flex = 1}) {
+  Widget _buildHeaderCell(String text, String field, {int flex = 1}) {
+    final hasFilter = _columnFilters[field] != null;
     return Expanded(
       flex: flex,
       child: Container(
@@ -615,14 +629,52 @@ class RequirementsGridPanelState extends State<RequirementsGridPanel> {
           border:
               Border(right: BorderSide(color: AppColors.border, width: 0.5)),
         ),
-        child: Text(
-          text,
-          style: const TextStyle(
-              fontSize: 10, fontWeight: FontWeight.w600, color: Colors.white),
-          overflow: TextOverflow.ellipsis,
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(
+                text,
+                style: const TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w600,
+                    color: Colors.white),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            GestureDetector(
+              onTapDown: (details) =>
+                  _onFilterColumn(field, details.globalPosition),
+              child: Padding(
+                padding: const EdgeInsets.only(left: 2),
+                child: Icon(
+                  hasFilter ? Icons.filter_alt : Icons.filter_alt_outlined,
+                  size: 12,
+                  color: hasFilter ? Colors.blue : Colors.white38,
+                ),
+              ),
+            ),
+          ],
         ),
       ),
     );
+  }
+
+  Future<void> _onFilterColumn(String field, Offset position) async {
+    final result = await ColumnFilter.show(
+      context: context,
+      anchorOffset: position,
+      values: _data.map((row) => (row[field] ?? '').toString()),
+      currentFilter: _columnFilters[field],
+    );
+    if (!mounted || !result.changed) return;
+    setState(() {
+      if (result.filter == null) {
+        _columnFilters.remove(field);
+      } else {
+        _columnFilters[field] = result.filter;
+      }
+      _applyFilters();
+    });
   }
 
   Widget _buildDataRows() {

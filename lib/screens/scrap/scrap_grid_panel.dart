@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../core/widgets/column_filter.dart';
 import 'package:material_warehousing_flutter/core/localization/app_translations.dart';
 import 'package:material_warehousing_flutter/core/theme/app_colors.dart';
 import 'package:material_warehousing_flutter/core/services/api_service.dart';
@@ -170,79 +171,24 @@ class ScrapGridPanelState extends State<ScrapGridPanel>
     });
   }
 
-  void _onFilter(String field) {
-    final values = _allData
-        .map((r) => (r[field] ?? '').toString())
-        .where((v) => v.isNotEmpty)
-        .toSet()
-        .toList()
-      ..sort();
+  Future<void> _onFilter(String field, Offset position) async {
+    final values = _allData.map((r) => (r[field] ?? '').toString());
 
-    final currentFilter = _columnFilters[field];
-
-    showDialog(
+    final result = await ColumnFilter.show(
       context: context,
-      builder: (ctx) {
-        return AlertDialog(
-          backgroundColor: AppColors.panelBackground,
-          title: Text(
-            '${tr('scrap_filter')}: $field',
-            style: const TextStyle(color: Colors.white, fontSize: 14),
-          ),
-          content: SizedBox(
-            width: 250,
-            height: 300,
-            child: ListView(
-              children: [
-                ListTile(
-                  dense: true,
-                  title: Text(
-                    tr('scrap_all'),
-                    style: TextStyle(
-                      color:
-                          currentFilter == null ? Colors.blue : Colors.white70,
-                      fontSize: 13,
-                      fontWeight: currentFilter == null
-                          ? FontWeight.bold
-                          : FontWeight.normal,
-                    ),
-                  ),
-                  onTap: () {
-                    setState(() {
-                      _columnFilters.remove(field);
-                      _applyFiltersAndSort();
-                    });
-                    Navigator.pop(ctx);
-                  },
-                ),
-                const Divider(color: AppColors.border),
-                ...values.map((v) => ListTile(
-                      dense: true,
-                      title: Text(
-                        v,
-                        style: TextStyle(
-                          color:
-                              currentFilter == v ? Colors.blue : Colors.white70,
-                          fontSize: 13,
-                          fontWeight: currentFilter == v
-                              ? FontWeight.bold
-                              : FontWeight.normal,
-                        ),
-                      ),
-                      onTap: () {
-                        setState(() {
-                          _columnFilters[field] = v;
-                          _applyFiltersAndSort();
-                        });
-                        Navigator.pop(ctx);
-                      },
-                    )),
-              ],
-            ),
-          ),
-        );
-      },
+      anchorOffset: position,
+      values: values,
+      currentFilter: _columnFilters[field],
     );
+    if (!mounted || !result.changed) return;
+    setState(() {
+      if (result.filter == null) {
+        _columnFilters.remove(field);
+      } else {
+        _columnFilters[field] = result.filter;
+      }
+      _applyFiltersAndSort();
+    });
   }
 
   @override

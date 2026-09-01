@@ -1547,6 +1547,149 @@ async function createSolderPasteLifecycleTables() {
   console.log('✓ Tablas de ciclo de vida de pasta de soldadura verificadas/creadas');
 }
 
+// ============================================
+// METAL MASK / SQUEEGEE
+// ============================================
+async function createToolingControlTables() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS tooling_asset_smd (
+      id BIGINT AUTO_INCREMENT PRIMARY KEY,
+      asset_type ENUM('METAL_MASK','SQUEEGEE') NOT NULL,
+      control_code VARCHAR(80) NOT NULL,
+      asset_no VARCHAR(80) NULL,
+      location_code VARCHAR(80) NULL,
+      pcb_no VARCHAR(150) NULL,
+      production_date_raw VARCHAR(40) NULL,
+      side VARCHAR(20) NULL,
+      lifecycle_status VARCHAR(30) NOT NULL DEFAULT 'ACTIVE',
+      thickness_mm DECIMAL(8,3) NULL,
+      use_count BIGINT NOT NULL DEFAULT 0,
+      use_limit BIGINT NULL,
+      assignment_count BIGINT NOT NULL DEFAULT 0,
+      active TINYINT(1) NOT NULL DEFAULT 1,
+      source_file VARCHAR(150) NOT NULL DEFAULT 'DATOS METAL Y SQUEGUEE.xlsx',
+      last_used_at DATETIME NULL,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      UNIQUE KEY uk_tooling_control_code (control_code),
+      INDEX idx_tooling_type_status (asset_type, active, lifecycle_status)
+    )
+  `);
+
+  await addColumnIfNotExists(
+    'tooling_asset_smd',
+    'use_limit',
+    'BIGINT NULL AFTER use_count'
+  );
+
+  // La impresora monta dos squeegees por plan; el segundo llego despues.
+  await addColumnIfNotExists(
+    'tooling_plan_assignment_smd',
+    'squeegee_code_2',
+    'VARCHAR(80) NULL AFTER squeegee_code'
+  );
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS tooling_plan_assignment_smd (
+      id BIGINT AUTO_INCREMENT PRIMARY KEY,
+      event_id VARCHAR(36) NOT NULL,
+      plan_source VARCHAR(30) NOT NULL DEFAULT 'plan_smt',
+      plan_id BIGINT NOT NULL,
+      lot_no VARCHAR(120) NULL,
+      part_no VARCHAR(120) NULL,
+      model_code VARCHAR(150) NULL,
+      line_code VARCHAR(20) NOT NULL,
+      working_date DATE NOT NULL,
+      shift VARCHAR(20) NULL,
+      plan_count INT NOT NULL DEFAULT 0,
+      metal_mask_code VARCHAR(80) NOT NULL,
+      squeegee_code VARCHAR(80) NOT NULL,
+      squeegee_code_2 VARCHAR(80) NULL,
+      count_source ENUM('PLAN','SCAN') NOT NULL DEFAULT 'PLAN',
+      planned_uses INT NOT NULL DEFAULT 0,
+      assigned_at DATETIME NOT NULL,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE KEY uk_tooling_event (event_id),
+      UNIQUE KEY uk_tooling_plan (plan_source, plan_id),
+      INDEX idx_tooling_assignment_date (working_date, line_code),
+      INDEX idx_tooling_assignment_mask (metal_mask_code)
+    )
+  `);
+
+  // Los squeegees solo acumulaban assignment_count: se reconstruyen sus usos
+  // desde el log de asignaciones. GREATEST evita perder lo que ya subio un edge.
+  await pool.query(`
+    UPDATE tooling_asset_smd a
+    SET a.use_count = GREATEST(a.use_count, (
+      SELECT COALESCE(SUM(p.planned_uses), 0)
+      FROM tooling_plan_assignment_smd p
+      WHERE p.squeegee_code = a.control_code
+    ))
+    WHERE a.asset_type = 'SQUEEGEE'
+  `);
+
+  // Normaliza los estados heredados del Excel: "USADA"/"RECIENTES" describian
+  // desgaste, no disponibilidad, y el edge bloquea todo lo que no sea ACTIVE.
+  await pool.query(`
+    UPDATE tooling_asset_smd
+    SET lifecycle_status = 'ACTIVE', active = 1
+    WHERE lifecycle_status IN ('USADA', 'RECIENTES')
+  `);
+
+  const catalog = require('../data/toolingCatalog').rows();
+  // Limite estandar de vida util. Solo rellena los vacios: un limite ajustado a
+  // mano desde la pantalla no se pisa en cada arranque.
+  await pool.query(`
+    UPDATE tooling_asset_smd SET use_limit = 50000 WHERE use_limit IS NULL
+  `);
+
+  // Re-normaliza cualquier pcb_no que aun arrastre version o lado
+  // (EAX01882201-D, EAX67445308-1.0 TOP, EAX69871901 VER D). El seed usa
+  // COALESCE y no pisa lo ya guardado, asi que la correccion va aparte.
+  // Idempotente: solo toca las filas que no estan ya en su forma base.
+  await pool.query(`
+    UPDATE tooling_asset_smd
+    SET pcb_no = REGEXP_REPLACE(pcb_no, '^([A-Za-z]+[0-9]+).*$', '$1')
+    WHERE pcb_no IS NOT NULL
+      AND pcb_no REGEXP '^[A-Za-z]+[0-9]+.'
+      AND pcb_no NOT REGEXP '^[A-Za-z]+[0-9]+$'
+  `);
+
+  // COALESCE en las columnas de datos: se rellenan las vacias sin pisar lo que
+  // alguien haya corregido a mano desde la pantalla.
+  const sql = `
+    INSERT INTO tooling_asset_smd (
+      asset_type, control_code, asset_no, location_code,
+      lifecycle_status, active, pcb_no, production_date_raw, side, thickness_mm,
+      source_file
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'DATOS METAL Y SQUEGUEE.xlsx')
+    ON DUPLICATE KEY UPDATE
+      asset_type = VALUES(asset_type),
+      asset_no = COALESCE(tooling_asset_smd.asset_no, VALUES(asset_no)),
+      location_code = COALESCE(tooling_asset_smd.location_code, VALUES(location_code)),
+      pcb_no = COALESCE(tooling_asset_smd.pcb_no, VALUES(pcb_no)),
+      production_date_raw = COALESCE(tooling_asset_smd.production_date_raw, VALUES(production_date_raw)),
+      side = COALESCE(tooling_asset_smd.side, VALUES(side)),
+      thickness_mm = COALESCE(tooling_asset_smd.thickness_mm, VALUES(thickness_mm)),
+      source_file = VALUES(source_file)
+  `;
+  for (const item of catalog) {
+    await pool.query(sql, [
+      item.assetType,
+      item.controlCode,
+      item.assetNo,
+      item.locationCode,
+      item.lifecycleStatus,
+      item.lifecycleStatus === 'SCRAP' ? 0 : 1,
+      item.pcbNo || null,
+      item.productionDate || null,
+      item.side || null,
+      item.thickness ?? null,
+    ]);
+  }
+  console.log(`✓ Catalogo de herramentales verificado (${catalog.length} codigos)`);
+}
+
 // Ejecutar todas las migraciones
 async function runMigrations() {
   console.log('🔄 Ejecutando migraciones de base de datos...');
@@ -1590,6 +1733,7 @@ async function runMigrations() {
   await createScrapRecordsTable();
   await createScrapRecordEditsTable();
   await createSolderPasteLifecycleTables();
+  await createToolingControlTables();
   await migrateScrapAreaColumn();
   await addColumnIfNotExists('scrap_records', 'cantidad', 'INT NOT NULL DEFAULT 1 AFTER usuario_registro');
   await addColumnIfNotExists('scrap_records', 'raw_barcode', 'VARCHAR(180) NULL AFTER part_no');

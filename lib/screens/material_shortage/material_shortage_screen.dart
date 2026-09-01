@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../core/widgets/column_filter.dart';
 import 'package:flutter/services.dart';
 import 'package:material_warehousing_flutter/core/localization/app_translations.dart';
 import 'package:material_warehousing_flutter/core/theme/app_colors.dart';
@@ -362,7 +363,7 @@ class MaterialShortageScreenState extends State<MaterialShortageScreen>
           _clearSorting();
           break;
         case 'filter':
-          _showFilterDialog(context, field, header);
+          _showFilterDialog(context, field, header, position);
           break;
         case 'clear_filter':
           _clearColumnFilter(field);
@@ -371,53 +372,19 @@ class MaterialShortageScreenState extends State<MaterialShortageScreen>
     });
   }
 
-  void _showFilterDialog(BuildContext context, String field, String header) {
-    final filterController = TextEditingController();
-    filterController.text = _columnFilters[field] ?? '';
-
-    showDialog(
+  Future<void> _showFilterDialog(BuildContext context, String field,
+      String header, Offset anchor) async {
+    final result = await ColumnFilter.show(
       context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: const Color(0xFF2D2D30),
-        title: Text('${tr('filter_by')}: $header',
-            style: const TextStyle(color: Colors.white, fontSize: 14)),
-        content: SizedBox(
-          width: 300,
-          child: TextField(
-            controller: filterController,
-            autofocus: true,
-            style: const TextStyle(color: Colors.white, fontSize: 12),
-            decoration: InputDecoration(
-              hintText: 'Enter filter value...',
-              hintStyle: const TextStyle(color: Colors.white54, fontSize: 12),
-              filled: true,
-              fillColor: AppColors.fieldBackground,
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(4),
-                borderSide: const BorderSide(color: AppColors.border),
-              ),
-            ),
-            onSubmitted: (value) {
-              Navigator.pop(context);
-              _applyColumnFilter(field, value);
-            },
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: Text(tr('cancel')),
-          ),
-          TextButton(
-            onPressed: () {
-              Navigator.pop(context);
-              _applyColumnFilter(field, filterController.text);
-            },
-            child: Text(tr('save')),
-          ),
-        ],
-      ),
+      anchorOffset: anchor,
+      values: _shortageData.map((row) {
+        final value = row[field];
+        return value is List ? value.join(', ') : (value?.toString() ?? '');
+      }),
+      currentFilter: _columnFilters[field],
     );
+    if (!result.changed) return;
+    _applyColumnFilter(field, result.filter ?? '');
   }
 
   void _applyColumnFilter(String field, String value) {
@@ -445,11 +412,11 @@ class MaterialShortageScreenState extends State<MaterialShortageScreen>
     _shortageData = _shortageData.where((row) {
       for (var entry in _columnFilters.entries) {
         final field = entry.key;
-        final filterValue = entry.value?.toLowerCase() ?? '';
         var cellValue = row[field];
         if (cellValue is List) cellValue = cellValue.join(', ');
-        final cellStr = cellValue?.toString().toLowerCase() ?? '';
-        if (!cellStr.contains(filterValue)) return false;
+        final cellStr = cellValue?.toString() ?? '';
+        // Misma semantica que el resto de los grids, incluidos (Blanks).
+        if (!ColumnFilter.matches(cellStr.trim(), entry.value)) return false;
       }
       return true;
     }).toList();

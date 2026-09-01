@@ -13,6 +13,11 @@ class SolderPasteProcessBoard extends StatelessWidget {
   final EdgeInsetsGeometry margin;
   final SolderPasteActionBuilder? actionBuilder;
 
+  /// Filtro por columna. Sin callback el embudo no se dibuja: la ventana de
+  /// display solo muestra, no filtra.
+  final void Function(String field, Offset position)? onFilter;
+  final Map<String, String?> filters;
+
   const SolderPasteProcessBoard({
     super.key,
     required this.processes,
@@ -20,6 +25,8 @@ class SolderPasteProcessBoard extends StatelessWidget {
     this.largeDisplay = false,
     this.margin = EdgeInsets.zero,
     this.actionBuilder,
+    this.onFilter,
+    this.filters = const {},
   });
 
   @override
@@ -61,11 +68,13 @@ class SolderPasteProcessBoard extends StatelessWidget {
       color: AppColors.gridHeader,
       child: Row(
         children: [
-          _headerCell('Material / número de parte', flex: 3),
-          _headerCell('Estado', width: largeDisplay ? 230 : 190),
+          _headerCell('Material / número de parte', flex: 3, field: 'material'),
+          _headerCell('Estado',
+              width: largeDisplay ? 230 : 190, field: 'estado'),
+          // "Tiempo restante" cambia solo: filtrarlo no tendria sentido.
           _headerCell('Tiempo restante', width: largeDisplay ? 430 : 330),
-          _headerCell('Línea', width: largeDisplay ? 110 : 90),
-          _headerCell('Siguiente paso', flex: 4),
+          _headerCell('Línea', width: largeDisplay ? 110 : 90, field: 'linea'),
+          _headerCell('Siguiente paso', flex: 4, field: 'siguiente'),
           if (actionBuilder != null)
             _headerCell('Acción', width: actionWidth, centered: true),
         ],
@@ -99,7 +108,10 @@ class SolderPasteProcessBoard extends StatelessWidget {
     double? width,
     int? flex,
     bool centered = false,
+    String? field,
   }) {
+    final filterable = field != null && onFilter != null;
+    final hasFilter = field != null && filters[field] != null;
     final child = Container(
       width: width,
       padding: EdgeInsets.symmetric(horizontal: largeDisplay ? 12 : 8),
@@ -107,17 +119,49 @@ class SolderPasteProcessBoard extends StatelessWidget {
       decoration: const BoxDecoration(
         border: Border(right: BorderSide(color: AppColors.border, width: .5)),
       ),
-      child: Text(
-        text,
-        overflow: TextOverflow.ellipsis,
-        style: TextStyle(
-          color: Colors.white,
-          fontSize: largeDisplay ? 15 : 11,
-          fontWeight: FontWeight.bold,
-        ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              text,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: largeDisplay ? 15 : 11,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ),
+          if (filterable)
+            GestureDetector(
+              onTapDown: (details) => onFilter!(field, details.globalPosition),
+              child: Icon(
+                hasFilter ? Icons.filter_alt : Icons.filter_alt_outlined,
+                size: largeDisplay ? 15 : 12,
+                color: hasFilter ? Colors.blue : Colors.white38,
+              ),
+            ),
+        ],
       ),
     );
     return flex == null ? child : Expanded(flex: flex, child: child);
+  }
+
+  /// Valor de la fila para una columna filtrable. Vive aqui para que el
+  /// desplegable y el filtrado usen exactamente el mismo texto.
+  static String fieldValue(SolderPasteProcess process, String field) {
+    switch (field) {
+      case 'material':
+        return '${process.code} ${process.partNumber}'.trim();
+      case 'estado':
+        return process.status.displayName;
+      case 'linea':
+        return process.lineCode ?? '';
+      case 'siguiente':
+        return process.nextAction;
+      default:
+        return '';
+    }
   }
 
   Widget _buildRow(SolderPasteProcess process, int index) {

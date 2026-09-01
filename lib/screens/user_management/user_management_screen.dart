@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:material_warehousing_flutter/core/widgets/column_filter.dart';
 import 'package:material_warehousing_flutter/core/localization/app_translations.dart';
 import 'package:material_warehousing_flutter/core/theme/app_colors.dart';
 import 'package:material_warehousing_flutter/core/services/api_service.dart';
@@ -18,6 +19,8 @@ class _UserManagementScreenState extends State<UserManagementScreen> with Single
   
   List<Map<String, dynamic>> _users = [];
   List<Map<String, dynamic>> _filteredUsers = [];
+  final Map<String, String?> _columnFilters = {};
+  String _searchQuery = '';
   List<String> _departments = [];
   List<String> _cargos = [];
   List<Map<String, dynamic>> _availablePermissions = [];
@@ -112,22 +115,56 @@ class _UserManagementScreenState extends State<UserManagementScreen> with Single
   }
   
   void _filterUsers(String query) {
+    _searchQuery = query;
+    setState(_applyUserFilters);
+  }
+
+  /// Busqueda libre y filtros de columna se aplican juntos.
+  void _applyUserFilters() {
+    var result = List<Map<String, dynamic>>.from(_users);
+
+    if (_searchQuery.isNotEmpty) {
+      final searchLower = _searchQuery.toLowerCase();
+      result = result.where((user) {
+        final username = user['username']?.toString().toLowerCase() ?? '';
+        final nombre = user['nombre_completo']?.toString().toLowerCase() ?? '';
+        final depto = user['departamento']?.toString().toLowerCase() ?? '';
+        return username.contains(searchLower) ||
+            nombre.contains(searchLower) ||
+            depto.contains(searchLower);
+      }).toList();
+    }
+
+    if (_columnFilters.isNotEmpty) {
+      result = result.where((user) {
+        for (final entry in _columnFilters.entries) {
+          final value = (user[entry.key] ?? '').toString().trim();
+          if (!ColumnFilter.matches(value, entry.value)) return false;
+        }
+        return true;
+      }).toList();
+    }
+
+    _filteredUsers = result;
+    _selectedIndex = -1;
+    _selectedUser = null;
+  }
+
+  Future<void> _onFilterColumn(String field, Offset position) async {
+    final result = await ColumnFilter.show(
+      context: context,
+      anchorOffset: position,
+      values: _users.map((user) => (user[field] ?? '').toString()),
+      currentFilter: _columnFilters[field],
+    );
+    if (!mounted || !result.changed) return;
     setState(() {
-      if (query.isEmpty) {
-        _filteredUsers = List.from(_users);
+      if (result.filter == null) {
+        _columnFilters.remove(field);
       } else {
-        _filteredUsers = _users.where((user) {
-          final username = user['username']?.toString().toLowerCase() ?? '';
-          final nombre = user['nombre_completo']?.toString().toLowerCase() ?? '';
-          final depto = user['departamento']?.toString().toLowerCase() ?? '';
-          final searchLower = query.toLowerCase();
-          return username.contains(searchLower) || 
-                 nombre.contains(searchLower) || 
-                 depto.contains(searchLower);
-        }).toList();
+        _columnFilters[field] = result.filter;
       }
-      _selectedIndex = -1;
-      _selectedUser = null;
+      _applyUserFilters();
     });
   }
   
@@ -736,12 +773,12 @@ class _UserManagementScreenState extends State<UserManagementScreen> with Single
           color: AppColors.gridHeader,
           child: Row(
             children: [
-              _buildHeaderCell('ID', 50),
-              _buildHeaderCell(tr('username'), 100),
-              _buildHeaderCell(tr('full_name'), 150),
-              _buildHeaderCell(tr('department'), 120),
-              _buildHeaderCell(tr('position'), 100),
-              _buildHeaderCell(tr('status'), 70),
+              _buildHeaderCell('ID', 50, field: 'id'),
+              _buildHeaderCell(tr('username'), 100, field: 'username'),
+              _buildHeaderCell(tr('full_name'), 150, field: 'nombre_completo'),
+              _buildHeaderCell(tr('department'), 120, field: 'departamento'),
+              _buildHeaderCell(tr('position'), 100, field: 'cargo'),
+              _buildHeaderCell(tr('status'), 70, field: 'activo'),
               _buildHeaderCell(tr('actions'), 120),
             ],
           ),
@@ -847,19 +884,37 @@ class _UserManagementScreenState extends State<UserManagementScreen> with Single
     );
   }
   
-  Widget _buildHeaderCell(String text, double width) {
+  Widget _buildHeaderCell(String text, double width, {String? field}) {
+    final hasFilter = field != null && _columnFilters[field] != null;
     return SizedBox(
       width: width,
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 4),
-        child: Text(
-          text,
-          style: const TextStyle(
-            color: Colors.white,
-            fontSize: 10,
-            fontWeight: FontWeight.bold,
-          ),
-          overflow: TextOverflow.ellipsis,
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(
+                text,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 10,
+                  fontWeight: FontWeight.bold,
+                ),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            // La columna de acciones no filtra: no tiene dato que comparar.
+            if (field != null)
+              GestureDetector(
+                onTapDown: (details) =>
+                    _onFilterColumn(field, details.globalPosition),
+                child: Icon(
+                  hasFilter ? Icons.filter_alt : Icons.filter_alt_outlined,
+                  size: 11,
+                  color: hasFilter ? Colors.blue : Colors.white38,
+                ),
+              ),
+          ],
         ),
       ),
     );

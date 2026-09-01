@@ -28,8 +28,9 @@ class MaterialReturnScreenState extends State<MaterialReturnScreen> {
   }
   
   void _onDataSaved() {
-    // Recargar la tabla cuando se guardan nuevos datos
-    _gridKey.currentState?.reloadData();
+    // El retorno recien guardado es de hoy: se recarga el dia, no el historico
+    // completo, que ademas contradecia el rango que muestra la barra.
+    _gridKey.currentState?.loadTodayData();
   }
 
   @override

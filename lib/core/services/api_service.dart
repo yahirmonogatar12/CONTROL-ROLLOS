@@ -5253,4 +5253,148 @@ class ApiService {
     required String usuario,
   }) =>
       _solderPasteAction(processId, 'cancel', usuario: usuario);
+
+  // ============ METAL MASK / SQUEEGEE ============
+
+  static Future<Map<String, dynamic>> getToolingSummary() async {
+    try {
+      final response = await http.get(Uri.parse('$baseUrl/tooling/summary'));
+      final body = json.decode(response.body) as Map<String, dynamic>;
+      if (response.statusCode >= 200 && response.statusCode < 300) return body;
+      return {
+        'success': false,
+        'error': body['error'] ?? 'Error ${response.statusCode}'
+      };
+    } catch (e) {
+      return {'success': false, 'error': 'Error de conexión: $e'};
+    }
+  }
+
+  static Future<Map<String, dynamic>> getToolingAssets({
+    String? type,
+    String? search,
+    String? status,
+    String? location,
+  }) async {
+    try {
+      final params = <String, String>{
+        if (type != null && type.isNotEmpty) 'type': type,
+        if (search != null && search.trim().isNotEmpty) 'search': search.trim(),
+        if (status != null && status.isNotEmpty) 'status': status,
+        if (location != null && location.trim().isNotEmpty)
+          'location': location.trim(),
+      };
+      final uri =
+          Uri.parse('$baseUrl/tooling/assets').replace(queryParameters: params);
+      final response = await http.get(uri);
+      final body = json.decode(response.body) as Map<String, dynamic>;
+      if (response.statusCode >= 200 && response.statusCode < 300) return body;
+      return {
+        'success': false,
+        'error': body['error'] ?? 'Error ${response.statusCode}'
+      };
+    } catch (e) {
+      return {'success': false, 'error': 'Error de conexión: $e'};
+    }
+  }
+
+  static Future<Map<String, dynamic>> getToolingAssignments({
+    String? code,
+    String? line,
+    String? from,
+    String? to,
+    int limit = 500,
+  }) async {
+    try {
+      final params = <String, String>{
+        'limit': '$limit',
+        if (code != null && code.trim().isNotEmpty) 'code': code.trim(),
+        if (line != null && line.trim().isNotEmpty) 'line': line.trim(),
+        if (from != null && from.trim().isNotEmpty) 'from': from.trim(),
+        if (to != null && to.trim().isNotEmpty) 'to': to.trim(),
+      };
+      final uri = Uri.parse('$baseUrl/tooling/assignments')
+          .replace(queryParameters: params);
+      final response = await http.get(uri);
+      final body = json.decode(response.body) as Map<String, dynamic>;
+      if (response.statusCode >= 200 && response.statusCode < 300) return body;
+      return {
+        'success': false,
+        'error': body['error'] ?? 'Error ${response.statusCode}'
+      };
+    } catch (e) {
+      return {'success': false, 'error': 'Error de conexión: $e'};
+    }
+  }
+
+  static Future<Map<String, dynamic>> createToolingAsset({
+    required String assetType,
+    required String controlCode,
+    String? locationCode,
+    String? lifecycleStatus,
+    String? useLimit,
+    String? pcbNo,
+    String? productionDateRaw,
+    String? thicknessMm,
+  }) async {
+    try {
+      final response = await http.post(
+        Uri.parse('$baseUrl/tooling/assets'),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode({
+          'asset_type': assetType,
+          'control_code': controlCode,
+          if (locationCode != null) 'location_code': locationCode,
+          if (lifecycleStatus != null) 'lifecycle_status': lifecycleStatus,
+          if (useLimit != null) 'use_limit': useLimit,
+          if (pcbNo != null) 'pcb_no': pcbNo,
+          if (productionDateRaw != null)
+            'production_date_raw': productionDateRaw,
+          if (thicknessMm != null) 'thickness_mm': thicknessMm,
+        }),
+      );
+      final body = json.decode(response.body) as Map<String, dynamic>;
+      if (response.statusCode >= 200 && response.statusCode < 300) return body;
+      return {
+        'success': false,
+        'error': body['error'] ?? 'Error ${response.statusCode}'
+      };
+    } catch (e) {
+      return {'success': false, 'error': 'Error de conexión: $e'};
+    }
+  }
+
+  static Future<Map<String, dynamic>> updateToolingAsset(
+    String controlCode, {
+    String? locationCode,
+    String? lifecycleStatus,
+    String? useLimit,
+    String? pcbNo,
+    String? productionDateRaw,
+    String? thicknessMm,
+  }) async {
+    try {
+      final response = await http.patch(
+        Uri.parse('$baseUrl/tooling/assets/$controlCode'),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode({
+          if (locationCode != null) 'location_code': locationCode,
+          if (lifecycleStatus != null) 'lifecycle_status': lifecycleStatus,
+          if (useLimit != null) 'use_limit': useLimit,
+          if (pcbNo != null) 'pcb_no': pcbNo,
+          if (productionDateRaw != null)
+            'production_date_raw': productionDateRaw,
+          if (thicknessMm != null) 'thickness_mm': thicknessMm,
+        }),
+      );
+      final body = json.decode(response.body) as Map<String, dynamic>;
+      if (response.statusCode >= 200 && response.statusCode < 300) return body;
+      return {
+        'success': false,
+        'error': body['error'] ?? 'Error ${response.statusCode}'
+      };
+    } catch (e) {
+      return {'success': false, 'error': 'Error de conexión: $e'};
+    }
+  }
 }

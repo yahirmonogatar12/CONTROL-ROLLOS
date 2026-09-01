@@ -124,6 +124,20 @@ exports.consume = async (req, res, next) => {
   }
 };
 
+exports.consumeByCode = async (req, res, next) => {
+  try {
+    const result = await service.consumeByCode({
+      code: req.body?.code,
+      usuario: actorFromBody(req.body).usuario,
+      lineCode: req.body?.line_code || req.body?.lineCode,
+      scannedBy: req.body?.device_id || req.body?.deviceId,
+    });
+    res.json({ success: true, ...result });
+  } catch (error) {
+    next(error);
+  }
+};
+
 exports.returnToCold = async (req, res, next) => {
   try {
     const actor = actorFromBody(req.body);

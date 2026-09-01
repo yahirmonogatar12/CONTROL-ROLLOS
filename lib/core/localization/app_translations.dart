@@ -513,6 +513,7 @@ class AppTranslations {
       // Material Control
       'material_control': 'Material Control',
       'solder_paste': 'Paste Control',
+      'tooling_control': 'Metal Mask / Squeegee',
       'new_material': 'New Material',
       'material_details': 'Material Details',
       'select_material': 'Select a material to view details',
@@ -1901,6 +1902,7 @@ class AppTranslations {
       // Material Control
       'material_control': 'Control de Materiales',
       'solder_paste': 'Control de pasta',
+      'tooling_control': 'Metal Mask / Squeegee',
       'new_material': 'Nuevo Material',
       'material_details': 'Detalles del Material',
       'select_material': 'Seleccione un material para ver detalles',
@@ -3288,6 +3290,7 @@ class AppTranslations {
       // Material Control
       'material_control': '자재 관리',
       'solder_paste': '솔더 페이스트 관리',
+      'tooling_control': 'Metal Mask / Squeegee',
       'new_material': '새 자재',
       'material_details': '자재 상세',
       'select_material': '상세 정보를 보려면 자재를 선택하세요',

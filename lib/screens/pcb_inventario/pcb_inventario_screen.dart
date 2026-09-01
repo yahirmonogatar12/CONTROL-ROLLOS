@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:archive/archive.dart';
 import 'package:flutter/material.dart';
+import '../../core/widgets/column_filter.dart';
 import 'package:dropdown_button2/dropdown_button2.dart';
 import 'package:excel/excel.dart' as xl;
 import 'package:file_picker/file_picker.dart';
@@ -14,7 +15,6 @@ import 'package:material_warehousing_flutter/core/services/auth_service.dart';
 import 'package:material_warehousing_flutter/core/services/excel_export_service.dart';
 import 'package:material_warehousing_flutter/core/widgets/field_decoration.dart';
 import 'package:material_warehousing_flutter/core/widgets/resizable_grid_header.dart';
-import 'package:material_warehousing_flutter/core/widgets/searchable_column_filter_dialog.dart';
 import 'package:xml/xml.dart';
 
 class PcbInventarioScreen extends StatefulWidget {
@@ -260,7 +260,7 @@ class PcbInventarioScreenState extends State<PcbInventarioScreen>
     for (final entry in _columnFilters.entries) {
       if (entry.value != null && entry.value!.isNotEmpty) {
         data = data
-            .where((r) => matchesColumnFilterValue(r[entry.key], entry.value!))
+            .where((r) => ColumnFilter.matches((r[entry.key] ?? '').toString().trim(), entry.value))
             .toList();
       }
     }
@@ -284,7 +284,7 @@ class PcbInventarioScreenState extends State<PcbInventarioScreen>
     for (final entry in _columnFilters.entries) {
       if (entry.value != null && entry.value!.isNotEmpty) {
         data = data
-            .where((r) => matchesColumnFilterValue(r[entry.key], entry.value!))
+            .where((r) => ColumnFilter.matches((r[entry.key] ?? '').toString().trim(), entry.value))
             .toList();
       }
     }
@@ -326,37 +326,25 @@ class PcbInventarioScreenState extends State<PcbInventarioScreen>
     return index >= 0 && index < headers.length ? headers[index] : field;
   }
 
-  void _onFilter(String field) {
+  Future<void> _onFilter(String field, Offset position) async {
+    // La pestaña activa decide de dónde salen los valores.
     final source = _tabController.index == 0 ? _summaryData : _detailData;
-    final values = source
-        .map((r) => (r[field] ?? '').toString())
-        .where((v) => v.isNotEmpty)
-        .toSet()
-        .toList()
-      ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+    final values = source.map((r) => (r[field] ?? '').toString());
 
-    final currentFilter = _columnFilters[field];
-
-    showSearchableColumnFilterDialog(
+    final result = await ColumnFilter.show(
       context: context,
-      title: '${tr('pcb_filter')}: ${_headerForField(field)}',
+      anchorOffset: position,
       values: values,
-      allLabel: tr('pcb_all'),
-      searchLabel: tr('search'),
-      applyLabel: tr('apply'),
-      clearFilterLabel: tr('clear_filter'),
-      currentFilter: currentFilter,
-    ).then((result) {
-      if (!mounted || result == null) return;
-      setState(() {
-        final filterValue = result.filterValue;
-        if (filterValue == null || filterValue.isEmpty) {
-          _columnFilters.remove(field);
-        } else {
-          _columnFilters[field] = filterValue;
-        }
-        _applyCurrentTabFilters();
-      });
+      currentFilter: _columnFilters[field],
+    );
+    if (!mounted || !result.changed) return;
+    setState(() {
+      if (result.filter == null) {
+        _columnFilters.remove(field);
+      } else {
+        _columnFilters[field] = result.filter;
+      }
+      _applyCurrentTabFilters();
     });
   }
 

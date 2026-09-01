@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:material_warehousing_flutter/core/widgets/column_filter.dart';
 import 'package:material_warehousing_flutter/core/localization/app_translations.dart';
 import 'package:material_warehousing_flutter/core/theme/app_colors.dart';
 import 'package:material_warehousing_flutter/core/services/api_service.dart';
@@ -15,7 +16,52 @@ class ScrapMotivosScreen extends StatefulWidget {
 
 class ScrapMotivosScreenState extends State<ScrapMotivosScreen>
     with AutomaticKeepAliveClientMixin {
+  List<Map<String, dynamic>> _allMotivos = [];
+  final Map<String, String?> _columnFilters = {};
   List<Map<String, dynamic>> _motivos = [];
+
+  /// "Activo" se guarda como 1/0 y en pantalla es un icono, sin texto que
+  /// filtrar: se ofrecen etiquetas legibles en vez del valor crudo.
+  String _motivoValue(Map<String, dynamic> m, String field) {
+    if (field == 'activo') {
+      return (m['activo'] ?? 1) == 1 ? 'Activo' : 'Inactivo';
+    }
+    return (m[field] ?? '').toString();
+  }
+
+  void _applyMotivoFilters() {
+    if (_columnFilters.isEmpty) {
+      _motivos = List<Map<String, dynamic>>.from(_allMotivos);
+      return;
+    }
+    _motivos = _allMotivos.where((m) {
+      for (final entry in _columnFilters.entries) {
+        if (!ColumnFilter.matches(
+            _motivoValue(m, entry.key).trim(), entry.value)) {
+          return false;
+        }
+      }
+      return true;
+    }).toList();
+  }
+
+  Future<void> _onFilterColumn(String field, Offset position) async {
+    final result = await ColumnFilter.show(
+      context: context,
+      anchorOffset: position,
+      values: _allMotivos.map((m) => _motivoValue(m, field)),
+      currentFilter: _columnFilters[field],
+    );
+    if (!mounted || !result.changed) return;
+    setState(() {
+      if (result.filter == null) {
+        _columnFilters.remove(field);
+      } else {
+        _columnFilters[field] = result.filter;
+      }
+      _applyMotivoFilters();
+    });
+  }
   bool _isLoading = false;
   bool _showInactive = false;
 
@@ -36,8 +82,9 @@ class ScrapMotivosScreenState extends State<ScrapMotivosScreen>
         await ApiService.getScrapMotivos(includeInactive: _showInactive);
     if (mounted) {
       setState(() {
-        _motivos =
+        _allMotivos =
             (result['data'] as List?)?.cast<Map<String, dynamic>>() ?? [];
+        _applyMotivoFilters();
         _isLoading = false;
       });
     }
@@ -264,12 +311,15 @@ class ScrapMotivosScreenState extends State<ScrapMotivosScreen>
           ),
           child: Row(
             children: [
-              _headerCell(tr('scrap_motivo'), flex: 3),
-              _headerCell(tr('scrap_activo'), flex: 1),
-              _headerCell(tr('scrap_created_by'), flex: 2),
-              _headerCell(tr('scrap_created_at'), flex: 2),
-              _headerCell(tr('scrap_updated_by'), flex: 2),
-              _headerCell(tr('scrap_updated_at'), flex: 2),
+              _headerCell(tr('scrap_motivo'), flex: 3, field: 'motivo'),
+              _headerCell(tr('scrap_activo'), flex: 1, field: 'activo'),
+              _headerCell(tr('scrap_created_by'), flex: 2, field: 'creado_por'),
+              _headerCell(tr('scrap_created_at'),
+                  flex: 2, field: 'fecha_creacion'),
+              _headerCell(tr('scrap_updated_by'),
+                  flex: 2, field: 'actualizado_por'),
+              _headerCell(tr('scrap_updated_at'),
+                  flex: 2, field: 'fecha_actualizacion'),
               _headerCell(tr('scrap_actions'), flex: 1),
             ],
           ),
@@ -381,17 +431,37 @@ class ScrapMotivosScreenState extends State<ScrapMotivosScreen>
     );
   }
 
-  Widget _headerCell(String text, {required int flex}) {
+  Widget _headerCell(String text, {required int flex, String? field}) {
+    final hasFilter = field != null && _columnFilters[field] != null;
     return Expanded(
       flex: flex,
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 6),
-        child: Text(
-          text,
-          style: const TextStyle(
-              color: Colors.white, fontSize: 11, fontWeight: FontWeight.w600),
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(
+                text,
+                style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            // La columna de acciones no filtra: no tiene dato que comparar.
+            if (field != null)
+              GestureDetector(
+                onTapDown: (details) =>
+                    _onFilterColumn(field, details.globalPosition),
+                child: Icon(
+                  hasFilter ? Icons.filter_alt : Icons.filter_alt_outlined,
+                  size: 12,
+                  color: hasFilter ? Colors.blue : Colors.white38,
+                ),
+              ),
+          ],
         ),
       ),
     );

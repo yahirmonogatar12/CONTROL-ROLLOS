@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
+import '../../core/widgets/column_filter.dart';
 import 'package:flutter/services.dart';
 import 'package:material_warehousing_flutter/core/localization/app_translations.dart';
 import 'package:material_warehousing_flutter/core/theme/app_colors.dart';
@@ -78,7 +79,10 @@ class ReturnGridPanelState extends State<ReturnGridPanel> with ResizableColumnsM
       _filterKeys[field] = GlobalKey();
     }
     initColumnFlex(9, 'return_grid', defaultFlexValues: [3.0, 3.0, 2.0, 3.0, 2.0, 2.0, 2.0, 4.0, 3.0]);
-    reloadData();
+    // Solo el dia, igual que Entradas: la barra arranca con el rango de hoy,
+    // asi que cargar el historico completo contradecia lo que muestra el filtro
+    // (y traia miles de filas de meses anteriores).
+    loadTodayData();
   }
 
   @override
@@ -88,6 +92,14 @@ class ReturnGridPanelState extends State<ReturnGridPanel> with ResizableColumnsM
     _searchFocusNode.dispose();
     _keyboardFocusNode.dispose();
     super.dispose();
+  }
+
+  /// Carga inicial acotada al dia de hoy, en linea con el rango que muestra la
+  /// barra de busqueda.
+  Future<void> loadTodayData() async {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    await searchByDate(today, today);
   }
 
   Future<void> reloadData() async {
@@ -259,16 +271,7 @@ class ReturnGridPanelState extends State<ReturnGridPanel> with ResizableColumnsM
     });
   }
 
-  void _showFilterDropdown(BuildContext context, String field) {
-    final RenderBox? renderBox = _filterKeys[field]?.currentContext?.findRenderObject() as RenderBox?;
-    if (renderBox == null) return;
-    final position = renderBox.localToGlobal(Offset.zero);
-    final size = renderBox.size;
-    
-    final fieldIndex = _fields.indexOf(field);
-    final header = fieldIndex >= 0 ? _headers[fieldIndex] : field;
-    
-    // Obtener valores únicos
+  Future<void> _showFilterDropdown(BuildContext context, String field) async {
     final Set<String> uniqueValues = {};
     bool hasBlanks = false;
     
@@ -280,30 +283,14 @@ class ReturnGridPanelState extends State<ReturnGridPanel> with ResizableColumnsM
         uniqueValues.add(value);
       }
     }
-    
-    final sortedValues = uniqueValues.toList()..sort();
-    
-    showMenu<String>(
+
+    final result = await ColumnFilter.show(
       context: context,
-      position: RelativeRect.fromLTRB(position.dx, position.dy + size.height, position.dx + 250, position.dy + size.height + 300),
-      items: [
-        PopupMenuItem(
-          enabled: false,
-          child: Text('${tr('filter_by')}: $header', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
-        ),
-        const PopupMenuDivider(),
-        PopupMenuItem(value: '', child: Text('(${tr('all')})', style: const TextStyle(fontStyle: FontStyle.italic))),
-        if (hasBlanks) PopupMenuItem(value: '__BLANKS__', child: Text('(${tr('blanks')})')),
-        PopupMenuItem(value: '__NON_BLANKS__', child: Text('(${tr('non_blanks')})')),
-        const PopupMenuDivider(),
-        ...sortedValues.take(50).map((val) => PopupMenuItem(value: val, child: Text(val, overflow: TextOverflow.ellipsis))),
-        if (sortedValues.length > 50) const PopupMenuItem(enabled: false, child: Text('... and more', style: TextStyle(fontStyle: FontStyle.italic))),
-      ],
-    ).then((selectedValue) {
-      if (selectedValue != null) {
-        _applyFilter(field, selectedValue.isEmpty ? null : selectedValue);
-      }
-    });
+      anchorKey: _filterKeys[field],
+      values: [...uniqueValues, if (hasBlanks) ''],
+      currentFilter: _columnFilters[field],
+    );
+    if (result.changed) _applyFilter(field, result.filter);
   }
 
   Widget _highlightText(String text, String search) {
@@ -787,14 +774,19 @@ class ReturnGridPanelState extends State<ReturnGridPanel> with ResizableColumnsM
                             size: 12,
                             color: Colors.blue,
                           ),
-                        if (hasFilter)
-                          GestureDetector(
-                            onTap: () => _showColumnContextMenu(context, field, i),
-                            child: const Padding(
-                              padding: EdgeInsets.only(left: 2),
-                              child: Icon(Icons.filter_list, size: 12, color: Colors.blue),
+                        // Embudo siempre visible: antes solo aparecia cuando ya
+                        // habia filtro, asi que no habia como abrirlo.
+                        GestureDetector(
+                          onTap: () => _showFilterDropdown(context, field),
+                          child: Padding(
+                            padding: const EdgeInsets.only(left: 2),
+                            child: Icon(
+                              hasFilter ? Icons.filter_alt : Icons.filter_alt_outlined,
+                              size: 12,
+                              color: hasFilter ? Colors.blue : Colors.white38,
                             ),
                           ),
+                        ),
                         GestureDetector(
                           onTap: () => _showColumnContextMenu(context, field, i),
                           child: const Icon(Icons.arrow_drop_down, size: 14, color: Colors.white54),

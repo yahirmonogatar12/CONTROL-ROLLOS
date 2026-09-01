@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:material_warehousing_flutter/core/widgets/column_filter.dart';
 import 'package:material_warehousing_flutter/core/localization/app_translations.dart';
 import 'package:material_warehousing_flutter/core/services/api_service.dart';
 import 'package:material_warehousing_flutter/core/services/auth_service.dart';
@@ -40,14 +41,43 @@ class _PcbDefectsScreenState extends State<PcbDefectsScreen> {
     super.dispose();
   }
 
+  final Map<String, String?> _columnFilters = {};
+
   List<Map<String, dynamic>> get _filteredDefects {
     final search = _searchController.text.trim().toUpperCase();
-    if (search.isEmpty) return _defects;
-    return _defects.where((row) {
-      final name = (row['defect_name'] ?? '').toString().toUpperCase();
-      final description = (row['description'] ?? '').toString().toUpperCase();
-      return name.contains(search) || description.contains(search);
+    var rows = _defects;
+    if (search.isNotEmpty) {
+      rows = rows.where((row) {
+        final name = (row['defect_name'] ?? '').toString().toUpperCase();
+        final description = (row['description'] ?? '').toString().toUpperCase();
+        return name.contains(search) || description.contains(search);
+      }).toList();
+    }
+    if (_columnFilters.isEmpty) return rows;
+    return rows.where((row) {
+      for (final entry in _columnFilters.entries) {
+        final value = (row[entry.key] ?? '').toString().trim();
+        if (!ColumnFilter.matches(value, entry.value)) return false;
+      }
+      return true;
     }).toList();
+  }
+
+  Future<void> _onFilterColumn(String field, Offset position) async {
+    final result = await ColumnFilter.show(
+      context: context,
+      anchorOffset: position,
+      values: _defects.map((row) => (row[field] ?? '').toString()),
+      currentFilter: _columnFilters[field],
+    );
+    if (!mounted || !result.changed) return;
+    setState(() {
+      if (result.filter == null) {
+        _columnFilters.remove(field);
+      } else {
+        _columnFilters[field] = result.filter;
+      }
+    });
   }
 
   Future<void> _loadDefects() async {
@@ -220,10 +250,10 @@ class _PcbDefectsScreenState extends State<PcbDefectsScreen> {
             color: AppColors.gridHeader,
             child: Row(
               children: [
-                _headerCell(tr('pcb_defect_type'), 3),
-                _headerCell(tr('description'), 4),
-                _headerCell(tr('created_by'), 2),
-                _headerCell(tr('created_at'), 2),
+                _headerCell(tr('pcb_defect_type'), 3, 'defect_name'),
+                _headerCell(tr('description'), 4, 'description'),
+                _headerCell(tr('created_by'), 2, 'created_by'),
+                _headerCell(tr('created_at'), 2, 'created_at_fmt'),
                 const SizedBox(width: 70),
               ],
             ),
@@ -273,19 +303,35 @@ class _PcbDefectsScreenState extends State<PcbDefectsScreen> {
     );
   }
 
-  Widget _headerCell(String text, int flex) {
+  Widget _headerCell(String text, int flex, String field) {
+    final hasFilter = _columnFilters[field] != null;
     return Expanded(
       flex: flex,
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 8),
-        child: Text(
-          text,
-          style: const TextStyle(
-            color: Colors.white,
-            fontSize: 11,
-            fontWeight: FontWeight.bold,
-          ),
-          overflow: TextOverflow.ellipsis,
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(
+                text,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 11,
+                  fontWeight: FontWeight.bold,
+                ),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            GestureDetector(
+              onTapDown: (details) =>
+                  _onFilterColumn(field, details.globalPosition),
+              child: Icon(
+                hasFilter ? Icons.filter_alt : Icons.filter_alt_outlined,
+                size: 12,
+                color: hasFilter ? Colors.blue : Colors.white38,
+              ),
+            ),
+          ],
         ),
       ),
     );

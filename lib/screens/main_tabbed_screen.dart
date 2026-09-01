@@ -26,6 +26,7 @@ import 'package:material_warehousing_flutter/screens/scrap/scrap_screen.dart';
 import 'package:material_warehousing_flutter/screens/scrap_motivos/scrap_motivos_screen.dart';
 import 'package:material_warehousing_flutter/screens/smt_requests/smt_requests_screen.dart';
 import 'package:material_warehousing_flutter/screens/solder_paste/solder_paste_screen.dart';
+import 'package:material_warehousing_flutter/screens/tooling/tooling_control_screen.dart';
 import 'package:material_warehousing_flutter/core/widgets/smt_notification_overlay.dart';
 import 'dart:async';
 
@@ -76,6 +77,7 @@ class _MainTabbedScreenState extends State<MainTabbedScreen> {
       GlobalKey();
   final GlobalKey<SMTRequestsScreenState> _smtRequestsScreenKey = GlobalKey();
   final GlobalKey<SolderPasteScreenState> _solderPasteScreenKey = GlobalKey();
+  final GlobalKey<ToolingControlScreenState> _toolingScreenKey = GlobalKey();
 
   // Lista de tabs visibles según permisos
   List<_TabInfo> _visibleTabs = [];
@@ -229,6 +231,10 @@ class _MainTabbedScreenState extends State<MainTabbedScreen> {
       _visibleTabs.add(_TabInfo(
         key: 'solder_paste',
         titleKey: 'solder_paste',
+      ));
+      _visibleTabs.add(_TabInfo(
+        key: 'tooling_control',
+        titleKey: 'tooling_control',
       ));
     }
 
@@ -472,6 +478,9 @@ class _MainTabbedScreenState extends State<MainTabbedScreen> {
         case 'solder_paste':
           _solderPasteScreenKey.currentState?.requestScanFocus();
           break;
+        case 'tooling_control':
+          _toolingScreenKey.currentState?.requestScanFocus();
+          break;
       }
     });
   }
@@ -572,6 +581,11 @@ class _MainTabbedScreenState extends State<MainTabbedScreen> {
       case 'solder_paste':
         return SolderPasteScreen(
           key: _solderPasteScreenKey,
+          languageProvider: widget.languageProvider,
+        );
+      case 'tooling_control':
+        return ToolingControlScreen(
+          key: _toolingScreenKey,
           languageProvider: widget.languageProvider,
         );
       case 'user_management':

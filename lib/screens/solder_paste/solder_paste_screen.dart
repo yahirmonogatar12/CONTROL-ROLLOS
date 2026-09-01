@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:material_warehousing_flutter/core/widgets/column_filter.dart';
 import 'package:material_warehousing_flutter/core/localization/app_translations.dart';
 import 'package:material_warehousing_flutter/core/models/solder_paste_process.dart';
 import 'package:material_warehousing_flutter/core/services/api_service.dart';
@@ -600,16 +601,47 @@ class SolderPasteScreenState extends State<SolderPasteScreen>
     return '${d(v.day)}/${d(v.month)}/${v.year} ${d(v.hour)}:${d(v.minute)}:${d(v.second)}';
   }
 
+  final Map<String, String?> _columnFilters = {};
+
   List<SolderPasteProcess> get _filteredProcesses {
     final search = _historySearchController.text.trim().toLowerCase();
     return _processes.where((item) {
       if (_processFilter == 'active' && !item.isActive) return false;
       if (_processFilter == 'history' && item.isActive) return false;
+      for (final entry in _columnFilters.entries) {
+        final value =
+            SolderPasteProcessBoard.fieldValue(item, entry.key).trim();
+        if (!ColumnFilter.matches(value, entry.value)) return false;
+      }
       if (search.isEmpty) return true;
       return item.code.toLowerCase().contains(search) ||
           item.partNumber.toLowerCase().contains(search) ||
           (item.lineCode ?? '').toLowerCase().contains(search);
     }).toList();
+  }
+
+  Future<void> _onFilterColumn(String field, Offset position) async {
+    // Los valores salen de lo que ya paso los otros filtros, para no ofrecer
+    // opciones que dejarian la tabla vacia.
+    final base = _processes.where((item) {
+      if (_processFilter == 'active' && !item.isActive) return false;
+      if (_processFilter == 'history' && item.isActive) return false;
+      return true;
+    });
+    final result = await ColumnFilter.show(
+      context: context,
+      anchorOffset: position,
+      values: base.map((p) => SolderPasteProcessBoard.fieldValue(p, field)),
+      currentFilter: _columnFilters[field],
+    );
+    if (!mounted || !result.changed) return;
+    setState(() {
+      if (result.filter == null) {
+        _columnFilters.remove(field);
+      } else {
+        _columnFilters[field] = result.filter;
+      }
+    });
   }
 
   @override
@@ -794,6 +826,8 @@ class SolderPasteScreenState extends State<SolderPasteScreen>
       loading: _loadingProcesses,
       margin: const EdgeInsets.fromLTRB(12, 0, 12, 12),
       actionBuilder: _buildProcessActions,
+      onFilter: _onFilterColumn,
+      filters: _columnFilters,
     );
   }
 

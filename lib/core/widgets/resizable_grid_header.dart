@@ -134,7 +134,7 @@ mixin ResizableColumnsMixin<T extends StatefulWidget> on State<T> {
   /// 
   /// [headers] - Lista de textos para cada header
   /// [onSort] - Callback cuando se ordena (field, ascending)
-  /// [onFilter] - Callback cuando se filtra (field)
+  /// [onFilter] - Callback cuando se filtra (field, posicion del clic)
   /// [sortColumn] - Columna actualmente ordenada
   /// [sortAscending] - Si el orden es ascendente
   /// [columnFilters] - Map de filtros activos
@@ -146,7 +146,7 @@ mixin ResizableColumnsMixin<T extends StatefulWidget> on State<T> {
     required List<String> headers,
     List<String>? fieldMapping,
     Function(String field, bool ascending)? onSort,
-    Function(String field)? onFilter,
+    Function(String field, Offset position)? onFilter,
     String? sortColumn,
     bool sortAscending = true,
     Map<String, String?>? columnFilters,
@@ -224,7 +224,10 @@ mixin ResizableColumnsMixin<T extends StatefulWidget> on State<T> {
                               ),
                             if (onFilter != null && field.isNotEmpty)
                               GestureDetector(
-                                onTap: () => onFilter(field),
+                                // Se pasa la posicion del clic para que el
+                                // filtro abra bajo el encabezado, no centrado.
+                                onTapDown: (details) =>
+                                    onFilter(field, details.globalPosition),
                                 child: Padding(
                                   padding: const EdgeInsets.only(left: 2),
                                   child: Icon(

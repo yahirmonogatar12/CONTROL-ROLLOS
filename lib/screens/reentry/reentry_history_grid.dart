@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../core/widgets/column_filter.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
@@ -404,7 +405,7 @@ class ReentryHistoryGridState extends State<ReentryHistoryGrid> with AutomaticKe
       if (filterValue != null && filterValue.isNotEmpty) {
         filtered = filtered.where((row) {
           final cellValue = row[field]?.toString() ?? '';
-          return cellValue.toLowerCase() == filterValue.toLowerCase();
+          return ColumnFilter.matches(cellValue.trim(), filterValue);
         }).toList();
       }
     }
@@ -517,7 +518,7 @@ class ReentryHistoryGridState extends State<ReentryHistoryGrid> with AutomaticKe
           _clearSorting();
           break;
         case 'filter':
-          _showFilterDialog(context, field, header);
+          _showFilterDialog(context, field, header, position);
           break;
         case 'clear_filter':
           _clearFilter(field);
@@ -526,92 +527,16 @@ class ReentryHistoryGridState extends State<ReentryHistoryGrid> with AutomaticKe
     });
   }
   
-  void _showFilterDialog(BuildContext context, String field, String header) {
-    // Obtener valores únicos de la columna
-    final values = _originalData
-        .map((row) => row[field]?.toString() ?? '')
-        .where((v) => v.isNotEmpty)
-        .toSet()
-        .toList()
-      ..sort();
-    
-    final currentFilter = _columnFilters[field];
-    
-    showDialog(
+  Future<void> _showFilterDialog(BuildContext context, String field,
+      String header, Offset anchor) async {
+    final result = await ColumnFilter.show(
       context: context,
-      builder: (context) {
-        String searchFilter = '';
-        return StatefulBuilder(
-          builder: (context, setDialogState) {
-            final filteredValues = values.where((v) => 
-              v.toLowerCase().contains(searchFilter.toLowerCase())
-            ).toList();
-            
-            return AlertDialog(
-              backgroundColor: const Color(0xFF2D2D30),
-              title: Text('Filter: $header', style: const TextStyle(color: Colors.white, fontSize: 14)),
-              content: SizedBox(
-                width: 300,
-                height: 400,
-                child: Column(
-                  children: [
-                    TextField(
-                      style: const TextStyle(color: Colors.white, fontSize: 12),
-                      decoration: InputDecoration(
-                        hintText: 'Search...',
-                        hintStyle: const TextStyle(color: Colors.white38),
-                        prefixIcon: const Icon(Icons.search, color: Colors.white38, size: 18),
-                        filled: true,
-                        fillColor: const Color(0xFF3C3C3C),
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(4),
-                          borderSide: BorderSide.none,
-                        ),
-                        contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-                      ),
-                      onChanged: (v) => setDialogState(() => searchFilter = v),
-                    ),
-                    const SizedBox(height: 8),
-                    Expanded(
-                      child: ListView(
-                        children: [
-                          ListTile(
-                            dense: true,
-                            title: const Text('(All)', style: TextStyle(color: Colors.white70, fontSize: 12)),
-                            selected: currentFilter == null,
-                            selectedTileColor: Colors.blue.withOpacity(0.2),
-                            onTap: () {
-                              Navigator.pop(context);
-                              _clearFilter(field);
-                            },
-                          ),
-                          ...filteredValues.map((value) => ListTile(
-                            dense: true,
-                            title: Text(value, style: const TextStyle(color: Colors.white, fontSize: 12)),
-                            selected: currentFilter == value,
-                            selectedTileColor: Colors.blue.withOpacity(0.2),
-                            onTap: () {
-                              Navigator.pop(context);
-                              _applyFilter(field, value);
-                            },
-                          )),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(context),
-                  child: const Text('Cancel'),
-                ),
-              ],
-            );
-          },
-        );
-      },
+      anchorOffset: anchor,
+      values: _originalData.map((row) => row[field]?.toString() ?? ''),
+      currentFilter: _columnFilters[field],
     );
+    if (!result.changed) return;
+    _applyFilter(field, result.filter);
   }
 
   @override
@@ -1022,8 +947,20 @@ class ReentryHistoryGridState extends State<ReentryHistoryGrid> with AutomaticKe
                       size: 12,
                       color: Colors.blue,
                     ),
-                  if (hasFilter)
-                    const Icon(Icons.filter_list, size: 12, color: Colors.orange),
+                  // Embudo siempre visible; abre el filtro bajo la columna.
+                  GestureDetector(
+                    onTapDown: (details) => _showFilterDialog(
+                        context, field, col['header'] as String,
+                        details.globalPosition),
+                    child: Padding(
+                      padding: const EdgeInsets.only(left: 2),
+                      child: Icon(
+                        hasFilter ? Icons.filter_alt : Icons.filter_alt_outlined,
+                        size: 12,
+                        color: hasFilter ? Colors.blue : Colors.white38,
+                      ),
+                    ),
+                  ),
                 ],
               ),
             ),
