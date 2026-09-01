@@ -5336,6 +5336,7 @@ class ApiService {
     String? pcbNo,
     String? productionDateRaw,
     String? thicknessMm,
+    String? arraySize,
   }) async {
     try {
       final response = await http.post(
@@ -5351,6 +5352,7 @@ class ApiService {
           if (productionDateRaw != null)
             'production_date_raw': productionDateRaw,
           if (thicknessMm != null) 'thickness_mm': thicknessMm,
+          if (arraySize != null) 'array_size': arraySize,
         }),
       );
       final body = json.decode(response.body) as Map<String, dynamic>;
@@ -5372,6 +5374,7 @@ class ApiService {
     String? pcbNo,
     String? productionDateRaw,
     String? thicknessMm,
+    String? arraySize,
   }) async {
     try {
       final response = await http.patch(
@@ -5385,6 +5388,7 @@ class ApiService {
           if (productionDateRaw != null)
             'production_date_raw': productionDateRaw,
           if (thicknessMm != null) 'thickness_mm': thicknessMm,
+          if (arraySize != null) 'array_size': arraySize,
         }),
       );
       final body = json.decode(response.body) as Map<String, dynamic>;

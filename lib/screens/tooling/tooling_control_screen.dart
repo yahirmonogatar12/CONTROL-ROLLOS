@@ -288,9 +288,12 @@ class ToolingControlScreenState extends State<ToolingControlScreen> {
         TextEditingController(text: '${asset?['production_date_raw'] ?? ''}');
     final thickness =
         TextEditingController(text: '${asset?['thickness_mm'] ?? ''}');
-    for (final c in [pcbNo, prodDate, thickness]) {
+    final arraySize =
+        TextEditingController(text: '${asset?['array_size'] ?? 1}');
+    for (final c in [pcbNo, prodDate, thickness, arraySize]) {
       if (c.text == 'null') c.clear();
     }
+    if (arraySize.text.trim().isEmpty) arraySize.text = '1';
     var type = '${asset?['asset_type'] ?? 'METAL_MASK'}';
     var status = '${asset?['lifecycle_status'] ?? 'ACTIVE'}';
     if (!_statuses.contains(status)) status = 'ACTIVE';
@@ -377,6 +380,23 @@ class ToolingControlScreenState extends State<ToolingControlScreen> {
                       decoration: _fieldDecoration(),
                     ),
                     const SizedBox(height: 10),
+                    const Text('Array (piezas por impresión)',
+                        style: TextStyle(color: Colors.white70, fontSize: 11)),
+                    TextField(
+                      controller: arraySize,
+                      keyboardType: TextInputType.number,
+                      style: const TextStyle(color: Colors.white, fontSize: 12),
+                      decoration: _fieldDecoration(),
+                    ),
+                    const Padding(
+                      padding: EdgeInsets.only(top: 4),
+                      child: Text(
+                        'El plan se divide entre el array: 100 piezas con array 4 '
+                        'son 25 impresiones. Los squeegees se reparten esas 25.',
+                        style: TextStyle(color: Colors.white38, fontSize: 10),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
                   ],
                   const Text('Estado',
                       style: TextStyle(color: Colors.white70, fontSize: 11)),
@@ -447,6 +467,7 @@ class ToolingControlScreenState extends State<ToolingControlScreen> {
             pcbNo: type == 'METAL_MASK' ? pcbNo.text : null,
             productionDateRaw: type == 'METAL_MASK' ? prodDate.text : null,
             thicknessMm: type == 'METAL_MASK' ? thickness.text.trim() : null,
+            arraySize: type == 'METAL_MASK' ? arraySize.text.trim() : null,
           )
         : await ApiService.updateToolingAsset(
             '${asset['control_code']}',
@@ -456,6 +477,7 @@ class ToolingControlScreenState extends State<ToolingControlScreen> {
             pcbNo: type == 'METAL_MASK' ? pcbNo.text : null,
             productionDateRaw: type == 'METAL_MASK' ? prodDate.text : null,
             thicknessMm: type == 'METAL_MASK' ? thickness.text.trim() : null,
+            arraySize: type == 'METAL_MASK' ? arraySize.text.trim() : null,
           );
     if (!mounted) return;
     final ok = result['success'] == true;
@@ -818,6 +840,13 @@ class ToolingControlScreenState extends State<ToolingControlScreen> {
           color: _isMask(row) ? Colors.white : Colors.white38,
           fontSize: 11,
         ),
+      ),
+      _ToolingColumn(
+        label: 'Array',
+        key: 'array_size',
+        flex: 8,
+        alignment: Alignment.center,
+        value: (row) => _maskField(row, 'array_size'),
       ),
       _ToolingColumn(
         label: 'Espesor',

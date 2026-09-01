@@ -27,6 +27,26 @@ const SQUEEGEE_CODES = [
   'SQ340-CF-001', 'SQ340-CR-001', 'SQ440-DF-001', 'SQ440-DR-001'
 ];
 
+// Piezas que salen de una sola impresion. El plan viene en piezas, asi que las
+// impresiones -- que es lo que desgasta la mask -- son plan / array. Los PCB que
+// no aparecen aqui son de a una pieza por impresion (array 1).
+const PCB_ARRAY = {
+  EAX01882201: 2,
+  EAX65150407: 4,
+  EAX65150408: 5,
+  EAX65868914: 4,
+  EAX66932502: 2,
+  EAX67445308: 4,
+  EAX68065705: 5,
+  EAX69003501: 2,
+  EAX69003601: 2,
+  EAX69456901: 2,
+  EAX69577801: 4,
+  EAX69577803: 5,
+  EAX70205601: 2,
+  EAX70206402: 2,
+};
+
 const SCRAP_MASK_CODES = new Set([
   'MM1-1-001', 'MM3-2-001', 'MM3-6-001', 'MM5-7-001', 'MM5-18-001'
 ]);
@@ -125,6 +145,7 @@ function rows() {
       // "Usada"/"Recientes" del Excel solo describian el desgaste, no la
       // disponibilidad: ambas quedan ACTIVE y listas para usar. Solo SCRAP bloquea.
       lifecycleStatus: SCRAP_MASK_CODES.has(controlCode) ? 'SCRAP' : 'ACTIVE',
+      arraySize: PCB_ARRAY[MASK_DETAILS[controlCode]?.pcbNo] || 1,
       ...(MASK_DETAILS[controlCode] || {}),
     })),
     ...SQUEEGEE_CODES.map((controlCode) => ({
@@ -137,4 +158,4 @@ function rows() {
   ];
 }
 
-module.exports = { rows, MASK_DETAILS };
+module.exports = { rows, MASK_DETAILS, PCB_ARRAY };

@@ -1582,6 +1582,14 @@ async function createToolingControlTables() {
     'BIGINT NULL AFTER use_count'
   );
 
+  // El plan viene en piezas; lo que desgasta la mask son impresiones. Array = 1
+  // deja el conteo como estaba, asi que las masks sin dato no cambian.
+  await addColumnIfNotExists(
+    'tooling_asset_smd',
+    'array_size',
+    'INT NOT NULL DEFAULT 1 AFTER thickness_mm'
+  );
+
   // La impresora monta dos squeegees por plan; el segundo llego despues.
   await addColumnIfNotExists(
     'tooling_plan_assignment_smd',
@@ -1661,8 +1669,8 @@ async function createToolingControlTables() {
     INSERT INTO tooling_asset_smd (
       asset_type, control_code, asset_no, location_code,
       lifecycle_status, active, pcb_no, production_date_raw, side, thickness_mm,
-      source_file
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'DATOS METAL Y SQUEGUEE.xlsx')
+      array_size, source_file
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'DATOS METAL Y SQUEGUEE.xlsx')
     ON DUPLICATE KEY UPDATE
       asset_type = VALUES(asset_type),
       asset_no = COALESCE(tooling_asset_smd.asset_no, VALUES(asset_no)),
@@ -1671,6 +1679,9 @@ async function createToolingControlTables() {
       production_date_raw = COALESCE(tooling_asset_smd.production_date_raw, VALUES(production_date_raw)),
       side = COALESCE(tooling_asset_smd.side, VALUES(side)),
       thickness_mm = COALESCE(tooling_asset_smd.thickness_mm, VALUES(thickness_mm)),
+      -- Solo siembra el array de fabrica sobre el default; uno ajustado a mano
+      -- desde la pantalla no se pisa en cada arranque.
+      array_size = IF(tooling_asset_smd.array_size > 1, tooling_asset_smd.array_size, VALUES(array_size)),
       source_file = VALUES(source_file)
   `;
   for (const item of catalog) {
@@ -1685,6 +1696,7 @@ async function createToolingControlTables() {
       item.productionDate || null,
       item.side || null,
       item.thickness ?? null,
+      item.arraySize || 1,
     ]);
   }
   console.log(`✓ Catalogo de herramentales verificado (${catalog.length} codigos)`);

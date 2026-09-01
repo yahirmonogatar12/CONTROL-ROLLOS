@@ -23,10 +23,34 @@ function normalizePcbNo(value) {
   return raw.replace(/[\s-]+\d+(?:\.\d+)*$/, '').trim() || null;
 }
 
-// Limite 0/NULL = sin limite. El conteo sube por plan_count al autorizar.
+// Limite 0/NULL = sin limite. El conteo sube por impresiones al autorizar.
 function isLimitReached(asset) {
   const limit = Number(asset?.use_limit ?? 0);
   return limit > 0 && Number(asset?.use_count ?? 0) >= limit;
+}
+
+function normalizeArraySize(value) {
+  const parsed = Number(String(value ?? '').trim());
+  if (!Number.isFinite(parsed) || parsed < 1) return null;
+  return Math.floor(parsed);
+}
+
+// El plan viene en piezas, pero la mask se desgasta por impresion: un array de 4
+// saca 4 piezas de una pasada, asi que 100 piezas son 25 impresiones. Se redondea
+// hacia arriba porque una impresion parcial igual imprimio.
+function impresionesDePlan(planCount, arraySize) {
+  const piezas = Math.max(0, Number(planCount) || 0);
+  const array = normalizeArraySize(arraySize) || 1;
+  return Math.ceil(piezas / array);
+}
+
+// Los squeegees no son de un modelo: heredan las impresiones de la mask con la
+// que se escanearon y se las reparten. 25 entre 2 = 13 y 12, no 25 y 25.
+function repartirEntreSqueegees(impresiones, cuantos) {
+  if (cuantos <= 0) return [];
+  const base = Math.floor(impresiones / cuantos);
+  let resto = impresiones - base * cuantos;
+  return Array.from({ length: cuantos }, () => base + (resto-- > 0 ? 1 : 0));
 }
 
 function normalizeMysqlDate(value) {
@@ -71,7 +95,7 @@ exports.listAssets = async (req, res, next) => {
     }
     const [assets] = await pool.query(`
       SELECT id, asset_type, control_code, asset_no, location_code, pcb_no,
-             production_date_raw, side, lifecycle_status, thickness_mm,
+             production_date_raw, side, lifecycle_status, thickness_mm, array_size,
              use_count, use_limit, assignment_count, active, last_used_at, source_file
       FROM tooling_asset_smd
       ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
@@ -122,13 +146,22 @@ exports.createAsset = async (req, res, next) => {
     if (thickness !== '' && !Number.isFinite(Number(thickness))) {
       return res.status(400).json({ success: false, error: 'Espesor invalido' });
     }
+    // Solo la mask define el array: el squeegee lo hereda del plan que imprime.
+    const rawArray = String(body.array_size ?? '').trim();
+    let arraySize = 1;
+    if (isMask && rawArray !== '') {
+      arraySize = normalizeArraySize(rawArray);
+      if (arraySize === null) {
+        return res.status(400).json({ success: false, error: 'Array invalido: minimo 1' });
+      }
+    }
 
     await pool.query(`
       INSERT INTO tooling_asset_smd (
         asset_type, control_code, asset_no, location_code, lifecycle_status,
         use_limit, pcb_no, production_date_raw, thickness_mm, side,
-        active, source_file
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ALTA MANUAL')
+        array_size, active, source_file
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ALTA MANUAL')
     `, [
       assetType,
       controlCode,
@@ -142,6 +175,7 @@ exports.createAsset = async (req, res, next) => {
       isMask ? String(body.production_date_raw || '').trim() || null : null,
       isMask && thickness !== '' ? Number(thickness) : null,
       isMask ? String(body.side || '').trim().toUpperCase() || null : null,
+      arraySize,
       status === 'ACTIVE' ? 1 : 0,
     ]);
 
@@ -183,13 +217,22 @@ exports.updateAsset = async (req, res, next) => {
       return res.status(404).json({ success: false, error: 'Herramental no encontrado' });
     }
     const editingMask = current[0].asset_type === 'METAL_MASK';
-    const maskOnly = ['pcb_no', 'production_date_raw', 'side', 'thickness_mm']
+    const maskOnly = ['pcb_no', 'production_date_raw', 'side', 'thickness_mm', 'array_size']
       .filter((field) => body[field] !== undefined);
     if (!editingMask && maskOnly.length) {
       return res.status(400).json({
         success: false,
-        error: 'El Squeegee no ocupa PCB, fecha de produccion ni espesor',
+        error: 'El Squeegee no ocupa PCB, fecha de produccion, espesor ni array',
       });
+    }
+
+    if (body.array_size !== undefined) {
+      const arraySize = normalizeArraySize(body.array_size);
+      if (arraySize === null) {
+        return res.status(400).json({ success: false, error: 'Array invalido: minimo 1' });
+      }
+      sets.push('array_size = ?');
+      params.push(arraySize);
     }
 
     if (body.pcb_no !== undefined) {
@@ -361,7 +404,9 @@ exports.assignPlan = async (req, res, next) => {
   const metalMaskCode = normalizeCode(body.metal_mask_code || body.metalMaskCode);
   const squeegeeCode = normalizeCode(body.squeegee_code || body.squeegeeCode);
   const squeegeeCode2 = normalizeCode(body.squeegee_code_2 || body.squeegeeCode2);
-  const plannedUses = Math.max(0, Number(body.planned_uses ?? body.plan_count ?? body.planCount) || 0);
+  // Piezas del plan. Las impresiones salen de dividirlas entre el array de la
+  // mask, que solo se conoce despues de leerla.
+  const planCount = Math.max(0, Number(body.plan_count ?? body.planCount ?? body.planned_uses) || 0);
   const workingDate = normalizeMysqlDate(body.working_date || body.workingDate);
   const assignedAt = normalizeMysqlDateTime(body.assigned_at || body.assignedAt);
   if (!eventId || !planId || !metalMaskCode || !squeegeeCode || !workingDate) {
@@ -372,7 +417,7 @@ exports.assignPlan = async (req, res, next) => {
   try {
     await connection.beginTransaction();
     const [assets] = await connection.query(`
-      SELECT control_code, asset_type, lifecycle_status, active, use_count, use_limit
+      SELECT control_code, asset_type, lifecycle_status, active, use_count, use_limit, array_size
       FROM tooling_asset_smd WHERE control_code IN (?, ?, ?)
     `, [metalMaskCode, squeegeeCode, squeegeeCode2 || squeegeeCode]);
     const mask = assets.find((a) => a.control_code === metalMaskCode && a.asset_type === 'METAL_MASK');
@@ -398,6 +443,23 @@ exports.assignPlan = async (req, res, next) => {
       throw error;
     }
 
+    // El array es de la mask: los squeegees no son de un modelo y heredan sus
+    // impresiones. Si el plan trae ambos lados, cada mask se escanea aparte y
+    // cada una carga sus impresiones completas.
+    //
+    // El edge ya resolvio ambos numeros al escanear; si los manda se aplican tal
+    // cual, porque recalcular aqui divergiria si el array cambio entre medias.
+    // Una alta manual o un cliente viejo solo trae plan_count: ahi se calcula.
+    const impresionesEdge = Number(body.planned_uses ?? body.plannedUses);
+    const impresiones = Number.isFinite(impresionesEdge) && impresionesEdge >= 0
+      ? Math.floor(impresionesEdge)
+      : impresionesDePlan(planCount, mask.array_size);
+    const squeegeeCodes = squeegeeCode2 ? [squeegeeCode, squeegeeCode2] : [squeegeeCode];
+    const repartoEdge = body.squeegee_uses || body.squeegeeUses;
+    const porSqueegee = repartoEdge && typeof repartoEdge === 'object'
+      ? squeegeeCodes.map((code) => Math.max(0, Number(repartoEdge[code]) || 0))
+      : repartirEntreSqueegees(impresiones, squeegeeCodes.length);
+
     const [insert] = await connection.query(`
       INSERT IGNORE INTO tooling_plan_assignment_smd (
         event_id, plan_source, plan_id, lot_no, part_no, model_code, line_code,
@@ -413,11 +475,11 @@ exports.assignPlan = async (req, res, next) => {
       body.line_code || body.lineId || 'SMT',
       workingDate,
       body.shift || null,
-      Math.max(0, Number(body.plan_count ?? body.planCount) || 0),
+      planCount,
       metalMaskCode,
       squeegeeCode,
       squeegeeCode2 || null,
-      plannedUses,
+      impresiones,
       assignedAt,
     ]);
 
@@ -426,23 +488,22 @@ exports.assignPlan = async (req, res, next) => {
         UPDATE tooling_asset_smd SET use_count = use_count + ?,
           assignment_count = assignment_count + 1, last_used_at = NOW()
         WHERE control_code = ?
-      `, [plannedUses, metalMaskCode]);
-      await connection.query(`
-        UPDATE tooling_asset_smd SET use_count = use_count + ?,
-          assignment_count = assignment_count + 1,
-          last_used_at = NOW() WHERE control_code = ?
-      `, [plannedUses, squeegeeCode]);
-      if (squeegeeCode2) {
+      `, [impresiones, metalMaskCode]);
+      for (let i = 0; i < squeegeeCodes.length; i++) {
         await connection.query(`
           UPDATE tooling_asset_smd SET use_count = use_count + ?,
             assignment_count = assignment_count + 1,
             last_used_at = NOW() WHERE control_code = ?
-        `, [plannedUses, squeegeeCode2]);
+        `, [porSqueegee[i], squeegeeCodes[i]]);
       }
     }
     await connection.commit();
     res.status(insert.affectedRows > 0 ? 201 : 200).json({
       success: true,
+      planCount,
+      arraySize: normalizeArraySize(mask.array_size) || 1,
+      impresiones,
+      squeegeeUses: Object.fromEntries(squeegeeCodes.map((c, i) => [c, porSqueegee[i]])),
       created: insert.affectedRows > 0,
       message: insert.affectedRows > 0 ? 'Herramentales asignados al plan' : 'Plan ya contabilizado',
     });
@@ -455,4 +516,7 @@ exports.assignPlan = async (req, res, next) => {
   }
 };
 
-exports._test = { isLimitReached, LIFECYCLE_STATUSES, normalizePcbNo };
+exports._test = {
+  isLimitReached, LIFECYCLE_STATUSES, normalizePcbNo,
+  normalizeArraySize, impresionesDePlan, repartirEntreSqueegees,
+};
