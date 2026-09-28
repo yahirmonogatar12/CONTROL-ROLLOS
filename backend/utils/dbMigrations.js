@@ -831,7 +831,7 @@ async function createPcbInventoryScanTable() {
         inventory_date DATE NOT NULL,
         scanned_original VARCHAR(180) NOT NULL,
         scanned_original_norm VARCHAR(180) NOT NULL,
-        assy_type VARCHAR(20) NULL,
+        assy_type VARCHAR(64) NULL,
         pcb_part_no VARCHAR(11) NOT NULL,
         modelo VARCHAR(120) NOT NULL DEFAULT 'N/A',
         proceso ENUM('SMD','IMD','ASSY') NOT NULL DEFAULT 'SMD',
@@ -1744,12 +1744,15 @@ async function runMigrations() {
   await createScrapMotivosTable();
   await createScrapRecordsTable();
   await createScrapRecordEditsTable();
+  await widenAssyTypeColumns();
   await createSolderPasteLifecycleTables();
   await createToolingControlTables();
   await migrateScrapAreaColumn();
   await addColumnIfNotExists('scrap_records', 'cantidad', 'INT NOT NULL DEFAULT 1 AFTER usuario_registro');
   await addColumnIfNotExists('scrap_records', 'raw_barcode', 'VARCHAR(180) NULL AFTER part_no');
   await addColumnIfNotExists('scrap_records', 'proceso', 'VARCHAR(30) NULL AFTER area');
+  await addColumnIfNotExists('scrap_records', 'cliente', 'VARCHAR(30) NULL AFTER scanned_original_norm');
+  await addColumnIfNotExists('scrap_records', 'ubicacion', 'VARCHAR(100) NULL AFTER proceso');
   await addColumnIfNotExists('scrap_record_edits', 'old_raw_barcode', 'VARCHAR(180) NULL AFTER new_part_no');
   await addColumnIfNotExists('scrap_record_edits', 'new_raw_barcode', 'VARCHAR(180) NULL AFTER old_raw_barcode');
   await addColumnIfNotExists('scrap_record_edits', 'old_proceso', 'VARCHAR(30) NULL AFTER new_area');
@@ -1977,11 +1980,13 @@ async function createScrapRecordsTable() {
         id BIGINT AUTO_INCREMENT PRIMARY KEY,
         scanned_original VARCHAR(180) NOT NULL,
         scanned_original_norm VARCHAR(180) NOT NULL,
-        assy_type VARCHAR(20) NULL,
+        cliente VARCHAR(30) NULL,
+        assy_type VARCHAR(64) NULL,
         part_no VARCHAR(50) NULL,
         modelo VARCHAR(120) NOT NULL DEFAULT 'N/A',
         area VARCHAR(30) NOT NULL,
         proceso VARCHAR(30) NULL,
+        ubicacion VARCHAR(100) NULL,
         motivo_scrap_id INT NULL,
         motivo_scrap_texto VARCHAR(200) NULL,
         comentarios TEXT NULL,
@@ -2011,8 +2016,8 @@ async function createScrapRecordEditsTable() {
         new_scanned_original VARCHAR(180) NULL,
         old_scanned_original_norm VARCHAR(180) NULL,
         new_scanned_original_norm VARCHAR(180) NULL,
-        old_assy_type VARCHAR(20) NULL,
-        new_assy_type VARCHAR(20) NULL,
+        old_assy_type VARCHAR(64) NULL,
+        new_assy_type VARCHAR(64) NULL,
         old_part_no VARCHAR(50) NULL,
         new_part_no VARCHAR(50) NULL,
         old_modelo VARCHAR(120) NULL,
@@ -2042,6 +2047,34 @@ async function createScrapRecordEditsTable() {
   } catch (err) {
     console.log('Nota: La tabla scrap_record_edits puede ya existir:', err.message);
   }
+}
+
+// assy_type se rellena desde raw.model cuando el codigo se escanea sin ';'
+// (entrada manual). raw.model es VARCHAR(64) y assy_type nacio VARCHAR(20), asi
+// que cualquier modelo de nombre largo tumbaba el guardado con ER_DATA_TOO_LONG
+// ("VF_Better R Ice maker Sub PCBA", 30 caracteres). Se iguala al origen en vez
+// de truncar: el nombre del modelo es el dato, no un adorno.
+async function widenAssyTypeColumns() {
+  const targets = [
+    ['scrap_records', ['assy_type']],
+    ['scrap_record_edits', ['old_assy_type', 'new_assy_type']],
+    ['pcb_inventory_scan_smd', ['assy_type']],
+    // La crea Control_produccion; si esta en esta base se amplia igual.
+    ['pcb_inventory_scan_prod', ['assy_type']],
+  ];
+  for (const [table, columns] of targets) {
+    for (const column of columns) {
+      const [rows] = await pool.query(`
+        SELECT CHARACTER_MAXIMUM_LENGTH AS largo
+        FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?
+      `, [table, column]);
+      if (!rows.length || Number(rows[0].largo) >= 64) continue;
+      await pool.query(`ALTER TABLE \`${table}\` MODIFY COLUMN \`${column}\` VARCHAR(64) NULL`);
+      console.log(`  ${table}.${column} ampliada a VARCHAR(64)`);
+    }
+  }
+  console.log('\u2713 Columnas assy_type verificadas (VARCHAR(64), igual que raw.model)');
 }
 
 // Migrar columna area de scrap_records de ENUM a VARCHAR

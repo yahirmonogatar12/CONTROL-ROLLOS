@@ -33,7 +33,7 @@ class _ScrapEditPanelState extends State<ScrapEditPanel> {
   late final TextEditingController _reasonController;
 
   String _selectedArea = 'SMD';
-  String _selectedProceso = 'SMT';
+  String _selectedProceso = 'SMD';
   int? _selectedMotivoId;
   String? _selectedMotivoText;
   bool _isSaving = false;
@@ -56,18 +56,12 @@ class _ScrapEditPanelState extends State<ScrapEditPanel> {
     'IPM',
     'COATING',
     'PROVEEDOR',
-    'COMPONENTE',
   ];
   static const Map<String, String> _procesos = {
-    'CALIDAD': 'Calidad',
-    'ASSY': 'Assy',
-    'IMD': 'IMD',
     'SMD': 'SMD',
-    'SMT': 'SMT',
-    'MANTENIMIENTO': 'Mantenimiento',
-    'COATING': 'Coating',
-    'MICOM': 'Micom',
-    'COMPONENTE': 'Componente',
+    'IMD': 'IMD',
+    'ASSY': 'ASSY',
+    'COMPONENTE': 'COMPONENTE',
   };
 
   bool get _canEdit => AuthService.canEditScrapHistory;
@@ -99,8 +93,8 @@ class _ScrapEditPanelState extends State<ScrapEditPanel> {
     final area = widget.rowData['area']?.toString() ?? 'SMD';
     _selectedArea = _areas.contains(area) ? area : 'SMD';
     final proceso =
-        widget.rowData['proceso']?.toString().toUpperCase() ?? 'SMT';
-    _selectedProceso = _procesos.containsKey(proceso) ? proceso : 'SMT';
+        widget.rowData['proceso']?.toString().toUpperCase() ?? 'SMD';
+    _selectedProceso = _procesos.containsKey(proceso) ? proceso : 'SMD';
     _selectedMotivoId = _asInt(widget.rowData['motivo_scrap_id']);
     _selectedMotivoText = widget.rowData['motivo_scrap_texto']?.toString();
   }

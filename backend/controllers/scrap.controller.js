@@ -1,6 +1,6 @@
 /**
  * Scrap Controller - Registro de scrap por escaneo QR
- * Areas: SMD, IMD, Assy, Componente, Mantenimiento
+ * Procesos: SMD, IMD, ASSY, COMPONENTE
  * QR Format: TOKEN0;ASSY_TYPE;PART_NO;TOKEN3 (mismo formato PCB)
  */
 
@@ -139,14 +139,13 @@ async function getScrapEditUser(userId, db = pool) {
   return { allowed: permissions.length > 0, user };
 }
 
-const VALID_AREAS = ['M1', 'M2', 'M3', 'M4', 'D1', 'D2', 'D3', 'CALIDAD', 'MANTENIMIENTO', 'SMD', 'IMD', 'IPM', 'COATING', 'PROVEEDOR', 'COMPONENTE'];
-const VALID_PROCESOS = ['CALIDAD', 'ASSY', 'IMD', 'SMD', 'SMT', 'MANTENIMIENTO', 'COATING', 'MICOM', 'COMPONENTE'];
-const COMPONENT_CAPTURE_AREAS = new Set(['COMPONENTE', 'IPM']);
+const VALID_AREAS = ['M1', 'M2', 'M3', 'M4', 'D1', 'D2', 'D3', 'CALIDAD', 'MANTENIMIENTO', 'SMD', 'IMD', 'IPM', 'COATING', 'PROVEEDOR'];
+const VALID_PROCESOS = ['SMD', 'IMD', 'ASSY', 'COMPONENTE'];
+const COMPONENT_CAPTURE_AREAS = new Set(['IPM']);
 const COMPONENT_CAPTURE_PROCESSES = new Set(['COMPONENTE']);
 
-function isComponentCapture(area, proceso) {
-  return COMPONENT_CAPTURE_AREAS.has((area || '').toString().toUpperCase()) ||
-    COMPONENT_CAPTURE_PROCESSES.has((proceso || '').toString().toUpperCase());
+function isComponentCapture(_area, proceso) {
+  return COMPONENT_CAPTURE_PROCESSES.has((proceso || '').toString().toUpperCase());
 }
 
 // ============================================
@@ -252,9 +251,13 @@ exports.scan = async (req, res, next) => {
       cantidad,
       raw_barcode,
       fecha_registro,
+      cliente,
+      ubicacion,
     } = req.body;
     const qtyVal = Math.max(1, parseInt(cantidad) || 1);
     const procesoVal = (proceso || '').toString().trim().toUpperCase();
+    const clienteVal = (cliente || '').toString().trim().toUpperCase() || null;
+    const ubicacionVal = (ubicacion || '').toString().trim().slice(0, 100) || null;
     const registrationDate = resolveScrapRegistrationDate(fecha_registro);
 
     if (!scanned_code || !scanned_code.trim()) {
@@ -350,17 +353,19 @@ exports.scan = async (req, res, next) => {
 
     const [result] = await pool.query(
       `INSERT INTO scrap_records
-        (scanned_original, scanned_original_norm, assy_type, part_no, raw_barcode, modelo, area, proceso, motivo_scrap_id, motivo_scrap_texto, comentarios, usuario_registro, fecha_registro, cantidad)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        (scanned_original, scanned_original_norm, cliente, assy_type, part_no, raw_barcode, modelo, area, proceso, ubicacion, motivo_scrap_id, motivo_scrap_texto, comentarios, usuario_registro, fecha_registro, cantidad)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         codeFields.scannedOriginal,
         codeFields.scannedOriginalNorm,
+        clienteVal,
         codeFields.assyType,
         codeFields.partNo,
         rawBarcodeVal,
         codeFields.modelo,
         area,
         procesoVal,
+        ubicacionVal,
         motivo_scrap_id,
         motivoTexto,
         comentarios || null,
@@ -777,7 +782,10 @@ exports.autocomplete = async (req, res, next) => {
       [searchTerm, searchTerm, searchTerm]
     );
 
-    const rows = isComponentCapture(area, proceso)
+    const prioritizeComponents =
+      COMPONENT_CAPTURE_PROCESSES.has((proceso || '').toString().toUpperCase()) ||
+      COMPONENT_CAPTURE_AREAS.has(area);
+    const rows = prioritizeComponents
       ? [...componentRows, ...pcbRows]
       : [...pcbRows, ...componentRows];
 

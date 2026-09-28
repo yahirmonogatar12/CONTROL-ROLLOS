@@ -4484,6 +4484,17 @@ class ApiService {
     }
   }
 
+  // GET - Historial completo de una PCB (acepta QR con ';' o barcode EBR)
+  static Future<Map<String, dynamic>> getPcbHistory(String scannedCode) async {
+    try {
+      final response = await http.get(Uri.parse(
+          '$baseUrl/pcb-inventory/history?codigo=${Uri.encodeQueryComponent(scannedCode)}'));
+      return Map<String, dynamic>.from(json.decode(response.body));
+    } catch (e) {
+      return {'success': false, 'message': e.toString()};
+    }
+  }
+
   // POST - Registrar escaneo de PCB (ENTRADA, SALIDA o SCRAP)
   // area: INVENTARIO | INVENTARIO_REPARACION | REPARACION
   // proceso: SMD | IMD | ASSY
@@ -4963,6 +4974,8 @@ class ApiService {
     String? usuario,
     int cantidad = 1,
     String? rawBarcode,
+    String? cliente,
+    String? ubicacion,
   }) async {
     try {
       final response = await http.post(
@@ -4978,6 +4991,8 @@ class ApiService {
           'usuario': usuario,
           'cantidad': cantidad,
           'raw_barcode': rawBarcode,
+          'cliente': cliente,
+          'ubicacion': ubicacion,
         }),
       );
       final body = json.decode(response.body);

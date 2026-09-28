@@ -351,8 +351,9 @@ exports.locationSearch = async (req, res, next) => {
       return res.status(400).json({ error: 'numero_parte es requerido' });
     }
     
-    let nparte = numero_parte.trim().toUpperCase();
-    
+    const rawTerm = numero_parte.trim().toUpperCase();
+    let nparte = rawTerm;
+
     // Si viene con formato barcode NPARTE-LOTE, extraer solo NPARTE
     if (nparte.includes('-')) {
       nparte = nparte.split('-')[0];
@@ -366,16 +367,17 @@ exports.locationSearch = async (req, res, next) => {
       WHERE numero_parte = ?
     `, [nparte]);
     
-    // Si no hay match exacto, buscar coincidencias parciales
+    // Si no hay match exacto, buscar coincidencias parciales por numero de parte o spec
+    // (spec usa el termino completo: puede traer '-').
     if (matRows.length === 0) {
       [matRows] = await pool.query(`
-        SELECT numero_parte, ubicacion_rollos, ubicacion_material, 
+        SELECT numero_parte, ubicacion_rollos, ubicacion_material,
                especificacion_material AS especificacion, vendedor
         FROM materiales
-        WHERE numero_parte LIKE ?
+        WHERE numero_parte LIKE ? OR especificacion_material LIKE ?
         ORDER BY numero_parte
         LIMIT 20
-      `, [`%${nparte}%`]);
+      `, [`%${nparte}%`, `%${rawTerm}%`]);
     }
     
     if (matRows.length === 0) {

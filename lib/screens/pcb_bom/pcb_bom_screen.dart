@@ -553,58 +553,61 @@ class _PcbBomScreenState extends State<PcbBomScreen>
             showCheckbox: false,
           ),
           Expanded(
-            child: ListView.builder(
-              itemCount: _filteredRows.length,
-              itemBuilder: (context, index) {
-                final row = _filteredRows[index];
-                final selected = index == _selectedIndex;
-                return GestureDetector(
-                  onTap: () => setState(() => _selectedIndex = index),
-                  onDoubleTap: () {
-                    _modelController.text = (row['modelo'] ?? '').toString();
-                    _queryController.clear();
-                    _search();
-                  },
-                  child: Container(
-                    height: 32,
-                    color: selected
-                        ? AppColors.gridSelectedRow
-                        : index.isEven
-                            ? AppColors.gridRowEven
-                            : AppColors.gridRowOdd,
-                    child: Row(
-                      children: List.generate(_fields.length, (col) {
-                        final field = _fields[col];
-                        final value = _formatCell(field, row[field]);
-                        return Expanded(
-                          flex: getColumnFlex(col),
-                          child: Container(
-                            alignment: Alignment.centerLeft,
-                            padding: const EdgeInsets.symmetric(horizontal: 5),
-                            decoration: const BoxDecoration(
-                              border: Border(
-                                right: BorderSide(
-                                  color: Color(0x223C8DBC),
-                                  width: 1,
+            child: SelectionArea(
+              child: ListView.builder(
+                itemCount: _filteredRows.length,
+                itemBuilder: (context, index) {
+                  final row = _filteredRows[index];
+                  final selected = index == _selectedIndex;
+                  return GestureDetector(
+                    onTap: () => setState(() => _selectedIndex = index),
+                    onDoubleTap: () {
+                      _modelController.text = (row['modelo'] ?? '').toString();
+                      _queryController.clear();
+                      _search();
+                    },
+                    child: Container(
+                      height: 32,
+                      color: selected
+                          ? AppColors.gridSelectedRow
+                          : index.isEven
+                              ? AppColors.gridRowEven
+                              : AppColors.gridRowOdd,
+                      child: Row(
+                        children: List.generate(_fields.length, (col) {
+                          final field = _fields[col];
+                          final value = _formatCell(field, row[field]);
+                          return Expanded(
+                            flex: getColumnFlex(col),
+                            child: Container(
+                              alignment: Alignment.centerLeft,
+                              padding:
+                                  const EdgeInsets.symmetric(horizontal: 5),
+                              decoration: const BoxDecoration(
+                                border: Border(
+                                  right: BorderSide(
+                                    color: Color(0x223C8DBC),
+                                    width: 1,
+                                  ),
                                 ),
                               ),
-                            ),
-                            child: Text(
-                              value,
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 11,
+                              child: Text(
+                                value,
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 11,
+                                ),
+                                overflow: TextOverflow.ellipsis,
+                                maxLines: 1,
                               ),
-                              overflow: TextOverflow.ellipsis,
-                              maxLines: 1,
                             ),
-                          ),
-                        );
-                      }),
+                          );
+                        }),
+                      ),
                     ),
-                  ),
-                );
-              },
+                  );
+                },
+              ),
             ),
           ),
         ],
@@ -641,37 +644,39 @@ class _PcbBomScreenState extends State<PcbBomScreen>
                 style: const TextStyle(color: Colors.white38, fontSize: 12),
               ),
             )
-          : Row(
-              children: [
-                Expanded(
-                  flex: 4,
-                  child: _detailBlock(
-                    tr('pcb_bom_spec'),
-                    (row['especificacion_material'] ?? '').toString(),
+          : SelectionArea(
+              child: Row(
+                children: [
+                  Expanded(
+                    flex: 4,
+                    child: _detailBlock(
+                      tr('pcb_bom_spec'),
+                      (row['especificacion_material'] ?? '').toString(),
+                    ),
                   ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  flex: 3,
-                  child: _detailBlock(
-                    tr('pcb_bom_location'),
-                    (row['ubicacion'] ?? '').toString(),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    flex: 3,
+                    child: _detailBlock(
+                      tr('pcb_bom_location'),
+                      (row['ubicacion'] ?? '').toString(),
+                    ),
                   ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  flex: 3,
-                  child: _detailBlock(
-                    tr('pcb_bom_substitute'),
-                    [
-                      row['material_sustituto'],
-                      row['material_original'],
-                    ]
-                        .where((value) => (value ?? '').toString().isNotEmpty)
-                        .join(' / '),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    flex: 3,
+                    child: _detailBlock(
+                      tr('pcb_bom_substitute'),
+                      [
+                        row['material_sustituto'],
+                        row['material_original'],
+                      ]
+                          .where((value) => (value ?? '').toString().isNotEmpty)
+                          .join(' / '),
+                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
     );
   }

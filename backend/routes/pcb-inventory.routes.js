@@ -26,6 +26,9 @@ router.get('/stock-detail', ctrl.getStockDetail);
 // GET /api/pcb-inventory/previous-repair - Ultimo ciclo reparado de una PCB
 router.get('/previous-repair', ctrl.getPreviousRepair);
 
+// GET /api/pcb-inventory/history - Historial completo de una PCB (QR o barcode)
+router.get('/history', ctrl.getHistory);
+
 // DELETE /api/pcb-inventory/scan/:id - Eliminar un escaneo
 router.delete('/scan/:id', ctrl.deleteScan);
 

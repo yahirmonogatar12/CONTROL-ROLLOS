@@ -1,16 +1,16 @@
 ; ============================================
 ; Inno Setup Script - Control inventario SMD
-; Versión: 2.2.4
+; Versión: 2.2.6
 ; Generado automáticamente por build.ps1
 ; ============================================
 
 #define MyAppName "Control inventario SMD"
-#define MyAppVersion "2.2.4"
+#define MyAppVersion "2.2.6"
 #define MyAppPublisher "MES"
 #define MyAppExeName "control_inventario_smd.exe"
 #define MyAppIcon "C:\Users\yahir\OneDrive\Escritorio\MES\Control_inventario_SMD\logoLogIn.ico"
-#define SourceDir "C:\Users\yahir\OneDrive\Escritorio\MES\Control_inventario_SMD\dist\Control_inventario_SMD-v2.2.4"
-#define OutputDir "C:\Users\yahir\AppData\Local\Temp\Control_inventario_SMD-installer-34580-84eb8d29daa84213a092dae13a5c0dce"
+#define SourceDir "C:\Users\yahir\OneDrive\Escritorio\MES\Control_inventario_SMD\dist\Control_inventario_SMD-v2.2.6"
+#define OutputDir "C:\Users\yahir\AppData\Local\Temp\Control_inventario_SMD-installer-40972-6a99621c9a0e4bc0951beb21db2f6907"
 
 [Setup]
 AppId={{F3A1D7E9-5B42-4C86-A9F0-7E3B1C8D2A45}
@@ -21,7 +21,7 @@ DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 AllowNoIcons=yes
 OutputDir={#OutputDir}
-OutputBaseFilename=Control_inventario_SMD_Setup_v2.2.4
+OutputBaseFilename=Control_inventario_SMD_Setup_v2.2.6
 SetupIconFile={#MyAppIcon}
 Compression=lzma2/ultra64
 SolidCompression=yes

@@ -27,9 +27,8 @@ test('clientes anteriores sin fecha continúan registrando con la fecha actual',
   assert.match(result.dateTime, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
 });
 
-test('identifica componentes por área o por proceso', () => {
-  assert.equal(isComponentCapture('COMPONENTE', 'SMT'), true);
-  assert.equal(isComponentCapture('IPM', 'SMT'), true);
+test('identifica componentes por proceso para la regla de duplicados', () => {
+  assert.equal(isComponentCapture('IPM', 'SMD'), false);
   assert.equal(isComponentCapture('M1', 'COMPONENTE'), true);
-  assert.equal(isComponentCapture('M1', 'SMT'), false);
+  assert.equal(isComponentCapture('M1', 'SMD'), false);
 });

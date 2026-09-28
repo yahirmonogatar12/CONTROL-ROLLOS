@@ -15,6 +15,7 @@ import 'package:material_warehousing_flutter/core/services/auth_service.dart';
 import 'package:material_warehousing_flutter/core/services/excel_export_service.dart';
 import 'package:material_warehousing_flutter/core/widgets/field_decoration.dart';
 import 'package:material_warehousing_flutter/core/widgets/resizable_grid_header.dart';
+import 'package:material_warehousing_flutter/screens/pcb_inventario/pcb_history_dialog.dart';
 import 'package:xml/xml.dart';
 
 class PcbInventarioScreen extends StatefulWidget {
@@ -260,7 +261,8 @@ class PcbInventarioScreenState extends State<PcbInventarioScreen>
     for (final entry in _columnFilters.entries) {
       if (entry.value != null && entry.value!.isNotEmpty) {
         data = data
-            .where((r) => ColumnFilter.matches((r[entry.key] ?? '').toString().trim(), entry.value))
+            .where((r) => ColumnFilter.matches(
+                (r[entry.key] ?? '').toString().trim(), entry.value))
             .toList();
       }
     }
@@ -284,7 +286,8 @@ class PcbInventarioScreenState extends State<PcbInventarioScreen>
     for (final entry in _columnFilters.entries) {
       if (entry.value != null && entry.value!.isNotEmpty) {
         data = data
-            .where((r) => ColumnFilter.matches((r[entry.key] ?? '').toString().trim(), entry.value))
+            .where((r) => ColumnFilter.matches(
+                (r[entry.key] ?? '').toString().trim(), entry.value))
             .toList();
       }
     }
@@ -583,6 +586,24 @@ class PcbInventarioScreenState extends State<PcbInventarioScreen>
           Text(tr('pcb_include_zero_stock'),
               style: const TextStyle(fontSize: 14, color: Colors.white)),
           const Spacer(),
+          SizedBox(
+            height: 32,
+            child: ElevatedButton.icon(
+              onPressed: () => showDialog<void>(
+                context: context,
+                builder: (_) => PcbHistoryDialog(tr: tr),
+              ),
+              icon: const Icon(Icons.history, size: 15),
+              label: Text(tr('pcb_history_button'),
+                  style: const TextStyle(fontSize: 12)),
+              style: ElevatedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                backgroundColor: AppColors.headerTab,
+                foregroundColor: Colors.white,
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
           SizedBox(
             height: 32,
             child: ElevatedButton.icon(

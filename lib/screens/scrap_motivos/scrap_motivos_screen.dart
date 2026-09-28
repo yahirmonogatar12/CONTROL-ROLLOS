@@ -62,6 +62,7 @@ class ScrapMotivosScreenState extends State<ScrapMotivosScreen>
       _applyMotivoFilters();
     });
   }
+
   bool _isLoading = false;
   bool _showInactive = false;
 
@@ -345,7 +346,8 @@ class ScrapMotivosScreenState extends State<ScrapMotivosScreen>
                                 : AppColors.gridRowOdd,
                             border: Border(
                                 bottom: BorderSide(
-                                    color: AppColors.border.withOpacity(0.3))),
+                                    color: AppColors.border
+                                        .withValues(alpha: 0.3))),
                           ),
                           child: Row(
                             children: [
@@ -361,7 +363,7 @@ class ScrapMotivosScreenState extends State<ScrapMotivosScreen>
                                         : Icons.cancel,
                                     color: isActive
                                         ? Colors.green
-                                        : Colors.red.withOpacity(0.5),
+                                        : Colors.red.withValues(alpha: 0.5),
                                     size: 16,
                                   ),
                                 ),

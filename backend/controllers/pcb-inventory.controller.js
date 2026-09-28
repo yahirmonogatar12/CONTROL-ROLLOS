@@ -79,6 +79,20 @@ function getEquivalentNormalizedCodes(scannedOriginalNorm) {
 function parseScannedCode(code) {
   const parts = code.split(';').map(s => s.trim()).filter(Boolean);
   const normalizedParts = parts.map(part => part.toUpperCase());
+
+  // Formato 2 (igual que Control_produccion): barcode continuo, ej. EBR86093798922509201401.
+  // No. parte = EBR + 8 digitos al inicio.
+  const ebrMatch = parts.length === 1 && normalizedParts[0].match(/^(EBR\d{8})(.*)$/);
+  if (ebrMatch) {
+    return {
+      token0: null,
+      assy_type: null,
+      pcb_part_no: ebrMatch[1],
+      token3: ebrMatch[2] || null,
+    };
+  }
+
+  // Formato 1: QR con ';' (TOKEN0;ASSY_TYPE;PART_NO;TOKEN3)
   return {
     token0: normalizedParts[0] || null,
     assy_type: normalizedParts[1] || null,
@@ -475,7 +489,7 @@ exports.scan = async (req, res, next) => {
     if (!parsedPartNo) {
       return res.status(400).json({
         success: false,
-        message: `El 3er token debe ser un EBR valido (formato EBR########). Recibido: "${parsed.pcb_part_no || ''}"`,
+        message: `Codigo invalido: se espera QR con EBR en el 3er token o barcode que inicie con EBR########. Recibido: "${parsed.pcb_part_no || scanned_code.trim()}"`,
         code: 'INVALID_PCB_PART_NO'
       });
     }
@@ -1498,6 +1512,127 @@ exports.getPreviousRepair = async (req, res, next) => {
   }
 };
 
+function buildPcbHistory(movements, defectRows) {
+  const defectsByEntry = new Map();
+  for (const defect of defectRows) {
+    if (!defectsByEntry.has(defect.entry_scan_id)) defectsByEntry.set(defect.entry_scan_id, []);
+    defectsByEntry.get(defect.entry_scan_id).push(defect);
+  }
+
+  const items = movements.map(movement => {
+    const isEntry = movement.tipo_movimiento === 'ENTRADA';
+    // Defectos van en la entrada del ciclo; registros legacy solo traen defect_type en la fila.
+    let defects = isEntry ? (defectsByEntry.get(movement.id) || []) : [];
+    if (defects.length === 0 && movement.defect_type && (isEntry || !movement.source_entry_id)) {
+      defects = [{
+        sort_order: 1,
+        defect_type: movement.defect_type,
+        component_location: movement.component_location || null,
+        etapa_deteccion: movement.etapa_deteccion || null,
+        defect_source_area: movement.defect_source_area || null,
+        repair_status: null,
+        repaired_at: null,
+      }];
+    }
+    return {
+      id: movement.id,
+      tipo_movimiento: movement.tipo_movimiento,
+      area: movement.area,
+      proceso: movement.proceso,
+      pcb_part_no: movement.pcb_part_no,
+      modelo: movement.modelo,
+      qty: movement.qty,
+      array_count: movement.array_count,
+      array_role: movement.array_role,
+      array_group_code: movement.array_group_code,
+      source_entry_id: movement.source_entry_id,
+      comentarios: movement.comentarios,
+      scanned_by: movement.scanned_by,
+      inventory_date: movement.inventory_date,
+      created_at: movement.created_at,
+      is_repair: isRepairArea(movement.area),
+      defects,
+    };
+  });
+
+  const count = tipo => items.filter(item => item.tipo_movimiento === tipo).length;
+  const last = items[items.length - 1] || null;
+  return {
+    pcb_part_no: last?.pcb_part_no || null,
+    modelo: last?.modelo || null,
+    summary: {
+      total_entradas: count('ENTRADA'),
+      total_salidas: count('SALIDA'),
+      total_scrap: count('SCRAP'),
+      repair_cycles: items.filter(item => item.tipo_movimiento === 'ENTRADA' && item.is_repair).length,
+      total_defects: items.reduce((sum, item) => sum + item.defects.length, 0),
+      last_movement: last ? { tipo_movimiento: last.tipo_movimiento, area: last.area, created_at: last.created_at } : null,
+    },
+    movements: items,
+  };
+}
+
+// ============================================
+// GET /api/pcb-inventory/history?codigo=...
+// Historial completo de una PCB. Acepta QR con ';' o barcode continuo EBR.
+// ============================================
+exports.getHistory = async (req, res, next) => {
+  try {
+    const rawCode = (req.query.codigo || '').toString().trim();
+    const scannedOriginalNorm = normalizeCode(rawCode);
+    if (!scannedOriginalNorm) {
+      return res.status(400).json({
+        success: false,
+        message: 'El codigo de PCB es requerido',
+        code: 'MISSING_PCB_CODE',
+      });
+    }
+    if (!parsePcbPartNo(parseScannedCode(rawCode).pcb_part_no)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Codigo invalido: se espera QR con EBR en el 3er token o barcode que inicie con EBR########',
+        code: 'INVALID_PCB_PART_NO',
+      });
+    }
+
+    const [movements] = await pool.query(
+      `SELECT id, tipo_movimiento, area, proceso, pcb_part_no, modelo, qty,
+              array_count, array_role, array_group_code, source_entry_id,
+              defect_type, component_location, etapa_deteccion, defect_source_area,
+              comentarios, scanned_by,
+              DATE_FORMAT(inventory_date, '%Y-%m-%d') AS inventory_date,
+              DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s') AS created_at
+       FROM pcb_inventory_scan_smd
+       WHERE scanned_original_norm IN (?, ?)
+       ORDER BY created_at, id`,
+      getEquivalentNormalizedCodes(scannedOriginalNorm)
+    );
+
+    const entryIds = movements
+      .filter(movement => movement.tipo_movimiento === 'ENTRADA')
+      .map(movement => movement.id);
+    let defects = [];
+    if (entryIds.length > 0) {
+      [defects] = await pool.query(
+        `SELECT entry_scan_id, exit_scan_id, sort_order, defect_type,
+                component_location, etapa_deteccion, defect_source_area, repair_status,
+                DATE_FORMAT(repaired_at, '%Y-%m-%d %H:%i:%s') AS repaired_at
+         FROM pcb_inventory_scan_defects_smd
+         WHERE entry_scan_id IN (?)
+         ORDER BY entry_scan_id, sort_order, id`,
+        [entryIds]
+      );
+    }
+
+    res.json({
+      success: true,
+      data: { scanned_code: scannedOriginalNorm, ...buildPcbHistory(movements, defects) },
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
 // ============================================
 // DELETE /api/pcb-inventory/scan/:id
 // ============================================
@@ -1580,6 +1715,8 @@ exports.deleteScan = async (req, res, next) => {
 };
 
 exports._test = {
+  parseScannedCode,
+  buildPcbHistory,
   normalizeDefectsPayload,
   summarizeDefects,
   buildPreviousRepairData,

@@ -81,3 +81,36 @@ test('el aviso de retorno contiene solo los defectos del ultimo ciclo reparado',
     ['CORTO', 'SOLDADURA FRIA']
   );
 });
+
+test('parsea QR con ; y barcode continuo EBR', () => {
+  const { parseScannedCode } = require('../controllers/pcb-inventory.controller')._test;
+  assert.equal(parseScannedCode('A1;smd;ebr12345678;X9').pcb_part_no, 'EBR12345678');
+  assert.equal(parseScannedCode('A1;SMD;EBR12345678;X9').assy_type, 'SMD');
+  const bc = parseScannedCode('ebr86093798922509201401');
+  assert.equal(bc.pcb_part_no, 'EBR86093798');
+  assert.equal(bc.token3, '922509201401');
+  assert.equal(parseScannedCode('EBR86093798;').pcb_part_no, 'EBR86093798');
+  assert.equal(parseScannedCode('XYZ123').pcb_part_no, null);
+});
+
+test('arma historial PCB con ciclos de reparacion y defectos', () => {
+  const { buildPcbHistory } = require('../controllers/pcb-inventory.controller')._test;
+  const history = buildPcbHistory([
+    { id: 1, tipo_movimiento: 'ENTRADA', area: 'REPARACION', pcb_part_no: 'EBR87145141', modelo: 'M1', created_at: '2026-09-01 08:00:00' },
+    { id: 2, tipo_movimiento: 'SALIDA', area: 'REPARACION', source_entry_id: 1, defect_type: 'CORTO', pcb_part_no: 'EBR87145141', modelo: 'M1', created_at: '2026-09-01 09:00:00' },
+    { id: 3, tipo_movimiento: 'ENTRADA', area: 'INVENTARIO', defect_type: 'LEGACY', pcb_part_no: 'EBR87145141', modelo: 'M1', created_at: '2026-09-02 08:00:00' },
+    { id: 4, tipo_movimiento: 'SCRAP', area: 'INVENTARIO', pcb_part_no: 'EBR87145141', modelo: 'M1', created_at: '2026-09-03 08:00:00' },
+  ], [
+    { entry_scan_id: 1, sort_order: 1, defect_type: 'CORTO', repair_status: 'REPAIRED' },
+    { entry_scan_id: 1, sort_order: 2, defect_type: 'FALTANTE', repair_status: 'REPAIRED' },
+  ]);
+
+  assert.equal(history.movements[0].defects.length, 2);
+  assert.equal(history.movements[1].defects.length, 0); // salida ligada no repite defectos
+  assert.equal(history.movements[2].defects[0].defect_type, 'LEGACY');
+  assert.deepStrictEqual(
+    { ...history.summary, last_movement: history.summary.last_movement.tipo_movimiento },
+    { total_entradas: 2, total_salidas: 1, total_scrap: 1, repair_cycles: 1, total_defects: 3, last_movement: 'SCRAP' }
+  );
+  assert.equal(buildPcbHistory([], []).summary.last_movement, null);
+});

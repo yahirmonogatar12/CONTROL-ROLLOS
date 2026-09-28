@@ -35,12 +35,14 @@ class ScrapGridPanelState extends State<ScrapGridPanel>
   String? _searchArea;
 
   static const _fields = [
+    'cliente',
     'scanned_original',
     'raw_barcode',
     'part_no',
     'modelo',
     'area',
     'proceso',
+    'ubicacion',
     'motivo_scrap_texto',
     'comentarios',
     'cantidad',
@@ -52,12 +54,14 @@ class ScrapGridPanelState extends State<ScrapGridPanel>
   String tr(String key) => widget.languageProvider.tr(key);
 
   List<String> get _headers => [
+        'Cliente',
         tr('scrap_scanned_code'),
         tr('scrap_raw_barcode'),
         tr('scrap_part_no'),
         tr('scrap_modelo'),
         tr('scrap_area'),
         tr('scrap_proceso'),
+        'Ubicación',
         tr('scrap_motivo'),
         tr('scrap_comentarios'),
         'Cantidad',
@@ -73,14 +77,16 @@ class ScrapGridPanelState extends State<ScrapGridPanel>
   void initState() {
     super.initState();
     initColumnFlex(
-      12,
-      'scrap_grid',
+      14,
+      'scrap_grid_v2',
       defaultFlexValues: [
+        0.9,
         2.5,
         1.8,
         1.5,
         1.5,
         1.2,
+        1.3,
         1.3,
         2.0,
         1.5,
@@ -147,7 +153,7 @@ class ScrapGridPanelState extends State<ScrapGridPanel>
       if (entry.value != null && entry.value!.isNotEmpty) {
         data = data.where((r) {
           final val = (r[entry.key] ?? '').toString();
-          return val == entry.value;
+          return ColumnFilter.matches(val.trim(), entry.value);
         }).toList();
       }
     }

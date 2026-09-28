@@ -94,19 +94,12 @@ class LocationSearchScreenState extends State<LocationSearchScreen> {
       return;
     }
 
-    // Si tiene '-' es barcode, no filtrar
-    if (query.contains('-')) {
-      setState(() {
-        _filtered = [];
-        _showDropdown = false;
-      });
-      return;
-    }
-
-    // Filtrar localmente
+    // Filtrar localmente por numero de parte o spec. Un barcode NPARTE-LOTE
+    // no coincide con nada, asi que no abre el dropdown.
     final matches = _allMateriales.where((m) {
       final np = (m['numero_parte'] ?? '').toString().toUpperCase();
-      return np.contains(query);
+      final spec = (m['especificacion_material'] ?? '').toString().toUpperCase();
+      return np.contains(query) || spec.contains(query);
     }).take(25).toList();
 
     setState(() {

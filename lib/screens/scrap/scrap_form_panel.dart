@@ -29,11 +29,13 @@ class ScrapFormPanelState extends State<ScrapFormPanel> {
   final TextEditingController _commentController = TextEditingController();
   final TextEditingController _qtyController = TextEditingController(text: '1');
   final TextEditingController _rawBarcodeController = TextEditingController();
+  final TextEditingController _ubicacionController = TextEditingController();
   final FocusNode _scanFocusNode = FocusNode();
   final LayerLink _layerLink = LayerLink();
 
+  String _selectedCliente = 'LG';
   String _selectedArea = 'SMD';
-  String _selectedProceso = 'SMT';
+  String _selectedProceso = 'SMD';
   DateTime _selectedRegistrationDate = DateTime.now();
   int? _selectedMotivoId;
   String? _selectedMotivoText;
@@ -51,6 +53,7 @@ class ScrapFormPanelState extends State<ScrapFormPanel> {
   bool _isAutocompletePick = false;
   String? _selectedSuggestionSourceType;
 
+  static const List<String> _clientes = ['LG', 'MOBIS'];
   static const List<String> _areas = [
     'M1',
     'M2',
@@ -66,18 +69,12 @@ class ScrapFormPanelState extends State<ScrapFormPanel> {
     'IPM',
     'COATING',
     'PROVEEDOR',
-    'COMPONENTE',
   ];
   static const Map<String, String> _procesos = {
-    'CALIDAD': 'Calidad',
-    'ASSY': 'Assy',
-    'IMD': 'IMD',
     'SMD': 'SMD',
-    'SMT': 'SMT',
-    'MANTENIMIENTO': 'Mantenimiento',
-    'COATING': 'Coating',
-    'MICOM': 'Micom',
-    'COMPONENTE': 'Componente',
+    'IMD': 'IMD',
+    'ASSY': 'ASSY',
+    'COMPONENTE': 'COMPONENTE',
   };
   String tr(String key) => widget.languageProvider.tr(key);
 
@@ -122,6 +119,7 @@ class ScrapFormPanelState extends State<ScrapFormPanel> {
     _commentController.dispose();
     _qtyController.dispose();
     _rawBarcodeController.dispose();
+    _ubicacionController.dispose();
     _scanFocusNode.dispose();
     super.dispose();
   }
@@ -361,8 +359,16 @@ class ScrapFormPanelState extends State<ScrapFormPanel> {
       final savedProceso = prefs.getString('scrap_last_proceso');
       final savedMotivoId = prefs.getInt('scrap_last_motivo_id');
       final savedComment = prefs.getString('scrap_last_comment');
+      final savedCliente = prefs.getString('scrap_last_cliente');
+      final savedUbicacion = prefs.getString('scrap_last_ubicacion');
       if (mounted) {
         setState(() {
+          if (savedCliente != null && _clientes.contains(savedCliente)) {
+            _selectedCliente = savedCliente;
+          }
+          if (savedUbicacion != null) {
+            _ubicacionController.text = savedUbicacion;
+          }
           if (savedArea != null && _areas.contains(savedArea)) {
             _selectedArea = savedArea;
           }
@@ -379,6 +385,8 @@ class ScrapFormPanelState extends State<ScrapFormPanel> {
   Future<void> _saveLocalPrefs() async {
     try {
       final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('scrap_last_cliente', _selectedCliente);
+      await prefs.setString('scrap_last_ubicacion', _ubicacionController.text);
       await prefs.setString('scrap_last_area', _selectedArea);
       await prefs.setString('scrap_last_proceso', _selectedProceso);
       if (_selectedMotivoId != null) {
@@ -451,6 +459,10 @@ class ScrapFormPanelState extends State<ScrapFormPanel> {
       usuario: AuthService.currentUser?.nombreCompleto,
       cantidad: int.tryParse(_qtyController.text) ?? 1,
       rawBarcode: rawBarcode,
+      cliente: _selectedCliente,
+      ubicacion: _ubicacionController.text.trim().isNotEmpty
+          ? _ubicacionController.text.trim()
+          : null,
     );
 
     if (mounted) {
@@ -530,16 +542,59 @@ class ScrapFormPanelState extends State<ScrapFormPanel> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Fila 1: Area + Proceso + Motivo (TableDropdownField)
+          // Fila 1: Cliente + Area + Proceso + Ubicacion + Motivo (TableDropdownField)
           Row(
             children: [
+              const SizedBox(
+                width: 55,
+                child: Text('Cliente',
+                    style: TextStyle(fontSize: 14, color: Colors.white)),
+              ),
               SizedBox(
-                width: 60,
+                width: 110,
+                child: DropdownButtonFormField2<String>(
+                  decoration: fieldDecoration(),
+                  value: _selectedCliente,
+                  isExpanded: true,
+                  style: const TextStyle(fontSize: 14, color: Colors.white),
+                  items: _clientes
+                      .map((c) => DropdownMenuItem(
+                            value: c,
+                            child:
+                                Text(c, style: const TextStyle(fontSize: 14)),
+                          ))
+                      .toList(),
+                  onChanged: (val) {
+                    if (val != null) {
+                      setState(() => _selectedCliente = val);
+                      _saveLocalPrefs();
+                    }
+                  },
+                  iconStyleData: const IconStyleData(
+                    icon: Icon(Icons.arrow_drop_down,
+                        color: Colors.white70, size: 20),
+                  ),
+                  dropdownStyleData: DropdownStyleData(
+                    decoration: BoxDecoration(
+                      color: AppColors.fieldBackground,
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    padding: EdgeInsets.zero,
+                  ),
+                  menuItemStyleData: const MenuItemStyleData(
+                    height: 32,
+                    padding: EdgeInsets.symmetric(horizontal: 10),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 24),
+              SizedBox(
+                width: 45,
                 child: Text(tr('scrap_area'),
                     style: const TextStyle(fontSize: 14, color: Colors.white)),
               ),
               SizedBox(
-                width: 180,
+                width: 150,
                 child: DropdownButtonFormField2<String>(
                   decoration: fieldDecoration(),
                   value: _selectedArea,
@@ -583,7 +638,7 @@ class ScrapFormPanelState extends State<ScrapFormPanel> {
                     style: const TextStyle(fontSize: 14, color: Colors.white)),
               ),
               SizedBox(
-                width: 170,
+                width: 150,
                 child: DropdownButtonFormField2<String>(
                   decoration: fieldDecoration(),
                   value: _selectedProceso,
@@ -618,6 +673,21 @@ class ScrapFormPanelState extends State<ScrapFormPanel> {
                     height: 32,
                     padding: EdgeInsets.symmetric(horizontal: 10),
                   ),
+                ),
+              ),
+              const SizedBox(width: 24),
+              const SizedBox(
+                width: 75,
+                child: Text('Ubicación',
+                    style: TextStyle(fontSize: 14, color: Colors.white)),
+              ),
+              Expanded(
+                child: TextFormField(
+                  controller: _ubicacionController,
+                  decoration: fieldDecoration(),
+                  style: const TextStyle(fontSize: 14),
+                  onChanged: (_) => _saveLocalPrefs(),
+                  onFieldSubmitted: (_) => requestScanFocus(),
                 ),
               ),
               const SizedBox(width: 24),

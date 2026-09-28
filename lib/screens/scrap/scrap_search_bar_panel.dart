@@ -41,8 +41,7 @@ class _ScrapSearchBarPanelState extends State<ScrapSearchBarPanel> {
     'IMD',
     'IPM',
     'COATING',
-    'PROVEEDOR',
-    'COMPONENTE'
+    'PROVEEDOR'
   ];
 
   String tr(String key) => widget.languageProvider.tr(key);
@@ -60,12 +59,14 @@ class _ScrapSearchBarPanelState extends State<ScrapSearchBarPanel> {
     if (data.isEmpty) return;
 
     final headers = [
+      'Cliente',
       tr('scrap_scanned_code'),
       tr('scrap_raw_barcode'),
       tr('scrap_part_no'),
       tr('scrap_modelo'),
       tr('scrap_area'),
       tr('scrap_proceso'),
+      'Ubicación',
       tr('scrap_motivo'),
       tr('scrap_comentarios'),
       'Cantidad',
@@ -74,12 +75,14 @@ class _ScrapSearchBarPanelState extends State<ScrapSearchBarPanel> {
       tr('scrap_time'),
     ];
     final fields = [
+      'cliente',
       'scanned_original',
       'raw_barcode',
       'part_no',
       'modelo',
       'area',
       'proceso',
+      'ubicacion',
       'motivo_scrap_texto',
       'comentarios',
       'cantidad',
