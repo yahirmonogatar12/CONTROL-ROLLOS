@@ -5,8 +5,18 @@ const assert = require('node:assert/strict');
 const toolingController = require('../controllers/tooling.controller');
 const toolingCatalog = require('../data/toolingCatalog');
 
-const { isLimitReached, LIFECYCLE_STATUSES, normalizePcbNo } =
+const { isLimitReached, LIFECYCLE_STATUSES, normalizePcbNo, normalizeSide } =
   toolingController._test;
+
+test('el lado de la mask es TOP, BOT o sin definir', () => {
+  assert.equal(normalizeSide(' top '), 'TOP');
+  assert.equal(normalizeSide('bot'), 'BOT');
+  assert.equal(normalizeSide('BOTTOM'), 'BOT');
+  for (const value of ['', '  ', null, undefined]) {
+    assert.equal(normalizeSide(value), null);
+  }
+  assert.equal(normalizeSide('LADO A'), undefined, 'invalido: el controlador responde 400');
+});
 
 test('el limite 0 o nulo significa "sin limite"', () => {
   assert.equal(isLimitReached({ use_count: 999999, use_limit: null }), false);

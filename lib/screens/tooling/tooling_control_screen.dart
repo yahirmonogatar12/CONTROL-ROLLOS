@@ -297,6 +297,10 @@ class ToolingControlScreenState extends State<ToolingControlScreen> {
     var type = '${asset?['asset_type'] ?? 'METAL_MASK'}';
     var status = '${asset?['lifecycle_status'] ?? 'ACTIVE'}';
     if (!_statuses.contains(status)) status = 'ACTIVE';
+    // '' = sin definir: la estacion no verifica el lado de esa mask.
+    var side = '${asset?['side'] ?? ''}'.trim().toUpperCase();
+    if (side == 'BOTTOM') side = 'BOT';
+    if (side != 'TOP' && side != 'BOT') side = '';
 
     final saved = await showDialog<bool>(
       context: context,
@@ -397,6 +401,30 @@ class ToolingControlScreenState extends State<ToolingControlScreen> {
                       ),
                     ),
                     const SizedBox(height: 10),
+                    const Text('Lado',
+                        style: TextStyle(color: Colors.white70, fontSize: 11)),
+                    DropdownButtonFormField<String>(
+                      initialValue: side,
+                      dropdownColor: AppColors.panelBackground,
+                      style: const TextStyle(color: Colors.white, fontSize: 12),
+                      decoration: _fieldDecoration(),
+                      items: const [
+                        DropdownMenuItem(value: '', child: Text('Sin definir')),
+                        DropdownMenuItem(value: 'TOP', child: Text('TOP')),
+                        DropdownMenuItem(value: 'BOT', child: Text('BOT')),
+                      ],
+                      onChanged: (value) =>
+                          setDialogState(() => side = value ?? side),
+                    ),
+                    const Padding(
+                      padding: EdgeInsets.only(top: 4),
+                      child: Text(
+                        'En doble cara la estación rechaza la mask del otro lado. '
+                        'Sin definir = no se verifica.',
+                        style: TextStyle(color: Colors.white38, fontSize: 10),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
                   ],
                   const Text('Estado',
                       style: TextStyle(color: Colors.white70, fontSize: 11)),
@@ -468,6 +496,7 @@ class ToolingControlScreenState extends State<ToolingControlScreen> {
             productionDateRaw: type == 'METAL_MASK' ? prodDate.text : null,
             thicknessMm: type == 'METAL_MASK' ? thickness.text.trim() : null,
             arraySize: type == 'METAL_MASK' ? arraySize.text.trim() : null,
+            side: type == 'METAL_MASK' ? side : null,
           )
         : await ApiService.updateToolingAsset(
             '${asset['control_code']}',
@@ -478,6 +507,7 @@ class ToolingControlScreenState extends State<ToolingControlScreen> {
             productionDateRaw: type == 'METAL_MASK' ? prodDate.text : null,
             thicknessMm: type == 'METAL_MASK' ? thickness.text.trim() : null,
             arraySize: type == 'METAL_MASK' ? arraySize.text.trim() : null,
+            side: type == 'METAL_MASK' ? side : null,
           );
     if (!mounted) return;
     final ok = result['success'] == true;
@@ -828,6 +858,22 @@ class ToolingControlScreenState extends State<ToolingControlScreen> {
         style: (row) => TextStyle(
           color: _isMask(row) ? Colors.white : Colors.white38,
           fontSize: 11,
+        ),
+      ),
+      _ToolingColumn(
+        label: 'Lado',
+        key: 'side',
+        flex: 8,
+        alignment: Alignment.center,
+        value: (row) => _maskField(row, 'side'),
+        style: (row) => TextStyle(
+          color: !_isMask(row)
+              ? Colors.white38
+              : '${row['side'] ?? ''}'.toUpperCase() == 'BOT'
+                  ? Colors.orangeAccent
+                  : Colors.white,
+          fontSize: 11,
+          fontWeight: FontWeight.w600,
         ),
       ),
       _ToolingColumn(

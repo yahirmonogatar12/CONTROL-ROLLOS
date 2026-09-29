@@ -29,6 +29,16 @@ function isLimitReached(asset) {
   return limit > 0 && Number(asset?.use_count ?? 0) >= limit;
 }
 
+// Lado de la Metal Mask. En doble cara el BOTTOM y el TOP comparten numero de
+// parte pero no mask; la estacion rechaza la del otro lado. Vacio = sin
+// definir (no se verifica). undefined = valor invalido.
+function normalizeSide(value) {
+  const side = String(value || '').trim().toUpperCase();
+  if (!side) return null;
+  if (side === 'BOT' || side === 'BOTTOM') return 'BOT';
+  return side === 'TOP' ? 'TOP' : undefined;
+}
+
 function normalizeArraySize(value) {
   const parsed = Number(String(value ?? '').trim());
   if (!Number.isFinite(parsed) || parsed < 1) return null;
@@ -146,6 +156,10 @@ exports.createAsset = async (req, res, next) => {
     if (thickness !== '' && !Number.isFinite(Number(thickness))) {
       return res.status(400).json({ success: false, error: 'Espesor invalido' });
     }
+    const side = isMask ? normalizeSide(body.side) : null;
+    if (side === undefined) {
+      return res.status(400).json({ success: false, error: 'Lado invalido: TOP o BOT' });
+    }
     // Solo la mask define el array: el squeegee lo hereda del plan que imprime.
     const rawArray = String(body.array_size ?? '').trim();
     let arraySize = 1;
@@ -174,7 +188,7 @@ exports.createAsset = async (req, res, next) => {
       isMask ? normalizePcbNo(body.pcb_no) : null,
       isMask ? String(body.production_date_raw || '').trim() || null : null,
       isMask && thickness !== '' ? Number(thickness) : null,
-      isMask ? String(body.side || '').trim().toUpperCase() || null : null,
+      side,
       arraySize,
       status === 'ACTIVE' ? 1 : 0,
     ]);
@@ -244,8 +258,12 @@ exports.updateAsset = async (req, res, next) => {
       params.push(String(body.production_date_raw || '').trim() || null);
     }
     if (body.side !== undefined) {
+      const side = normalizeSide(body.side);
+      if (side === undefined) {
+        return res.status(400).json({ success: false, error: 'Lado invalido: TOP o BOT' });
+      }
       sets.push('side = ?');
-      params.push(String(body.side || '').trim().toUpperCase() || null);
+      params.push(side);
     }
     if (body.thickness_mm !== undefined) {
       const raw = String(body.thickness_mm ?? '').trim();
@@ -518,5 +536,5 @@ exports.assignPlan = async (req, res, next) => {
 
 exports._test = {
   isLimitReached, LIFECYCLE_STATUSES, normalizePcbNo,
-  normalizeArraySize, impresionesDePlan, repartirEntreSqueegees,
+  normalizeArraySize, impresionesDePlan, repartirEntreSqueegees, normalizeSide,
 };

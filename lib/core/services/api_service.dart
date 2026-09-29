@@ -5352,6 +5352,7 @@ class ApiService {
     String? productionDateRaw,
     String? thicknessMm,
     String? arraySize,
+    String? side,
   }) async {
     try {
       final response = await http.post(
@@ -5368,6 +5369,7 @@ class ApiService {
             'production_date_raw': productionDateRaw,
           if (thicknessMm != null) 'thickness_mm': thicknessMm,
           if (arraySize != null) 'array_size': arraySize,
+          if (side != null) 'side': side,
         }),
       );
       final body = json.decode(response.body) as Map<String, dynamic>;
@@ -5390,6 +5392,7 @@ class ApiService {
     String? productionDateRaw,
     String? thicknessMm,
     String? arraySize,
+    String? side,
   }) async {
     try {
       final response = await http.patch(
@@ -5404,6 +5407,7 @@ class ApiService {
             'production_date_raw': productionDateRaw,
           if (thicknessMm != null) 'thickness_mm': thicknessMm,
           if (arraySize != null) 'array_size': arraySize,
+          if (side != null) 'side': side,
         }),
       );
       final body = json.decode(response.body) as Map<String, dynamic>;

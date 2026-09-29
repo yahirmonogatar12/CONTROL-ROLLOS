@@ -688,24 +688,29 @@ exports.scan = async (req, res, next) => {
           }
         }
 
-        const [outRows] = await connection.query(
-          `SELECT scanned_original_norm, area, SUM(qty) AS out_qty
+        // ponytail: mismo criterio que la salida simple: balance real por QR+area+proceso
+        // sobre la entrada mas reciente de cada llave. Restar salidas a cada entrada
+        // mezclaba ciclos viejos del mismo group code (entro SINGLE, salio, volvio a
+        // entrar como array) y daba "sin stock" con stock disponible.
+        const [balanceRows] = await connection.query(
+          `SELECT scanned_original_norm, area, proceso, SUM(
+             CASE WHEN tipo_movimiento = 'ENTRADA' THEN qty
+                  WHEN tipo_movimiento IN ('SALIDA', 'SCRAP') THEN -qty
+                  ELSE 0 END
+           ) AS remaining_qty
            FROM pcb_inventory_scan_smd
-           WHERE array_group_code = ?
-           AND tipo_movimiento IN ('SALIDA', 'SCRAP')
-           GROUP BY scanned_original_norm, area`,
-          [source.array_group_code]
+           WHERE scanned_original_norm IN (?)
+           GROUP BY scanned_original_norm, area, proceso`,
+          [[...new Set(arrayEntries.map(row => row.scanned_original_norm))]]
         );
-        const outByCodeArea = new Map(
-          outRows.map(row => [`${row.scanned_original_norm}|${row.area}`, Number(row.out_qty || 0)])
+        const movementKey = row => `${row.scanned_original_norm}|${row.area}|${row.proceso}`;
+        const balanceByKey = new Map(
+          balanceRows.map(row => [movementKey(row), Number(row.remaining_qty || 0)])
         );
+        const latestEntryByKey = new Map(arrayEntries.map(row => [movementKey(row), row]));
 
-        const pendingRows = arrayEntries
-          .map(row => {
-            const key = `${row.scanned_original_norm}|${row.area}`;
-            const remainingQty = Number(row.qty || 0) - (outByCodeArea.get(key) || 0);
-            return { ...row, remaining_qty: remainingQty };
-          })
+        const pendingRows = [...latestEntryByKey.values()]
+          .map(row => ({ ...row, remaining_qty: balanceByKey.get(movementKey(row)) || 0 }))
           .filter(row => row.remaining_qty > 0);
 
         if (pendingRows.length === 0) {
