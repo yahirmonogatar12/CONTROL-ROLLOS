@@ -1231,6 +1231,8 @@ class AppTranslations {
       'pcb_array_already_out': 'This array is already out of stock.',
       'pcb_assy_type': 'Assy Type',
       'pcb_hora': 'Time',
+      'pcb_input_smd': 'SMD Input',
+      'pcb_input_line': 'Input Line',
       'pcb_scanned_by': 'Scanned By',
       'pcb_total_scans': 'Total Scans',
       'pcb_date': 'Date',
@@ -1269,7 +1271,7 @@ class AppTranslations {
       'pcb_repaired_on': 'Repair completed',
       'pcb_verify_defect_title': 'Verify defect',
       'pcb_multiple_defects_hint':
-          'This PCB has several registered defects - pick the correct one',
+          'This PCB has LQC/OQC defects registered - pick one or change it if it was already repaired',
       'pcb_defect_saved': 'Defect saved',
       'pcb_defect_deleted': 'Defect deleted',
       // SMT Requests
@@ -2648,6 +2650,8 @@ class AppTranslations {
       'pcb_array_already_out': 'Este array ya no tiene PCBs en inventario.',
       'pcb_assy_type': 'Tipo Assy',
       'pcb_hora': 'Hora',
+      'pcb_input_smd': 'Input SMD',
+      'pcb_input_line': 'Línea Input',
       'pcb_scanned_by': 'Escaneado Por',
       'pcb_total_scans': 'Total Escaneos',
       'pcb_date': 'Fecha',
@@ -2687,7 +2691,7 @@ class AppTranslations {
       'pcb_repaired_on': 'Reparacion terminada',
       'pcb_verify_defect_title': 'Verificar defecto',
       'pcb_multiple_defects_hint':
-          'Esta PCB tiene varios defectos registrados - selecciona el correcto',
+          'Esta PCB tiene defectos LQC/OQC registrados - selecciona uno o cámbialo si ya fue reparada',
       'pcb_defect_saved': 'Defecto guardado',
       'pcb_defect_deleted': 'Defecto eliminado',
       // Solicitudes SMT
@@ -3991,6 +3995,8 @@ class AppTranslations {
       'pcb_array_already_out': 'This array is already out of stock.',
       'pcb_assy_type': 'Assy 유형',
       'pcb_hora': '시간',
+      'pcb_input_smd': 'SMD 투입',
+      'pcb_input_line': '투입 라인',
       'pcb_scanned_by': '스캔 담당자',
       'pcb_total_scans': '총 스캔',
       'pcb_date': '날짜',
@@ -4026,7 +4032,7 @@ class AppTranslations {
       'pcb_previous_repair_hint': '이 PCB가 수리 후 다시 입고되었습니다. 이전 수리 항목:',
       'pcb_repaired_on': '수리 완료',
       'pcb_verify_defect_title': '결함 확인',
-      'pcb_multiple_defects_hint': '이 PCB에는 여러 결함이 등록되어 있습니다 - 올바른 항목을 선택하세요',
+      'pcb_multiple_defects_hint': '이 PCB에 LQC/OQC 결함이 등록되어 있습니다 - 선택하거나 이미 수리된 경우 변경하세요',
       // SMT 요청
       'nav_smt_requests': 'SMT 요청',
       'pcb_stock_actual': '현재 재고',

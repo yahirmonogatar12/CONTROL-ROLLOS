@@ -544,36 +544,30 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel>
       final matches = await ApiService.lookupDefectData(code);
       if (!mounted) return;
 
-      Map<String, dynamic>? selected;
       if (matches.isEmpty) {
         setState(() {
           _detectedEtapa = 'AIS';
           _detectedSourceArea = null;
           _detectedDefectDataId = null;
         });
-      } else if (matches.length == 1) {
-        selected = matches.first;
       } else {
-        selected = await _showDefectVerificationDialog(matches);
+        // Siempre confirmar: el defecto LQC/OQC puede ser de una reparacion
+        // anterior, el operador debe poder cambiarlo antes de guardar.
+        final selected = await _showDefectVerificationDialog(matches);
         if (!mounted) return;
         if (selected == null) {
           requestScanFocus();
           return;
         }
-      }
-
-      if (selected != null) {
-        final etapa = selected['etapa_deteccion']?.toString().toUpperCase();
         setState(() {
           if (!PcbAreas.isRepair(_selectedArea)) {
             _selectedArea = PcbAreas.repair;
           }
-          _selectedDefectType = selected!['defecto']?.toString();
-          _componentLocationController.text =
-              selected['ubicacion']?.toString() ?? '';
-          _detectedEtapa = (etapa == 'LQC' || etapa == 'OQC') ? etapa : 'AIS';
-          _detectedSourceArea = selected['area']?.toString();
-          _detectedDefectDataId = selected['id']?.toString();
+          _selectedDefectType = selected.defectType;
+          _componentLocationController.text = selected.componentLocation;
+          _detectedEtapa = selected.etapaDeteccion;
+          _detectedSourceArea = selected.defectSourceArea;
+          _detectedDefectDataId = selected.defectDataId;
         });
       }
     }
@@ -960,128 +954,271 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel>
     );
   }
 
-  Future<Map<String, dynamic>?> _showDefectVerificationDialog(
-      List<Map<String, dynamic>> matches) async {
-    return showDialog<Map<String, dynamic>>(
+  Future<_PcbDefectDraft?> _showDefectVerificationDialog(
+    List<Map<String, dynamic>> matches,
+  ) async {
+    _PcbDefectDraft fromMatch(Map<String, dynamic> match) {
+      final etapa = match['etapa_deteccion']?.toString().toUpperCase();
+      return _PcbDefectDraft(
+        defectType: match['defecto']?.toString(),
+        componentLocation: match['ubicacion']?.toString() ?? '',
+        etapaDeteccion: (etapa == 'LQC' || etapa == 'OQC') ? etapa : 'AIS',
+        defectSourceArea: match['area']?.toString(),
+        defectDataId: match['id']?.toString(),
+      );
+    }
+
+    var selectedIndex = 0;
+    var draft = fromMatch(matches.first);
+    final locationController = TextEditingController(
+      text: draft.componentLocation,
+    );
+    final catalogNames = _defects
+        .map((item) => item['defect_name']?.toString() ?? '')
+        .where((name) => name.isNotEmpty)
+        .toSet()
+        .toList();
+
+    final result = await showDialog<_PcbDefectDraft>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: AppColors.panelBackground,
-        title: Row(
-          children: [
-            const Icon(Icons.warning_amber_rounded,
-                color: Colors.orange, size: 24),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Text(
-                tr('pcb_verify_defect_title'),
-                style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 15,
-                    fontWeight: FontWeight.w600),
-              ),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) {
+          final defectNames = [
+            if (draft.defectType != null &&
+                draft.defectType!.isNotEmpty &&
+                !catalogNames.contains(draft.defectType))
+              draft.defectType!,
+            ...catalogNames,
+          ];
+          return AlertDialog(
+            backgroundColor: AppColors.panelBackground,
+            title: Row(
+              children: [
+                const Icon(
+                  Icons.warning_amber_rounded,
+                  color: Colors.orange,
+                  size: 24,
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    tr('pcb_verify_defect_title'),
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 15,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ],
             ),
-          ],
-        ),
-        content: SizedBox(
-          width: 560,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                tr('pcb_multiple_defects_hint'),
-                style: const TextStyle(color: Colors.white60, fontSize: 12),
-              ),
-              const SizedBox(height: 10),
-              Flexible(
-                child: ListView.separated(
-                  shrinkWrap: true,
-                  itemCount: matches.length,
-                  separatorBuilder: (_, __) =>
-                      const Divider(color: Colors.white12, height: 1),
-                  itemBuilder: (_, i) {
-                    final match = matches[i];
-                    final etapa =
-                        match['etapa_deteccion']?.toString().toUpperCase() ??
+            content: SizedBox(
+              width: 560,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    tr('pcb_multiple_defects_hint'),
+                    style: const TextStyle(color: Colors.white60, fontSize: 12),
+                  ),
+                  const SizedBox(height: 10),
+                  Flexible(
+                    child: ListView.separated(
+                      shrinkWrap: true,
+                      itemCount: matches.length,
+                      separatorBuilder: (_, __) =>
+                          const Divider(color: Colors.white12, height: 1),
+                      itemBuilder: (_, i) {
+                        final match = matches[i];
+                        final etapa =
+                            match['etapa_deteccion']
+                                ?.toString()
+                                .toUpperCase() ??
                             '';
-                    final defecto = match['defecto']?.toString() ?? '';
-                    final ubicacion = match['ubicacion']?.toString() ?? '';
-                    final area = match['area']?.toString() ?? '';
-                    final tipo = match['tipo_inspeccion']?.toString() ?? '';
-                    final linea = match['linea']?.toString() ?? '';
-                    final fecha = match['fecha']?.toString() ?? '';
-                    return InkWell(
-                      onTap: () => Navigator.pop(ctx, match),
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 8, vertical: 10),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Row(
+                        final defecto = match['defecto']?.toString() ?? '';
+                        final ubicacion = match['ubicacion']?.toString() ?? '';
+                        final area = match['area']?.toString() ?? '';
+                        final tipo = match['tipo_inspeccion']?.toString() ?? '';
+                        final linea = match['linea']?.toString() ?? '';
+                        final fecha = match['fecha']?.toString() ?? '';
+                        return InkWell(
+                          onTap: () => setDialogState(() {
+                            selectedIndex = i;
+                            draft = fromMatch(match);
+                            locationController.text = draft.componentLocation;
+                          }),
+                          child: Container(
+                            color: i == selectedIndex
+                                ? Colors.cyan.withValues(alpha: 0.12)
+                                : null,
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 10,
+                            ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Container(
-                                  padding: const EdgeInsets.symmetric(
-                                      horizontal: 6, vertical: 2),
-                                  decoration: BoxDecoration(
-                                    color: _etapaColor(etapa)
-                                        .withValues(alpha: 0.2),
-                                    borderRadius: BorderRadius.circular(3),
-                                    border: Border.all(
-                                        color: _etapaColor(etapa), width: 1),
-                                  ),
-                                  child: Text(
-                                    etapa.isEmpty ? '?' : etapa,
-                                    style: TextStyle(
-                                      color: _etapaColor(etapa),
-                                      fontSize: 10,
-                                      fontWeight: FontWeight.w700,
+                                Row(
+                                  children: [
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 6,
+                                        vertical: 2,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: _etapaColor(
+                                          etapa,
+                                        ).withValues(alpha: 0.2),
+                                        borderRadius: BorderRadius.circular(3),
+                                        border: Border.all(
+                                          color: _etapaColor(etapa),
+                                          width: 1,
+                                        ),
+                                      ),
+                                      child: Text(
+                                        etapa.isEmpty ? '?' : etapa,
+                                        style: TextStyle(
+                                          color: _etapaColor(etapa),
+                                          fontSize: 10,
+                                          fontWeight: FontWeight.w700,
+                                        ),
+                                      ),
                                     ),
-                                  ),
-                                ),
-                                const SizedBox(width: 8),
-                                Expanded(
-                                  child: Text(
-                                    defecto,
-                                    style: const TextStyle(
-                                      color: Colors.white,
-                                      fontSize: 13,
-                                      fontWeight: FontWeight.w600,
+                                    const SizedBox(width: 8),
+                                    Expanded(
+                                      child: Text(
+                                        defecto,
+                                        style: const TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 13,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
                                     ),
-                                  ),
+                                    Text(
+                                      fecha,
+                                      style: const TextStyle(
+                                        color: Colors.white54,
+                                        fontSize: 11,
+                                      ),
+                                    ),
+                                  ],
                                 ),
+                                const SizedBox(height: 4),
                                 Text(
-                                  fecha,
+                                  '${tr('pcb_component_location')}: $ubicacion | ${tr('pcb_source_area')}: $area | $tipo | $linea',
                                   style: const TextStyle(
-                                      color: Colors.white54, fontSize: 11),
+                                    color: Colors.white60,
+                                    fontSize: 11,
+                                  ),
                                 ),
                               ],
                             ),
-                            const SizedBox(height: 4),
-                            Text(
-                              '${tr('pcb_component_location')}: $ubicacion | ${tr('pcb_source_area')}: $area | $tipo | $linea',
-                              style: const TextStyle(
-                                  color: Colors.white60, fontSize: 11),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                  const Divider(color: Colors.white24, height: 20),
+                  Row(
+                    children: [
+                      Expanded(
+                        flex: 3,
+                        child: DropdownButtonFormField2<String>(
+                          decoration: fieldDecoration().copyWith(
+                            labelText: tr('pcb_defect_type'),
+                            labelStyle: const TextStyle(
+                              color: Colors.white60,
+                              fontSize: 11,
                             ),
-                          ],
+                          ),
+                          value: draft.defectType,
+                          isExpanded: true,
+                          items: defectNames
+                              .map(
+                                (name) => DropdownMenuItem<String>(
+                                  value: name,
+                                  child: Text(
+                                    name,
+                                    style: const TextStyle(fontSize: 12),
+                                  ),
+                                ),
+                              )
+                              .toList(),
+                          onChanged: (selected) {
+                            if (selected == null ||
+                                selected == draft.defectType) {
+                              return;
+                            }
+                            // Defecto distinto al registrado: ya no es el de LQC/OQC.
+                            setDialogState(() {
+                              selectedIndex = -1;
+                              draft = _PcbDefectDraft(
+                                defectType: selected,
+                                componentLocation: locationController.text,
+                                etapaDeteccion: 'AIS',
+                              );
+                            });
+                          },
+                          dropdownStyleData: DropdownStyleData(
+                            maxHeight: 260,
+                            decoration: BoxDecoration(
+                              color: AppColors.fieldBackground,
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                          ),
                         ),
                       ),
-                    );
-                  },
+                      const SizedBox(width: 12),
+                      Expanded(
+                        flex: 2,
+                        child: TextFormField(
+                          controller: locationController,
+                          decoration: fieldDecoration().copyWith(
+                            labelText: tr('pcb_component_location'),
+                            labelStyle: const TextStyle(
+                              color: Colors.white60,
+                              fontSize: 11,
+                            ),
+                          ),
+                          style: const TextStyle(fontSize: 12),
+                          textCapitalization: TextCapitalization.characters,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: Text(
+                  tr('cancel'),
+                  style: const TextStyle(color: Colors.white70),
                 ),
               ),
+              ElevatedButton(
+                autofocus: true,
+                onPressed: () {
+                  if (draft.defectType == null ||
+                      draft.defectType!.trim().isEmpty) {
+                    return;
+                  }
+                  draft.componentLocation = locationController.text.trim();
+                  Navigator.pop(ctx, draft);
+                },
+                child: Text(tr('confirm')),
+              ),
             ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, null),
-            child: Text(tr('cancel'),
-                style: const TextStyle(color: Colors.white70)),
-          ),
-        ],
+          );
+        },
       ),
     );
+
+    locationController.dispose();
+    return result;
   }
 
   @override

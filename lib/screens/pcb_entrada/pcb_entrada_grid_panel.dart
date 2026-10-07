@@ -53,6 +53,8 @@ class PcbEntradaGridPanelState extends State<PcbEntradaGridPanel>
     'proceso',
     'inventory_date',
     'hora',
+    'input_smd_at',
+    'input_smd_line',
     'comentarios',
     'scanned_by',
   ];
@@ -72,6 +74,8 @@ class PcbEntradaGridPanelState extends State<PcbEntradaGridPanel>
         tr('pcb_proceso'),
         tr('pcb_date'),
         tr('pcb_hora'),
+        tr('pcb_input_smd'),
+        tr('pcb_input_line'),
         tr('pcb_comentarios'),
         tr('pcb_scanned_by'),
       ];
@@ -103,7 +107,7 @@ class PcbEntradaGridPanelState extends State<PcbEntradaGridPanel>
   @override
   void initState() {
     super.initState();
-    initColumnFlex(14, 'pcb_entrada_grid_v3', defaultFlexValues: [
+    initColumnFlex(16, 'pcb_entrada_grid_v5', defaultFlexValues: [
       2.5,
       1.0,
       1.4,
@@ -116,6 +120,8 @@ class PcbEntradaGridPanelState extends State<PcbEntradaGridPanel>
       1.2,
       1.2,
       1.0,
+      1.5,
+      0.8,
       1.5,
       2.2
     ]);

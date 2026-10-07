@@ -46,7 +46,8 @@ class SolderPasteScreenState extends State<SolderPasteScreen>
   bool _enforceFifo = true;
   String _processFilter = 'active';
   int _lastEventId = 0;
-  final Set<int> _notifiedProcesses = {};
+  // static: si la pestana se cierra y se reabre no se repiten avisos.
+  static final Set<int> _notifiedProcesses = {};
   Timer? _clockTimer;
   Timer? _pollTimer;
 
@@ -196,12 +197,22 @@ class SolderPasteScreenState extends State<SolderPasteScreen>
   }
 
   Future<void> _initializeEventCursor() async {
-    final result = await ApiService.getSolderPasteEvents(limit: 1000);
-    if (!mounted || result['success'] != true) return;
-    final events = result['events'] as List? ?? const [];
-    for (final event in events.whereType<Map>()) {
-      final id = int.tryParse(event['id']?.toString() ?? '') ?? 0;
-      if (id > _lastEventId) _lastEventId = id;
+    // El backend regresa eventos en orden ascendente desde after_id: paginar
+    // hasta el final para que el cursor quede en el ultimo evento y el poll
+    // no recorra (ni avise) el historial viejo.
+    // ponytail: O(eventos totales) al abrir; agregar ?latest al backend si crece mucho.
+    while (mounted) {
+      final result = await ApiService.getSolderPasteEvents(
+        afterId: _lastEventId,
+        limit: 1000,
+      );
+      if (!mounted || result['success'] != true) return;
+      final events = result['events'] as List? ?? const [];
+      for (final event in events.whereType<Map>()) {
+        final id = int.tryParse(event['id']?.toString() ?? '') ?? 0;
+        if (id > _lastEventId) _lastEventId = id;
+      }
+      if (events.length < 1000) return;
     }
   }
 
@@ -212,24 +223,28 @@ class SolderPasteScreenState extends State<SolderPasteScreen>
     );
     if (!mounted || result['success'] != true) return;
     final events = result['events'] as List? ?? const [];
-    var refresh = false;
+    final readyIds = <int>{};
     for (final raw in events.whereType<Map>()) {
       final event = Map<String, dynamic>.from(raw);
       final id = int.tryParse(event['id']?.toString() ?? '') ?? 0;
       if (id > _lastEventId) _lastEventId = id;
-      refresh = true;
       if (event['event_type']?.toString() == 'AMBIENT_READY') {
-        final processId =
-            int.tryParse(event['process_id']?.toString() ?? '') ?? 0;
-        final process =
-            _processes.where((item) => item.id == processId).firstOrNull;
-        if (process != null) _notifyReady(process);
+        readyIds.add(int.tryParse(event['process_id']?.toString() ?? '') ?? 0);
       }
     }
-    if (refresh) await _loadProcesses();
+    if (events.isEmpty) return;
+    // Recargar antes de avisar para usar el estado actual, no el del evento.
+    await _loadProcesses();
+    if (!mounted) return;
+    for (final process in _processes.where((p) => readyIds.contains(p.id))) {
+      _notifyReady(process);
+    }
   }
 
   void _notifyReady(SolderPasteProcess process) {
+    // Solo avisar si sigue lista: un evento viejo de un proceso ya consumido,
+    // regresado a frio o en scrap no debe notificar.
+    if (process.status != SolderPasteStatus.readyForAgitation) return;
     if (!_notifiedProcesses.add(process.id)) return;
     SolderPasteNotificationOverlay.instance.show(
       code: process.code,

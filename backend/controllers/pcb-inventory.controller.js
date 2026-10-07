@@ -1255,7 +1255,11 @@ exports.getScans = async (req, res, next) => {
         scanned_by,
         created_at,
         DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s') as created_at_fmt,
-        DATE_FORMAT(created_at, '%H:%i:%s') as hora
+        DATE_FORMAT(created_at, '%H:%i:%s') as hora,
+        (SELECT DATE_FORMAT(i.ts, '%Y-%m-%d %H:%i:%s') FROM input_smt i
+         WHERE i.raw = s.scanned_original LIMIT 1) AS input_smd_at,
+        (SELECT i.line FROM input_smt i
+         WHERE i.raw = s.scanned_original LIMIT 1) AS input_smd_line
       FROM pcb_inventory_scan_smd s
       WHERE s.inventory_date BETWEEN ? AND ? AND s.tipo_movimiento = ?
     `;

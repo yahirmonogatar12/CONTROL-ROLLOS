@@ -102,6 +102,8 @@ class _PcbEntradaSearchBarPanelState extends State<PcbEntradaSearchBarPanel> {
       tr('pcb_proceso'),
       tr('pcb_date'),
       tr('pcb_hora'),
+      tr('pcb_input_smd'),
+      tr('pcb_input_line'),
       tr('pcb_comentarios'),
       tr('pcb_scanned_by'),
     ];
@@ -119,6 +121,8 @@ class _PcbEntradaSearchBarPanelState extends State<PcbEntradaSearchBarPanel> {
       'proceso',
       'inventory_date',
       'hora',
+      'input_smd_at',
+      'input_smd_line',
       'comentarios',
       'scanned_by',
     ];

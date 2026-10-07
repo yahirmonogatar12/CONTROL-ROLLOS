@@ -430,162 +430,173 @@ class PcbInventarioScreenState extends State<PcbInventarioScreen>
       ),
       child: Row(
         children: [
-          // Part number
-          Text(tr('pcb_search_part'),
-              style: const TextStyle(fontSize: 14, color: Colors.white)),
-          const SizedBox(width: 10),
-          SizedBox(
-            width: 200,
-            child: TextFormField(
-              controller: _searchPartCtrl,
-              decoration: fieldDecoration(),
-              style: const TextStyle(fontSize: 14),
-              onFieldSubmitted: (_) => _loadData(),
+          // Filtros con scroll horizontal: en pantallas angostas no desbordan
+          // y los botones de la derecha siempre quedan visibles.
+          Expanded(
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                children: [
+                  // Part number
+                  Text(tr('pcb_search_part'),
+                      style: const TextStyle(fontSize: 14, color: Colors.white)),
+                  const SizedBox(width: 10),
+                  SizedBox(
+                    width: 150,
+                    child: TextFormField(
+                      controller: _searchPartCtrl,
+                      decoration: fieldDecoration(),
+                      style: const TextStyle(fontSize: 14),
+                      onFieldSubmitted: (_) => _loadData(),
+                    ),
+                  ),
+                  const SizedBox(width: 16),
+                  // Area
+                  Text(tr('pcb_area'),
+                      style: const TextStyle(fontSize: 14, color: Colors.white)),
+                  const SizedBox(width: 8),
+                  SizedBox(
+                    width: 220,
+                    child: DropdownButtonFormField2<String>(
+                      decoration: fieldDecoration(),
+                      value: _selectedArea,
+                      isExpanded: true,
+                      style: const TextStyle(fontSize: 14, color: Colors.white),
+                      items: _areaOptions
+                          .map((a) => DropdownMenuItem(
+                                value: a,
+                                child: Text(
+                                    a == 'ALL' ? tr('pcb_all') : PcbAreas.label(a),
+                                    style: const TextStyle(fontSize: 14)),
+                              ))
+                          .toList(),
+                      onChanged: (val) {
+                        if (val != null) setState(() => _selectedArea = val);
+                      },
+                      iconStyleData: const IconStyleData(
+                        icon: Icon(Icons.arrow_drop_down,
+                            color: Colors.white70, size: 20),
+                      ),
+                      dropdownStyleData: DropdownStyleData(
+                        maxHeight: 200,
+                        decoration: BoxDecoration(
+                          color: AppColors.fieldBackground,
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        padding: EdgeInsets.zero,
+                      ),
+                      menuItemStyleData: const MenuItemStyleData(
+                        height: 32,
+                        padding: EdgeInsets.symmetric(horizontal: 10),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 16),
+                  // Proceso
+                  Text(tr('pcb_proceso'),
+                      style: const TextStyle(fontSize: 14, color: Colors.white)),
+                  const SizedBox(width: 8),
+                  SizedBox(
+                    width: 130,
+                    child: DropdownButtonFormField2<String>(
+                      decoration: fieldDecoration(),
+                      value: _selectedProceso,
+                      isExpanded: true,
+                      style: const TextStyle(fontSize: 14, color: Colors.white),
+                      items: _procesoOptions
+                          .map((p) => DropdownMenuItem(
+                                value: p,
+                                child: Text(p, style: const TextStyle(fontSize: 14)),
+                              ))
+                          .toList(),
+                      onChanged: (val) {
+                        if (val != null) setState(() => _selectedProceso = val);
+                      },
+                      iconStyleData: const IconStyleData(
+                        icon: Icon(Icons.arrow_drop_down,
+                            color: Colors.white70, size: 20),
+                      ),
+                      dropdownStyleData: DropdownStyleData(
+                        maxHeight: 200,
+                        decoration: BoxDecoration(
+                          color: AppColors.fieldBackground,
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        padding: EdgeInsets.zero,
+                      ),
+                      menuItemStyleData: const MenuItemStyleData(
+                        height: 32,
+                        padding: EdgeInsets.symmetric(horizontal: 10),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 20),
+                  // Date range
+                  Checkbox(
+                    value: _useDateRange,
+                    onChanged: (v) => setState(() => _useDateRange = v ?? false),
+                    side: const BorderSide(color: AppColors.border),
+                    activeColor: Colors.blue,
+                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                  const SizedBox(width: 6),
+                  Text(tr('pcb_date_range'),
+                      style: const TextStyle(fontSize: 14, color: Colors.white)),
+                  const SizedBox(width: 10),
+                  SizedBox(
+                    width: 130,
+                    child: TextFormField(
+                      controller: _startDateCtrl,
+                      readOnly: true,
+                      enabled: _useDateRange,
+                      onTap: () => _pickDate(true),
+                      decoration: fieldDecoration().copyWith(
+                        suffixIcon: const Icon(Icons.calendar_today,
+                            color: Colors.white70, size: 16),
+                        suffixIconConstraints:
+                            const BoxConstraints(minWidth: 28, minHeight: 20),
+                      ),
+                      style: const TextStyle(fontSize: 14),
+                    ),
+                  ),
+                  const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 6),
+                    child: Text('~',
+                        style: TextStyle(color: Colors.white54, fontSize: 14)),
+                  ),
+                  SizedBox(
+                    width: 130,
+                    child: TextFormField(
+                      controller: _endDateCtrl,
+                      readOnly: true,
+                      enabled: _useDateRange,
+                      onTap: () => _pickDate(false),
+                      decoration: fieldDecoration().copyWith(
+                        suffixIcon: const Icon(Icons.calendar_today,
+                            color: Colors.white70, size: 16),
+                        suffixIconConstraints:
+                            const BoxConstraints(minWidth: 28, minHeight: 20),
+                      ),
+                      style: const TextStyle(fontSize: 14),
+                    ),
+                  ),
+                  const SizedBox(width: 16),
+                  // Include zero stock
+                  Checkbox(
+                    value: _includeZeroStock,
+                    onChanged: (v) => setState(() => _includeZeroStock = v ?? false),
+                    side: const BorderSide(color: AppColors.border),
+                    activeColor: Colors.blue,
+                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                  const SizedBox(width: 6),
+                  Text(tr('pcb_include_zero_stock'),
+                      style: const TextStyle(fontSize: 14, color: Colors.white)),
+                ],
+              ),
             ),
           ),
-          const SizedBox(width: 16),
-          // Area
-          Text(tr('pcb_area'),
-              style: const TextStyle(fontSize: 14, color: Colors.white)),
-          const SizedBox(width: 8),
-          SizedBox(
-            width: 220,
-            child: DropdownButtonFormField2<String>(
-              decoration: fieldDecoration(),
-              value: _selectedArea,
-              isExpanded: true,
-              style: const TextStyle(fontSize: 14, color: Colors.white),
-              items: _areaOptions
-                  .map((a) => DropdownMenuItem(
-                        value: a,
-                        child: Text(
-                            a == 'ALL' ? tr('pcb_all') : PcbAreas.label(a),
-                            style: const TextStyle(fontSize: 14)),
-                      ))
-                  .toList(),
-              onChanged: (val) {
-                if (val != null) setState(() => _selectedArea = val);
-              },
-              iconStyleData: const IconStyleData(
-                icon: Icon(Icons.arrow_drop_down,
-                    color: Colors.white70, size: 20),
-              ),
-              dropdownStyleData: DropdownStyleData(
-                maxHeight: 200,
-                decoration: BoxDecoration(
-                  color: AppColors.fieldBackground,
-                  borderRadius: BorderRadius.circular(4),
-                ),
-                padding: EdgeInsets.zero,
-              ),
-              menuItemStyleData: const MenuItemStyleData(
-                height: 32,
-                padding: EdgeInsets.symmetric(horizontal: 10),
-              ),
-            ),
-          ),
-          const SizedBox(width: 16),
-          // Proceso
-          Text(tr('pcb_proceso'),
-              style: const TextStyle(fontSize: 14, color: Colors.white)),
-          const SizedBox(width: 8),
-          SizedBox(
-            width: 130,
-            child: DropdownButtonFormField2<String>(
-              decoration: fieldDecoration(),
-              value: _selectedProceso,
-              isExpanded: true,
-              style: const TextStyle(fontSize: 14, color: Colors.white),
-              items: _procesoOptions
-                  .map((p) => DropdownMenuItem(
-                        value: p,
-                        child: Text(p, style: const TextStyle(fontSize: 14)),
-                      ))
-                  .toList(),
-              onChanged: (val) {
-                if (val != null) setState(() => _selectedProceso = val);
-              },
-              iconStyleData: const IconStyleData(
-                icon: Icon(Icons.arrow_drop_down,
-                    color: Colors.white70, size: 20),
-              ),
-              dropdownStyleData: DropdownStyleData(
-                maxHeight: 200,
-                decoration: BoxDecoration(
-                  color: AppColors.fieldBackground,
-                  borderRadius: BorderRadius.circular(4),
-                ),
-                padding: EdgeInsets.zero,
-              ),
-              menuItemStyleData: const MenuItemStyleData(
-                height: 32,
-                padding: EdgeInsets.symmetric(horizontal: 10),
-              ),
-            ),
-          ),
-          const SizedBox(width: 20),
-          // Date range
-          Checkbox(
-            value: _useDateRange,
-            onChanged: (v) => setState(() => _useDateRange = v ?? false),
-            side: const BorderSide(color: AppColors.border),
-            activeColor: Colors.blue,
-            materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-          ),
-          const SizedBox(width: 6),
-          Text(tr('pcb_date_range'),
-              style: const TextStyle(fontSize: 14, color: Colors.white)),
-          const SizedBox(width: 10),
-          SizedBox(
-            width: 130,
-            child: TextFormField(
-              controller: _startDateCtrl,
-              readOnly: true,
-              enabled: _useDateRange,
-              onTap: () => _pickDate(true),
-              decoration: fieldDecoration().copyWith(
-                suffixIcon: const Icon(Icons.calendar_today,
-                    color: Colors.white70, size: 16),
-                suffixIconConstraints:
-                    const BoxConstraints(minWidth: 28, minHeight: 20),
-              ),
-              style: const TextStyle(fontSize: 14),
-            ),
-          ),
-          const Padding(
-            padding: EdgeInsets.symmetric(horizontal: 6),
-            child: Text('~',
-                style: TextStyle(color: Colors.white54, fontSize: 14)),
-          ),
-          SizedBox(
-            width: 130,
-            child: TextFormField(
-              controller: _endDateCtrl,
-              readOnly: true,
-              enabled: _useDateRange,
-              onTap: () => _pickDate(false),
-              decoration: fieldDecoration().copyWith(
-                suffixIcon: const Icon(Icons.calendar_today,
-                    color: Colors.white70, size: 16),
-                suffixIconConstraints:
-                    const BoxConstraints(minWidth: 28, minHeight: 20),
-              ),
-              style: const TextStyle(fontSize: 14),
-            ),
-          ),
-          const SizedBox(width: 16),
-          // Include zero stock
-          Checkbox(
-            value: _includeZeroStock,
-            onChanged: (v) => setState(() => _includeZeroStock = v ?? false),
-            side: const BorderSide(color: AppColors.border),
-            activeColor: Colors.blue,
-            materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-          ),
-          const SizedBox(width: 6),
-          Text(tr('pcb_include_zero_stock'),
-              style: const TextStyle(fontSize: 14, color: Colors.white)),
-          const Spacer(),
+          const SizedBox(width: 12),
           SizedBox(
             height: 32,
             child: ElevatedButton.icon(
