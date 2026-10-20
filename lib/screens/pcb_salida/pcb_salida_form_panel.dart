@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:dropdown_button2/dropdown_button2.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:material_warehousing_flutter/core/constants/pcb_areas.dart';
@@ -44,6 +45,7 @@ class PcbSalidaFormPanelState extends State<PcbSalidaFormPanel>
   final FocusNode _scanFocusNode = FocusNode();
 
   String _selectedProceso = 'SMD';
+  String _selectedAreaComponente = 'SMD';
   String _selectedArea = PcbAreas.inventory;
   String _tipoMovimiento = 'SALIDA'; // SALIDA or SCRAP
   DateTime _inventoryDate = DateTime.now();
@@ -91,6 +93,8 @@ class PcbSalidaFormPanelState extends State<PcbSalidaFormPanel>
     try {
       final prefs = await SharedPreferences.getInstance();
       final savedProcess = prefs.getString('pcb_salida_last_process');
+      final savedAreaComponente =
+          prefs.getString('pcb_salida_last_area_componente');
       final savedArea = prefs.getString('pcb_salida_last_area');
       final savedComment = prefs.getString('pcb_salida_last_comment');
       final savedTipo = prefs.getString('pcb_salida_last_tipo');
@@ -98,6 +102,10 @@ class PcbSalidaFormPanelState extends State<PcbSalidaFormPanel>
         setState(() {
           if (savedProcess != null && _procesos.contains(savedProcess)) {
             _selectedProceso = savedProcess;
+          }
+          if (savedAreaComponente != null &&
+              _procesos.contains(savedAreaComponente)) {
+            _selectedAreaComponente = savedAreaComponente;
           }
           if (savedArea != null && _areas.contains(savedArea)) {
             _selectedArea = savedArea;
@@ -116,6 +124,8 @@ class PcbSalidaFormPanelState extends State<PcbSalidaFormPanel>
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('pcb_salida_last_process', _selectedProceso);
+      await prefs.setString(
+          'pcb_salida_last_area_componente', _selectedAreaComponente);
       await prefs.setString('pcb_salida_last_area', _selectedArea);
       await prefs.setString('pcb_salida_last_comment', _commentController.text);
       await prefs.setString('pcb_salida_last_tipo', _tipoMovimiento);
@@ -156,6 +166,7 @@ class PcbSalidaFormPanelState extends State<PcbSalidaFormPanel>
       inventoryDate: _formattedDate,
       proceso: _selectedProceso,
       area: _selectedArea,
+      areaComponente: _selectedAreaComponente,
       tipoMovimiento: _tipoMovimiento,
       qty: qty,
       manualQtyConfirmed: manualQtyConfirmed,
@@ -513,6 +524,50 @@ class PcbSalidaFormPanelState extends State<PcbSalidaFormPanel>
               _buildTipoButton('SALIDA', tr('pcb_tab_salida'), Colors.orange),
               const SizedBox(width: 6),
               _buildTipoButton('SCRAP', tr('pcb_tab_scrap'), Colors.red),
+              const SizedBox(width: 24),
+              SizedBox(
+                width: 110,
+                child: Text(tr('pcb_area_componente'),
+                    style: const TextStyle(fontSize: 14, color: Colors.white)),
+              ),
+              SizedBox(
+                width: 110,
+                child: DropdownButtonFormField2<String>(
+                  decoration: fieldDecoration(),
+                  value: _selectedAreaComponente,
+                  isExpanded: true,
+                  style: const TextStyle(fontSize: 14, color: Colors.white),
+                  items: _procesos
+                      .map((p) => DropdownMenuItem<String>(
+                            value: p,
+                            child:
+                                Text(p, style: const TextStyle(fontSize: 14)),
+                          ))
+                      .toList(),
+                  onChanged: (val) {
+                    if (val != null) {
+                      setState(() => _selectedAreaComponente = val);
+                      _saveLocalPrefs();
+                    }
+                  },
+                  iconStyleData: const IconStyleData(
+                    icon: Icon(Icons.arrow_drop_down,
+                        color: Colors.white70, size: 20),
+                  ),
+                  dropdownStyleData: DropdownStyleData(
+                    maxHeight: 200,
+                    decoration: BoxDecoration(
+                      color: AppColors.fieldBackground,
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    padding: EdgeInsets.zero,
+                  ),
+                  menuItemStyleData: const MenuItemStyleData(
+                    height: 32,
+                    padding: EdgeInsets.symmetric(horizontal: 10),
+                  ),
+                ),
+              ),
               const SizedBox(width: 24),
               SizedBox(
                 width: 60,

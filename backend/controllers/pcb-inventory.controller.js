@@ -392,6 +392,7 @@ exports.scan = async (req, res, next) => {
       inventory_date,
       proceso,
       area,
+      area_componente,
       tipo_movimiento,
       comentarios,
       scanned_by,
@@ -433,6 +434,16 @@ exports.scan = async (req, res, next) => {
         success: false,
         message: `area debe ser uno de: ${VALID_AREAS.join(', ')}`,
         code: 'INVALID_AREA'
+      });
+    }
+    const areaComponenteVal = area_componente
+      ? area_componente.toString().trim().toUpperCase()
+      : null;
+    if (areaComponenteVal && !VALID_PROCESOS.includes(areaComponenteVal)) {
+      return res.status(400).json({
+        success: false,
+        message: `area_componente debe ser uno de: ${VALID_PROCESOS.join(', ')}`,
+        code: 'INVALID_AREA_COMPONENTE'
       });
     }
     const initialStockAreaVal = initial_stock_area
@@ -734,12 +745,12 @@ exports.scan = async (req, res, next) => {
           const [result] = await connection.query(
             `INSERT INTO pcb_inventory_scan_smd
               (inventory_date, scanned_original, scanned_original_norm, assy_type,
-               pcb_part_no, modelo, proceso, area, tipo_movimiento, qty,
+               pcb_part_no, modelo, proceso, area, area_componente, tipo_movimiento, qty,
                array_count, array_group_code, array_role, defect_type,
                component_location, etapa_deteccion, defect_source_area,
                defect_data_id, source_entry_id, defect_count, comentarios,
                scanned_by, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
               invDate,
               row.scanned_original,
@@ -749,6 +760,7 @@ exports.scan = async (req, res, next) => {
               row.modelo,
               row.proceso,
               row.area,
+              areaComponenteVal,
               tipo,
               row.remaining_qty,
               row.array_count,
@@ -894,11 +906,11 @@ exports.scan = async (req, res, next) => {
     const [result] = await connection.query(
       `INSERT INTO pcb_inventory_scan_smd
         (inventory_date, scanned_original, scanned_original_norm, assy_type,
-         pcb_part_no, modelo, proceso, area, tipo_movimiento, qty, array_count,
+         pcb_part_no, modelo, proceso, area, area_componente, tipo_movimiento, qty, array_count,
          array_group_code, array_role, defect_type, component_location,
          etapa_deteccion, defect_source_area, defect_data_id, source_entry_id,
          defect_count, comentarios, scanned_by, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         invDate,
         scannedOriginal,
@@ -908,6 +920,7 @@ exports.scan = async (req, res, next) => {
         movementModelo,
         movementProceso,
         movementArea,
+        areaComponenteVal,
         tipo,
         qtyVal,
         arrayCount,
@@ -1227,6 +1240,7 @@ exports.getScans = async (req, res, next) => {
         modelo,
         proceso,
         area,
+        area_componente,
         tipo_movimiento,
         qty,
         array_count,
@@ -1404,6 +1418,7 @@ exports.getStockDetail = async (req, res, next) => {
         modelo,
         proceso,
         area,
+        area_componente,
         tipo_movimiento,
         qty,
         array_count,

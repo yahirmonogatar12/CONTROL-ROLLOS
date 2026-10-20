@@ -27,6 +27,40 @@ const AVAILABLE_AREAS = [
     'Otro'
 ];
 
+// Items con especificación y disponible en inventario.
+// control_material_almacen_smd.numero_parte es TEXT sin índice: se agrega una
+// sola vez para los números de parte del requerimiento (antes eran 2 escaneos
+// completos por item, ~20s en requerimientos de 150+ items).
+async function fetchRequirementItems(requirementId) {
+    const [items] = await pool.query(`
+      SELECT
+        mri.*,
+        m.especificacion_material,
+        m.ubicacion_material,
+        COALESCE(inv.cantidad_disponible, 0) as cantidad_disponible,
+        inv.ubicaciones_disponibles
+      FROM material_requirement_items mri
+      LEFT JOIN materiales m ON mri.numero_parte = m.numero_parte
+      LEFT JOIN (
+        SELECT
+          cma.numero_parte,
+          SUM(cma.cantidad_actual) as cantidad_disponible,
+          GROUP_CONCAT(DISTINCT NULLIF(cma.ubicacion_salida, '') ORDER BY cma.ubicacion_salida SEPARATOR ', ') as ubicaciones_disponibles
+        FROM control_material_almacen_smd cma
+        WHERE cma.tiene_salida = 0
+          AND cma.cancelado = 0
+          AND cma.numero_parte IN (
+            SELECT numero_parte FROM material_requirement_items WHERE requirement_id = ?
+          )
+        GROUP BY cma.numero_parte
+      ) inv ON inv.numero_parte = mri.numero_parte
+      WHERE mri.requirement_id = ?
+      ORDER BY mri.id
+    `, [requirementId, requirementId]);
+
+    return attachPendingInvoiceData(items);
+}
+
 // GET /api/requirements - Listar todos los requerimientos
 exports.getAll = async (req, res, next) => {
     try {
@@ -136,39 +170,9 @@ exports.getById = async (req, res, next) => {
             return res.status(404).json({ error: 'Requerimiento no encontrado' });
         }
 
-        // Obtener items con especificación y cantidad disponible en inventario
-        const [items] = await pool.query(`
-      SELECT 
-        mri.*, 
-        m.especificacion_material, 
-        m.ubicacion_material,
-        COALESCE(
-          (SELECT SUM(cma.cantidad_actual) 
-           FROM control_material_almacen_smd cma 
-           WHERE cma.numero_parte = mri.numero_parte 
-           AND cma.tiene_salida = 0 
-           AND cma.cancelado = 0),
-          0
-        ) as cantidad_disponible,
-        (SELECT GROUP_CONCAT(DISTINCT cma2.ubicacion_salida ORDER BY cma2.ubicacion_salida SEPARATOR ', ')
-         FROM control_material_almacen_smd cma2 
-         WHERE cma2.numero_parte = mri.numero_parte 
-         AND cma2.tiene_salida = 0 
-         AND cma2.cancelado = 0
-         AND cma2.ubicacion_salida IS NOT NULL 
-         AND cma2.ubicacion_salida != ''
-        ) as ubicaciones_disponibles
-      FROM material_requirement_items mri
-      LEFT JOIN materiales m ON mri.numero_parte = m.numero_parte
-      WHERE mri.requirement_id = ?
-      ORDER BY mri.id
-    `, [id]);
-
-        const itemsWithPendingInvoices = await attachPendingInvoiceData(items);
-
         res.json({
             ...requirements[0],
-            items: itemsWithPendingInvoices
+            items: await fetchRequirementItems(id)
         });
     } catch (err) {
         next(err);
@@ -432,36 +436,7 @@ exports.cancel = async (req, res, next) => {
 // GET /api/requirements/:id/items - Listar items de un requerimiento
 exports.getItems = async (req, res, next) => {
     try {
-        const { id } = req.params;
-
-        const [items] = await pool.query(`
-      SELECT 
-        mri.*, 
-        m.especificacion_material, 
-        m.ubicacion_material,
-        COALESCE(
-          (SELECT SUM(cma.cantidad_actual) 
-           FROM control_material_almacen_smd cma 
-           WHERE cma.numero_parte = mri.numero_parte 
-           AND cma.tiene_salida = 0 
-           AND cma.cancelado = 0),
-          0
-        ) as cantidad_disponible,
-        (SELECT GROUP_CONCAT(DISTINCT cma2.ubicacion_salida ORDER BY cma2.ubicacion_salida SEPARATOR ', ')
-         FROM control_material_almacen_smd cma2 
-         WHERE cma2.numero_parte = mri.numero_parte 
-         AND cma2.tiene_salida = 0 
-         AND cma2.cancelado = 0
-         AND cma2.ubicacion_salida IS NOT NULL 
-         AND cma2.ubicacion_salida != ''
-        ) as ubicaciones_disponibles
-      FROM material_requirement_items mri
-      LEFT JOIN materiales m ON mri.numero_parte = m.numero_parte
-      WHERE mri.requirement_id = ?
-      ORDER BY mri.id
-    `, [id]);
-
-        res.json(await attachPendingInvoiceData(items));
+        res.json(await fetchRequirementItems(req.params.id));
     } catch (err) {
         next(err);
     }

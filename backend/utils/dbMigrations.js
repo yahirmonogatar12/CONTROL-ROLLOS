@@ -69,6 +69,28 @@ async function ensureWarehouseCodeIndex() {
   }
 }
 
+// Disponible por número de parte (requerimientos, salidas). numero_parte es
+// TEXT: prefijo 50 = largo de material_requirement_items.numero_parte.
+async function ensureWarehousePartIndex() {
+  const indexName = 'idx_cma_smd_parte_disponible';
+  const [rows] = await pool.query(`
+    SELECT INDEX_NAME
+    FROM INFORMATION_SCHEMA.STATISTICS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'control_material_almacen_smd'
+      AND INDEX_NAME = ?
+    LIMIT 1
+  `, [indexName]);
+
+  if (rows.length === 0) {
+    await pool.query(`
+      CREATE INDEX idx_cma_smd_parte_disponible
+      ON control_material_almacen_smd (numero_parte(50), tiene_salida, cancelado)
+    `);
+    console.log('✓ Índice de número de parte SMD creado');
+  }
+}
+
 // Agregar columna cancelado
 async function addCanceladoColumn() {
   const tables = [
@@ -836,6 +858,7 @@ async function createPcbInventoryScanTable() {
         modelo VARCHAR(120) NOT NULL DEFAULT 'N/A',
         proceso ENUM('SMD','IMD','ASSY') NOT NULL DEFAULT 'SMD',
         area ENUM('INVENTARIO','INVENTARIO_REPARACION','REPARACION') NOT NULL DEFAULT 'INVENTARIO',
+        area_componente ENUM('SMD','IMD','ASSY') NULL,
         tipo_movimiento ENUM('ENTRADA','SALIDA','SCRAP') NOT NULL DEFAULT 'ENTRADA',
         qty INT NOT NULL DEFAULT 1,
         array_count INT NOT NULL DEFAULT 1,
@@ -876,6 +899,12 @@ async function migratePcbInventorySchema() {
     'pcb_inventory_scan_smd',
     'area',
     "ENUM('INVENTARIO','INVENTARIO_REPARACION','REPARACION') NOT NULL DEFAULT 'INVENTARIO' AFTER proceso"
+  );
+  // Area de origen del componente/material (SMD, IMD, ASSY), independiente del proceso de la PCB.
+  await addColumnIfNotExists(
+    'pcb_inventory_scan_smd',
+    'area_componente',
+    "ENUM('SMD','IMD','ASSY') NULL AFTER area"
   );
   await addColumnIfNotExists(
     'pcb_inventory_scan_smd',
@@ -1713,6 +1742,7 @@ async function runMigrations() {
   await addWarehousingExtraColumns();
   await createControlMaterialSalidaTable();
   await ensureWarehouseCodeIndex();
+  await ensureWarehousePartIndex();
   await enforceUniqueSmdInventoryLots();
   await enforceNonNegativeSmdInventory();
   await createInventoryAdjustmentSmdTable();

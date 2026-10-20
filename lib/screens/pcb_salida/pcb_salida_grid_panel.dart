@@ -40,6 +40,7 @@ class PcbSalidaGridPanelState extends State<PcbSalidaGridPanel>
     'pcb_part_no',
     'modelo',
     'proceso',
+    'area_componente',
     'inventory_date',
     'hora',
     'comentarios',
@@ -56,6 +57,7 @@ class PcbSalidaGridPanelState extends State<PcbSalidaGridPanel>
         tr('pcb_part_no'),
         tr('pcb_modelo'),
         tr('pcb_proceso'),
+        tr('pcb_area_componente'),
         tr('pcb_date'),
         tr('pcb_hora'),
         tr('pcb_comentarios'),
@@ -68,7 +70,7 @@ class PcbSalidaGridPanelState extends State<PcbSalidaGridPanel>
   @override
   void initState() {
     super.initState();
-    initColumnFlex(11, 'pcb_salida_grid', defaultFlexValues: [
+    initColumnFlex(12, 'pcb_salida_grid', defaultFlexValues: [
       1.2,
       2.5,
       1.0,
@@ -76,6 +78,7 @@ class PcbSalidaGridPanelState extends State<PcbSalidaGridPanel>
       1.5,
       1.5,
       1.2,
+      1.0,
       1.2,
       1.0,
       1.5,

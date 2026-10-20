@@ -90,6 +90,7 @@ class PcbInventarioScreenState extends State<PcbInventarioScreen>
     'qty',
     'array_count',
     'proceso',
+    'area_componente',
     'inventory_date',
     'hora',
     'comentarios',
@@ -118,6 +119,7 @@ class PcbInventarioScreenState extends State<PcbInventarioScreen>
         tr('pcb_qty'),
         tr('pcb_array_count'),
         tr('pcb_proceso'),
+        tr('pcb_area_componente'),
         tr('pcb_date'),
         tr('pcb_hora'),
         tr('pcb_comentarios'),
@@ -161,7 +163,7 @@ class PcbInventarioScreenState extends State<PcbInventarioScreen>
       initColumnFlex(8, 'pcb_inv_summary',
           defaultFlexValues: [1.8, 1.8, 1.3, 1.3, 1.0, 1.0, 1.0, 1.2]);
     } else {
-      initColumnFlex(14, 'pcb_inv_detail', defaultFlexValues: [
+      initColumnFlex(15, 'pcb_inv_detail', defaultFlexValues: [
         1.2,
         2.5,
         1.5,
@@ -172,6 +174,7 @@ class PcbInventarioScreenState extends State<PcbInventarioScreen>
         0.8,
         1.0,
         1.2,
+        1.0,
         1.2,
         1.0,
         1.5,

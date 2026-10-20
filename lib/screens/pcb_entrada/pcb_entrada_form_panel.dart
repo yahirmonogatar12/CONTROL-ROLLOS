@@ -74,6 +74,7 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel>
   final FocusNode _scanFocusNode = FocusNode();
 
   String _selectedProceso = 'SMD';
+  String _selectedAreaComponente = 'SMD';
   String _selectedArea = PcbAreas.inventory;
   String? _selectedDefectType;
   String? _detectedEtapa; // 'LQC' | 'OQC' | 'AIS' | null
@@ -87,7 +88,9 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel>
   bool _isLoading = false;
   String? _statusMessage;
   bool _statusIsError = false;
-  List<int> _lastInsertedIds = [];
+  // Una captura puede insertar varios registros; se deshace como una entrada.
+  final List<List<int>> _recentInsertedIds = [];
+  static const int _undoHistoryLimit = 10;
   int _pendingArrayRemaining = 0;
   int _pendingArrayCount = 1;
   int _pendingRepairRemaining = 0;
@@ -140,6 +143,8 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel>
     try {
       final prefs = await SharedPreferences.getInstance();
       final savedProcess = prefs.getString('pcb_entrada_last_process');
+      final savedAreaComponente =
+          prefs.getString('pcb_entrada_last_area_componente');
       final savedArea = prefs.getString('pcb_entrada_last_area');
       final savedComment = prefs.getString('pcb_entrada_last_comment');
       final savedRepairCount = prefs.getString('pcb_entrada_last_repair_count');
@@ -150,6 +155,10 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel>
         setState(() {
           if (savedProcess != null && _procesos.contains(savedProcess)) {
             _selectedProceso = savedProcess;
+          }
+          if (savedAreaComponente != null &&
+              _procesos.contains(savedAreaComponente)) {
+            _selectedAreaComponente = savedAreaComponente;
           }
           if (savedArea != null && _areas.contains(savedArea)) {
             _selectedArea = savedArea;
@@ -186,6 +195,8 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel>
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('pcb_entrada_last_process', _selectedProceso);
+      await prefs.setString(
+          'pcb_entrada_last_area_componente', _selectedAreaComponente);
       await prefs.setString('pcb_entrada_last_area', _selectedArea);
       await prefs.setString(
           'pcb_entrada_last_comment', _commentController.text);
@@ -525,6 +536,19 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel>
   }
 
   Future<void> _onScan() async {
+    if (_isLoading || _scanController.text.trim().isEmpty) return;
+    setState(() => _isLoading = true);
+    try {
+      await _registerScan();
+    } finally {
+      if (mounted) {
+        setState(() => _isLoading = false);
+        requestScanFocus();
+      }
+    }
+  }
+
+  Future<void> _registerScan() async {
     final code = _scanController.text.trim();
     if (code.isEmpty) return;
     final isArrayItem = _hasPendingArrayScans;
@@ -656,6 +680,7 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel>
       inventoryDate: _formattedDate,
       proceso: _selectedProceso,
       area: effectiveArea,
+      areaComponente: _selectedAreaComponente,
       tipoMovimiento: 'ENTRADA',
       arrayCount: arrayCount,
       qty: 1,
@@ -681,9 +706,15 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel>
             ?.map((id) => (id as num).toInt())
             .toList();
         final fallbackId = data?['id'] is num ? (data['id'] as num).toInt() : 0;
-        _lastInsertedIds = ids?.isNotEmpty == true
+        final List<int> insertedIds = ids?.isNotEmpty == true
             ? ids!
             : (fallbackId > 0 ? [fallbackId] : []);
+        if (insertedIds.isNotEmpty) {
+          _recentInsertedIds.add(insertedIds);
+          if (_recentInsertedIds.length > _undoHistoryLimit) {
+            _recentInsertedIds.removeAt(0);
+          }
+        }
         String nextMessage;
         if (isArrayItem) {
           if (PcbAreas.isRepair(effectiveArea) && _pendingRepairRemaining > 0) {
@@ -753,7 +784,6 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel>
         });
         _scanController.clear();
       }
-      setState(() => _isLoading = false);
       requestScanFocus();
     }
   }
@@ -774,21 +804,45 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel>
   }
 
   Future<void> _undoLastScan() async {
-    if (_lastInsertedIds.isEmpty) return;
-    var ok = true;
-    for (final id in _lastInsertedIds.reversed) {
-      final result = await ApiService.deletePcbInventoryScan(id);
-      ok = ok && result['success'] == true;
-    }
-    if (ok) {
+    if (_isLoading || _recentInsertedIds.isEmpty) return;
+    if (!AuthService.canWritePcbInventory) {
       setState(() {
-        _statusMessage = tr('pcb_scan_deleted');
-        _statusIsError = false;
-        _lastInsertedIds = [];
-        if (_hasPendingArrayScans) _clearPendingArray();
-        _clearDetectedDefect();
+        _statusMessage = tr('pcb_no_write_permission');
+        _statusIsError = true;
       });
-      widget.onDataSaved();
+      return;
+    }
+    setState(() => _isLoading = true);
+    final ids = _recentInsertedIds.last;
+    var changed = false;
+    String? error;
+    try {
+      while (ids.isNotEmpty) {
+        final result = await ApiService.deletePcbInventoryScan(ids.last);
+        if (result['success'] != true) {
+          error = result['message']?.toString() ?? tr('pcb_scan_error');
+          break;
+        }
+        // Conservar solo los IDs pendientes si falla parte de una captura.
+        ids.removeLast();
+        changed = true;
+      }
+      if (!mounted) return;
+      setState(() {
+        if (ids.isEmpty) _recentInsertedIds.removeLast();
+        _statusMessage = error ?? tr('pcb_scan_deleted');
+        _statusIsError = error != null;
+        if (changed) {
+          if (_hasPendingArrayScans) _clearPendingArray();
+          _clearDetectedDefect();
+        }
+      });
+      if (changed) widget.onDataSaved();
+    } finally {
+      if (mounted) {
+        setState(() => _isLoading = false);
+        requestScanFocus();
+      }
     }
   }
 
@@ -1399,6 +1453,52 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel>
               ),
               const SizedBox(width: 24),
               SizedBox(
+                width: 110,
+                child: Text(tr('pcb_area_componente'),
+                    style: const TextStyle(fontSize: 14, color: Colors.white)),
+              ),
+              SizedBox(
+                width: 110,
+                child: DropdownButtonFormField2<String>(
+                  decoration: fieldDecoration(),
+                  value: _selectedAreaComponente,
+                  isExpanded: true,
+                  style: const TextStyle(fontSize: 14, color: Colors.white),
+                  items: _procesos
+                      .map((p) => DropdownMenuItem<String>(
+                            value: p,
+                            child:
+                                Text(p, style: const TextStyle(fontSize: 14)),
+                          ))
+                      .toList(),
+                  onChanged: _hasPendingArrayScans
+                      ? null
+                      : (val) {
+                          if (val != null) {
+                            setState(() => _selectedAreaComponente = val);
+                            _saveLocalPrefs();
+                          }
+                        },
+                  iconStyleData: const IconStyleData(
+                    icon: Icon(Icons.arrow_drop_down,
+                        color: Colors.white70, size: 20),
+                  ),
+                  dropdownStyleData: DropdownStyleData(
+                    maxHeight: 200,
+                    decoration: BoxDecoration(
+                      color: AppColors.fieldBackground,
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    padding: EdgeInsets.zero,
+                  ),
+                  menuItemStyleData: const MenuItemStyleData(
+                    height: 32,
+                    padding: EdgeInsets.symmetric(horizontal: 10),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 24),
+              SizedBox(
                 width: 60,
                 child: Text(tr('pcb_date'),
                     style: const TextStyle(fontSize: 14, color: Colors.white)),
@@ -1643,6 +1743,7 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel>
               Expanded(
                 flex: 3,
                 child: TextField(
+                  key: const ValueKey('pcbEntryScan'),
                   controller: _scanController,
                   focusNode: _scanFocusNode,
                   style: const TextStyle(
@@ -1671,17 +1772,20 @@ class PcbEntradaFormPanelState extends State<PcbEntradaFormPanel>
                   onSubmitted: (_) => _onScan(),
                 ),
               ),
-              if (_lastInsertedIds.isNotEmpty) ...[
+              if (_recentInsertedIds.isNotEmpty) ...[
                 const SizedBox(width: 8),
                 SizedBox(
                   height: 36,
-                  width: 36,
-                  child: IconButton(
-                    onPressed: _undoLastScan,
-                    icon:
-                        const Icon(Icons.undo, color: Colors.orange, size: 20),
-                    tooltip: tr('pcb_undo_last'),
-                    padding: EdgeInsets.zero,
+                  child: TextButton.icon(
+                    key: const ValueKey('pcbEntryUndo'),
+                    onPressed: _isLoading ? null : _undoLastScan,
+                    icon: const Icon(Icons.undo, size: 20),
+                    label: Text(
+                        '${tr('pcb_undo_last')} (${_recentInsertedIds.length}/$_undoHistoryLimit)'),
+                    style: TextButton.styleFrom(
+                      foregroundColor: Colors.orange,
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                    ),
                   ),
                 ),
               ],
